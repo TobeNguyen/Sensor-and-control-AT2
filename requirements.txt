@@ -1,0 +1,35 @@
+# ===== Track A: TurtleBot3 visual waypoint navigation =====
+# Python 3.10 - 3.12 (3.12 recommended)
+
+# --- Core numerics ---
+# numpy must stay < 2 for roboticstoolbox-python 1.1.1
+numpy==1.26.4
+scipy==1.17.1
+pandas==2.3.3
+matplotlib==3.10.9
+
+# --- Main simulation: MuJoCo (TurtleBot3, LiDAR, camera) ---
+mujoco>=3.0
+glfw>=2.6
+
+# --- Computer vision: ArUco detection and camera calibration ---
+# Keep ONLY opencv-contrib-python (do not install opencv-python as well)
+opencv-contrib-python==4.11.0.86
+
+# --- Robotics Toolbox and Swift simulation ---
+roboticstoolbox-python==1.1.1
+spatialmath-python==1.1.17
+spatialgeometry==1.1.0
+swift-sim==1.1.0
+machinevision-toolbox-python==2.4.0
+
+# --- IR Support (provides Turtlebot3Waffle model for Swift) ---
+ir-support==1.4.3
+ir-support-extra-robots==0.2.1
+
+# --- Video recording for the demo ---
+imageio==2.37.4
+imageio-ffmpeg
+
+# --- Testing ---
+pytest==8.4.2
