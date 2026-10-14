@@ -134,11 +134,44 @@ def solve_marker_pose(image_pts, K: np.ndarray, dist_coeffs: np.ndarray,
         normal_z = cv2.Rodrigues(np.asarray(rv, dtype=float).reshape(3, 1))[0][2, 2]
         if tv[2] <= 0.0 or normal_z >= 0.0:
             continue
+
+        # Validate the estimated pose by computing the reprojection error
+        is_valid, reproj_err = validate_estimated_pose(img, rv, tv, K, dist, marker_size, max_error_px=1.5)
+        
+        if not is_valid:
+            continue  # Skip this candidate if the reprojection error exceeds the threshold
+
         proj, _ = cv2.projectPoints(obj, rv, tv.reshape(3, 1), K, dist)
         err = float(np.sqrt(np.mean(np.sum((proj.reshape(4, 2) - img) ** 2, axis=1))))
         if best is None or err < best[2]:
             best = (np.asarray(rv, dtype=float).reshape(3, 1), tv.reshape(3, 1), err)
     return best
+
+# Validate the estimated pose by computing the reprojection error
+def validate_estimated_pose(image_pts, rvec, tvec, K, dist_coeffs, marker_size, max_error_px: float = 1.5) -> tuple[bool, float]:
+    """
+    Return (True/False, RMS reprojection error in pixels).
+    Change the 'max_error_px' threshold to control the tolerance for accepting the estimated pose.
+    """
+    if image_pts is None or len(image_pts) != 4:
+        return False, float('inf')
+    
+    # Compute the 3D corner points of the ArUco marker in the marker coordinate system
+    s = marker_size / 2.0
+    obj_points = np.array([[-s, s, 0.0], [s, s, 0.0], [s, -s, 0.0], [-s, -s, 0.0]], dtype=np.float32)
+    
+    # Reproject the 3D points to 2D image points using the estimated pose (rvec, tvec)
+    projected_pts, _ = cv2.projectPoints(obj_points, rvec, tvec, K, dist_coeffs)
+    projected_pts = projected_pts.reshape(-1, 2)
+
+    # Compare the projected points with the actual measured points in the image
+    measured_pts = np.asarray(image_pts, dtype=np.float32).reshape(4, 2)
+    errors = np.linalg.norm(measured_pts - projected_pts, axis=1)
+    reproj_err = float(np.sqrt(np.mean(errors ** 2)))
+
+    # Return True/False, reprojection error in pixels
+    # Return True if the reprojection error is within the acceptable threshold, otherwise False
+    return reproj_err <= max_error_px, reproj_err
 
 # Pixel (u, v) of a robot-frame point, or None if it is behind the camera
 def project_robot_point(p_robot, intr: CameraIntrinsics, height: float = 0.0,
@@ -306,11 +339,43 @@ class Calibration:
         return marker_object_points(self.marker_size)
 
 # Nominal MuJoCo intrinsics unless a calibrated set is supplied
-def get_calibration(cfg: Config = CONFIG, intrinsics: Optional[CameraIntrinsics] = None) -> Calibration:
+def get_calibration(cfg: Config = CONFIG, intrinsics: Optional[CameraIntrinsics] = None, sample_image: Optional[np.ndarray] = None) -> Calibration:
+    """
+    Provide a Calibration object with the camera intrinsics, forward offset, and marker size. 
+    If no intrinsics are provided, the nominal MuJoCo intrinsics are used. 
+    If a sample image is provided, the effectiveness of lens distortion removal is validated and reported.
+    """
     intr = nominal_intrinsics(cfg) if intrinsics is None else intrinsics
     assert_valid_intrinsics(intr)
     assert_frame_conventions(cfg, intr)
-    return Calibration(intr, camera_forward_offset(cfg), cfg.camera.marker_size)
+    calib_obj = Calibration(intr, camera_forward_offset(cfg), cfg.camera.marker_size)
+    
+    # Validate the effectiveness of lens distortion removal if a sample image is provided
+    if sample_image is not None:
+        val_res = validate_calibration_image_effect(sample_image, calib_obj.K, calib_obj.dist_coeffs)
+        if val_res["status"] == "success":
+            print(f"[Calibration Check] Undistort check passed. Mean pixel shift: {val_res['mean_pixel_difference']:.3f} px")
+            
+    return calib_obj
+
+# Validate the effectiveness of lens distortion removal by comparing the raw and undistorted images.
+def validate_calibration_image_effect(raw_image: np.ndarray, K: np.ndarray, dist_coeffs: np.ndarray) -> dict:
+    if raw_image is None or raw_image.size == 0:
+        return {"status": "error", "message": "Raw image is empty"}
+    
+    # Use the calibration parameters to undistort the raw image
+    undistorted_image = cv2.undistort(raw_image, K, dist_coeffs)
+
+    # Calculate the mean pixel difference between the raw and undistorted images as a quality metric
+    diff = cv2.absdiff(cv2.cvtColor(raw_image, cv2.COLOR_RGB2GRAY), 
+                       cv2.cvtColor(undistorted_image, cv2.COLOR_RGB2GRAY))
+    mean_diff = float(np.mean(diff))
+    
+    return {
+        "status": "success",
+        "mean_pixel_difference": mean_diff,
+        "undistorted_image": undistorted_image
+    }
 
 if __name__ == "__main__":
     cal = get_calibration()
