@@ -23,6 +23,7 @@ from navigation import Navigator
 from robot_model import analyse_model, wrap_angle
 from sensing import Sensing
 from simulation import Simulation
+from visualization import RouteVisualizer
 
 class Phase(Enum):
     NAVIGATE = "navigate"
@@ -286,7 +287,8 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
                 scene_dir: Optional[Path] = None, viewer: bool = False,
                 stop_on_collision: bool = True, verbose: bool = False,
                 dock_use_estimate: bool = True, marker_sigma_px: float = 0.5,
-                use_marker_cov: bool = False) -> RunResult:
+                use_marker_cov: bool = False,
+                visualizer: Optional[RouteVisualizer] = None) -> RunResult:
     estimator = (EKFEstimator(cfg, gate=9.21, use_marker_cov=use_marker_cov)
                 if estimator is None else estimator)
     nav, dock, log = Navigator(cfg), DockingController(cfg), TrialLog()
@@ -294,6 +296,7 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
     nav_time: Optional[float] = None
     collided_any = False
     cam_stats = (0, 0)
+    viz_outputs = None
     start = np.array(cfg.env.start_pose, dtype=float)
     dt = cfg.sim.control_dt
     report_every = max(1, int(round(1.0 / dt)))      # one table row per simulated second
@@ -306,6 +309,8 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
         sim.reset(tuple(start))
         sensing = Sensing(sim, cfg, marker_sigma_px=marker_sigma_px)
         estimator.reset(start)               # known start pose (a prior, not ground truth)
+        if visualizer is not None:
+            visualizer.start(sim)
 
         with _viewer(sim, viewer) as view:
             step = 0
@@ -349,6 +354,10 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
                 n_updates = int(getattr(estimator, "n_updates", 0))
                 log.record(frame.time, sim.ground_truth(), x_est, estimator.P,
                         phase.value, v, w, n_valid, n_updates, mode)
+                if visualizer is not None:
+                    visualizer.record(frame.time, x_est, frame.lidar, mode, frame.marker, sim)
+                    if phase is Phase.DONE:
+                        visualizer.capture_target(sim, label="Docked at charging station")
                 if verbose and step % report_every == 0:
                     print(table_row(frame.time, x_est, n_valid, frame.lidar.valid.size,
                                     n_updates, v, w, mode), flush=True)
@@ -369,12 +378,17 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
                     time.sleep(max(0.0, dt - (time.perf_counter() - t0)))   # real-time pacing
                 step += 1
 
+        if visualizer is not None:
+            viz_outputs = visualizer.finish(sim, success=phase is Phase.DONE,
+                                            reason=reason, sim_time=sim.time)
         cam_stats = (sensing.n_camera, sensing.n_detect)
         truth = sim.ground_truth()           # final pose, evaluation only
         sim_time = sim.time
 
     if verbose:
         print(table_footer())
+        if viz_outputs:
+            print("Route visualization saved to:", viz_outputs["visualization"])
 
     diag = {k: int(getattr(estimator, k, 0)) for k in
             ("n_updates", "n_rejected", "n_recovered", "n_lidar_updates", "n_lidar_rejected")}
@@ -494,6 +508,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="EKF uses the per-measurement marker covariance from sensing.py")
     parser.add_argument("--sigma-px", type=float, default=0.5,
                         help="assumed ArUco corner noise [px] used to build the marker covariance")
+    parser.add_argument("--no-viz", action="store_true",
+                        help="do not save the route picture / snapshots")
+    parser.add_argument("--no-live-camera", action="store_true",
+                        help="do not open the live camera window")
     return parser
 
 def main(argv=None) -> int:
@@ -504,9 +522,12 @@ def main(argv=None) -> int:
     use_viewer = not args.no_viewer
     if use_viewer:
         _ensure_mjpython()
+    viz = None if args.no_viz else RouteVisualizer(
+        CONFIG, live_view=use_viewer and not args.no_live_camera)
     result = run_pipeline(CONFIG, seed=args.seed, viewer=use_viewer, verbose=True,
                         dock_use_estimate=not args.dock_raw,
-                        marker_sigma_px=args.sigma_px, use_marker_cov=args.marker_cov)
+                        marker_sigma_px=args.sigma_px, use_marker_cov=args.marker_cov,
+                        visualizer=viz)
 
     dr_rmse = None
     if args.compare:

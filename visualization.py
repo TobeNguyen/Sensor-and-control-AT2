@@ -28,7 +28,8 @@ import json
 import math
 from pathlib import Path
 from typing import Any
-
+import multiprocessing as mp
+import queue
 import cv2
 import numpy as np
 from matplotlib.figure import Figure
@@ -47,53 +48,72 @@ def get_rgb(sim: Any) -> np.ndarray:
     return rgb.copy()
 
 
-class LiveCameraView:
-    """Shows the robot camera in a separate OpenCV window (display only, nothing is saved).
+def _camera_window_worker(q, window: str) -> None:
+    import cv2
+    while True:
+        try:
+            frame = q.get(timeout=0.05)
+        except queue.Empty:
+            cv2.waitKey(1)
+            continue
+        if frame is None:
+            break
+        cv2.imshow(window, frame)
+        cv2.waitKey(1)
+    cv2.destroyAllWindows()
 
-    The native MuJoCo viewer cannot host a second camera view, so the live feed is a
-    small window you can place over the empty (black) area of the viewer.
-    """
+class LiveCameraView:
+    """Live camera window in a separate process (works with mjpython on macOS)."""
 
     def __init__(self, window: str = "TurtleBot3 camera", period: float = 0.10,
-                 scale: float = 0.6, enabled: bool = True):
+                scale: float = 0.6, enabled: bool = True):
         self.window = window
-        self.period = float(period)        # [s] sim time between refreshes (rendering is costly)
+        self.period = float(period)
         self.scale = float(scale)
         self.enabled = enabled
         self._last_t = -math.inf
-        self._opened = False
+        self._proc = None
+        self._q = None
+
+    def _start(self) -> None:
+        ctx = mp.get_context("spawn")
+        self._q = ctx.Queue(maxsize=2)
+        self._proc = ctx.Process(target=_camera_window_worker,
+                                args=(self._q, self.window), daemon=True)
+        self._proc.start()
 
     def update(self, t: float, sim: Any, mode: str = "", marker: Any = None) -> None:
         if not self.enabled or t - self._last_t < self.period - 1e-9:
             return
         self._last_t = t
+        if self._proc is None:
+            self._start()
+        bgr = cv2.cvtColor(get_rgb(sim), cv2.COLOR_RGB2BGR)
+        if self.scale != 1.0:
+            bgr = cv2.resize(bgr, None, fx=self.scale, fy=self.scale)
+        if marker is not None:
+            text = f"{mode} | marker r={marker.range:.2f} m  b={math.degrees(marker.bearing):+.0f} deg"
+            color = (0, 220, 0)
+        else:
+            text = f"{mode} | no marker"
+            color = (0, 0, 255)
+        cv2.putText(bgr, text, (8, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
         try:
-            bgr = cv2.cvtColor(get_rgb(sim), cv2.COLOR_RGB2BGR)
-            if self.scale != 1.0:
-                bgr = cv2.resize(bgr, None, fx=self.scale, fy=self.scale)
-            if marker is not None:
-                text = f"{mode} | marker r={marker.range:.2f} m  b={math.degrees(marker.bearing):+.0f} deg"
-                color = (0, 220, 0)
-            else:
-                text = f"{mode} | no marker"
-                color = (0, 0, 255)
-            cv2.putText(bgr, text, (8, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
-            cv2.imshow(self.window, bgr)
-            cv2.waitKey(1)
-            self._opened = True
-        except cv2.error:
-            # No GUI available (headless OpenCV / remote machine): disable quietly.
-            print("LiveCameraView: cannot open a window, live view disabled.")
-            self.enabled = False
-
+            self._q.put_nowait(bgr)
+        except queue.Full:
+            pass
+        
     def close(self) -> None:
-        if self._opened:
-            try:
-                cv2.destroyWindow(self.window)
-                cv2.waitKey(1)
-            except cv2.error:
-                pass
-            self._opened = False
+        if self._proc is None:
+            return
+        try:
+            self._q.put_nowait(None)
+        except queue.Full:
+            pass
+        self._proc.join(timeout=2.0)
+        if self._proc.is_alive():
+            self._proc.terminate()
+        self._proc = None
 
 
 class RouteVisualizer:
