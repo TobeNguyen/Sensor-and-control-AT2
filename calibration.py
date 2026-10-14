@@ -17,6 +17,7 @@ SOURCE_NOMINAL = "nominal_mujoco"   # derived from the known simulator model (NO
 SOURCE_CALIBRATED = "calibrated"    # estimated from images of a calibration target
 MIN_CALIBRATION_VIEWS = 5
 VALID_DIST_LENGTHS = (4, 5, 8, 12, 14)
+MAX_REPROJ_PX = 1.5                 # default reprojection-error gate for marker pose [px]
 
 # Intrinsics
 @dataclass(frozen=True, eq=False)
@@ -116,7 +117,7 @@ def marker_pose_from_pnp(rvec, tvec, cfg: Config = CONFIG) -> tuple[float, float
 
 # Marker pose in the camera frame from the 4 detected corners
 def solve_marker_pose(image_pts, K: np.ndarray, dist_coeffs: np.ndarray,
-                    marker_size: float):
+                    marker_size: float, max_reproj_px: float = MAX_REPROJ_PX):
     obj = marker_object_points(marker_size)
     img = np.asarray(image_pts, dtype=np.float64).reshape(4, 2)
     dist = np.asarray(dist_coeffs, dtype=float)
@@ -135,42 +136,30 @@ def solve_marker_pose(image_pts, K: np.ndarray, dist_coeffs: np.ndarray,
         if tv[2] <= 0.0 or normal_z >= 0.0:
             continue
 
-        # Validate the estimated pose by computing the reprojection error
-        is_valid, reproj_err = validate_estimated_pose(img, rv, tv, K, dist, marker_size, max_error_px=1.5)
-        
+        # Reject candidates whose reprojection error exceeds the gate
+        is_valid, err = validate_estimated_pose(img, rv, tv.reshape(3, 1), K, dist,
+                                                marker_size, max_error_px=max_reproj_px)
         if not is_valid:
-            continue  # Skip this candidate if the reprojection error exceeds the threshold
-
-        proj, _ = cv2.projectPoints(obj, rv, tv.reshape(3, 1), K, dist)
-        err = float(np.sqrt(np.mean(np.sum((proj.reshape(4, 2) - img) ** 2, axis=1))))
+            continue
         if best is None or err < best[2]:
             best = (np.asarray(rv, dtype=float).reshape(3, 1), tv.reshape(3, 1), err)
     return best
 
 # Validate the estimated pose by computing the reprojection error
-def validate_estimated_pose(image_pts, rvec, tvec, K, dist_coeffs, marker_size, max_error_px: float = 1.5) -> tuple[bool, float]:
-    """
-    Return (True/False, RMS reprojection error in pixels).
-    Change the 'max_error_px' threshold to control the tolerance for accepting the estimated pose.
-    """
+def validate_estimated_pose(image_pts, rvec, tvec, K, dist_coeffs, marker_size,
+                            max_error_px: float = MAX_REPROJ_PX) -> tuple[bool, float]:
+    """Return (is_valid, RMS reprojection error in pixels)."""
     if image_pts is None or len(image_pts) != 4:
         return False, float('inf')
-    
-    # Compute the 3D corner points of the ArUco marker in the marker coordinate system
-    s = marker_size / 2.0
-    obj_points = np.array([[-s, s, 0.0], [s, s, 0.0], [s, -s, 0.0], [-s, -s, 0.0]], dtype=np.float32)
-    
-    # Reproject the 3D points to 2D image points using the estimated pose (rvec, tvec)
-    projected_pts, _ = cv2.projectPoints(obj_points, rvec, tvec, K, dist_coeffs)
+
+    obj_points = marker_object_points(marker_size)
+    projected_pts, _ = cv2.projectPoints(obj_points, np.asarray(rvec, dtype=float).reshape(3, 1),
+                                        np.asarray(tvec, dtype=float).reshape(3, 1), K, dist_coeffs)
     projected_pts = projected_pts.reshape(-1, 2)
 
-    # Compare the projected points with the actual measured points in the image
-    measured_pts = np.asarray(image_pts, dtype=np.float32).reshape(4, 2)
+    measured_pts = np.asarray(image_pts, dtype=np.float64).reshape(4, 2)
     errors = np.linalg.norm(measured_pts - projected_pts, axis=1)
     reproj_err = float(np.sqrt(np.mean(errors ** 2)))
-
-    # Return True/False, reprojection error in pixels
-    # Return True if the reprojection error is within the acceptable threshold, otherwise False
     return reproj_err <= max_error_px, reproj_err
 
 # Pixel (u, v) of a robot-frame point, or None if it is behind the camera
@@ -201,6 +190,27 @@ def world_to_robot(pose, p_world) -> np.ndarray:
 # World position of a marker seen at (range, bearing) from a robot at `pose`
 def marker_world_position(pose, rng: float, bearing: float) -> np.ndarray:
     return robot_to_world(pose, xy_from_range_bearing(rng, bearing))
+
+# Measurement noise
+# Covariance R of the marker measurement [range, bearing] for the EKF.
+# First-order model: corner noise sigma_px -> depth error ~ Z^2 * sigma_px / (f * marker_size),
+# bearing error ~ sigma_px / (2 f) (centroid of 4 corners). Verify/tune with Monte-Carlo trials.
+def marker_measurement_covariance(rng: float, intr: CameraIntrinsics, marker_size: float,
+                                sigma_px: float = 0.5, cfg: Config = CONFIG) -> np.ndarray:
+    f = float(intr.K[0, 0])
+    z = max(rng - camera_forward_offset(cfg), 1e-3)
+    sigma_r = z * z * sigma_px / (f * marker_size)
+    sigma_b = sigma_px / (2.0 * f)
+    return np.diag([sigma_r ** 2, sigma_b ** 2])
+
+# LiDAR scan (ranges, angles in the robot frame) -> valid points (N, 2) in the robot frame.
+# Defaults follow the TurtleBot3 LDS-01 (0.12 - 3.5 m). `offset` = LiDAR position in the robot frame [m].
+def lidar_to_robot(ranges, angles, r_min: float = 0.12, r_max: float = 3.5, offset=(0.0, 0.0)):
+    r = np.asarray(ranges, dtype=float).ravel()
+    a = np.asarray(angles, dtype=float).ravel()
+    ok = np.isfinite(r) & (r >= r_min) & (r <= r_max)
+    pts = np.stack([r[ok] * np.cos(a[ok]), r[ok] * np.sin(a[ok])], axis=1) + np.asarray(offset, dtype=float)
+    return pts, ok
 
 # Consistency checks
 def check_units(cfg: Config = CONFIG) -> list[str]:
@@ -351,7 +361,7 @@ def get_calibration(cfg: Config = CONFIG, intrinsics: Optional[CameraIntrinsics]
     calib_obj = Calibration(intr, camera_forward_offset(cfg), cfg.camera.marker_size)
     
     # Validate the effectiveness of lens distortion removal if a sample image is provided
-    if sample_image is not None:
+    if sample_image is not None and intr.is_calibrated:
         val_res = validate_calibration_image_effect(sample_image, calib_obj.K, calib_obj.dist_coeffs)
         if val_res["status"] == "success":
             print(f"[Calibration Check] Undistort check passed. Mean pixel shift: {val_res['mean_pixel_difference']:.3f} px")
@@ -362,15 +372,17 @@ def get_calibration(cfg: Config = CONFIG, intrinsics: Optional[CameraIntrinsics]
 def validate_calibration_image_effect(raw_image: np.ndarray, K: np.ndarray, dist_coeffs: np.ndarray) -> dict:
     if raw_image is None or raw_image.size == 0:
         return {"status": "error", "message": "Raw image is empty"}
-    
-    # Use the calibration parameters to undistort the raw image
+
     undistorted_image = cv2.undistort(raw_image, K, dist_coeffs)
 
-    # Calculate the mean pixel difference between the raw and undistorted images as a quality metric
-    diff = cv2.absdiff(cv2.cvtColor(raw_image, cv2.COLOR_RGB2GRAY), 
-                       cv2.cvtColor(undistorted_image, cv2.COLOR_RGB2GRAY))
-    mean_diff = float(np.mean(diff))
-    
+    if raw_image.ndim == 3:
+        raw_gray = cv2.cvtColor(raw_image, cv2.COLOR_RGB2GRAY)
+        und_gray = cv2.cvtColor(undistorted_image, cv2.COLOR_RGB2GRAY)
+    else:
+        raw_gray, und_gray = raw_image, undistorted_image
+
+    mean_diff = float(np.mean(cv2.absdiff(raw_gray, und_gray)))
+
     return {
         "status": "success",
         "mean_pixel_difference": mean_diff,

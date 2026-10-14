@@ -11,6 +11,7 @@ import threading
 import time
 import webbrowser
 from dataclasses import dataclass, replace
+from types import SimpleNamespace
 from logging.handlers import RotatingFileHandler
 from typing import Callable, Optional, Sequence
 
@@ -36,6 +37,15 @@ MARKER_CLEARANCE = 0.10             # [m] min gap between an obstacle and the ma
 RADIUS_RANGE = (0.15, 0.30)         # [m] obstacle radius range used by Randomize
 MAX_RANDOM_ATTEMPTS = 2000
 COMMANDS = ("apply", "start", "pause", "reset")
+CAMERA_EVERY = 3                    # publish one camera frame every N control steps
+JPEG_QUALITY = 80
+CAMERA_NAME = None
+CAMERA_SIZE = (240, 320)
+DRAW_LIDAR = True
+LIDAR_Z = 0.18
+LIDAR_STRIDE = 4
+LIDAR_ANGLE0 = 0.0
+LIDAR_RGBA = (0.1, 1.0, 0.2, 0.6)
 
 # Pure logic
 def _wrap(angle: float) -> float:
@@ -197,6 +207,29 @@ class CollisionCounter:
         self.count = 0
         self._prev = False
 
+# Camera frame -> JPEG (display only, never fed back to the controller)
+def encode_jpeg(image, quality: int = JPEG_QUALITY) -> Optional[bytes]:
+    if (not isinstance(image, np.ndarray) or image.dtype != np.uint8
+            or image.ndim != 3 or image.shape[2] != 3):
+        return None
+    try:
+        import cv2                                   # lazy: module stays importable without it
+        ok, buf = cv2.imencode(".jpg", cv2.cvtColor(image, cv2.COLOR_RGB2BGR),
+                            [cv2.IMWRITE_JPEG_QUALITY, int(quality)])
+    except Exception:
+        LOG.exception("JPEG encoding failed")
+        return None
+    return buf.tobytes() if ok else None
+
+def publish_camera(state, frame, step: int, every: int = CAMERA_EVERY) -> bool:
+    if state is None or step % every != 0:
+        return False
+    jpeg = encode_jpeg(getattr(frame, "image", None))   # <-- đổi đúng tên trường ảnh
+    if jpeg is None:
+        return False
+    state.publish_frame(jpeg)
+    return True
+
 # ----------------------------------------------------------------------------
 # Strict request parsing: JSON <-> Config
 # ----------------------------------------------------------------------------
@@ -283,6 +316,7 @@ class SharedState:
         self._running = False
         self._trial_id = 0
         self._stop = threading.Event()
+        self._frame: Optional[bytes] = None
 
     # ---- web side ----
     def submit(self, name: str, cfg: Optional[Config] = None, seed: Optional[int] = None) -> None:
@@ -329,6 +363,15 @@ class SharedState:
     def new_trial(self) -> None:
         with self._lock:
             self._trial_id += 1
+            self._frame = None
+
+    def publish_frame(self, jpeg: bytes) -> None:
+        with self._lock:
+            self._frame = jpeg
+
+    def latest_frame(self) -> Optional[bytes]:
+        with self._lock:
+            return self._frame
 
     def set_error(self, text: str) -> None:
         with self._lock:
@@ -377,6 +420,9 @@ def _loop(state: SharedState, trial, handle, dt: float) -> str:
             else:
                 with handle.lock():
                     msg = trial.step()
+                    draw = getattr(trial, "draw_lidar", None)
+                    if draw is not None:
+                        draw(handle.user_scn)
             state.publish(msg)
             if trial.finished:
                 running = False
@@ -435,9 +481,11 @@ def _pipeline():
 
 class PipelineTrial:
     def __init__(self, cfg: Config, seed: Optional[int] = None,
-                stop_on_collision: bool = True, verbose: bool = True) -> None:
+                stop_on_collision: bool = True, verbose: bool = True,
+                state: Optional[SharedState] = None) -> None:
         m = _pipeline()
         self._m, self.cfg = m, cfg
+        self.state = state
         self.stop_on_collision, self.verbose = stop_on_collision, verbose
         self.sim = m.Simulation(cfg, seed=seed)
         try:
@@ -459,6 +507,10 @@ class PipelineTrial:
         self._goal = self._min_lidar = math.nan
         self._mode = ""
         self._step = 0
+        self._renderer = None
+        self._cam_id = -1
+        self._cam_failed = False
+        self._last_lidar = None
         self._report_every = max(1, int(round(1.0 / cfg.sim.control_dt)))
         if verbose:
             print(m.theory_block(cfg, self.estimator))
@@ -476,6 +528,57 @@ class PipelineTrial:
 
     def status(self) -> StatusMessage:
         return self._status()
+    
+    def _render_camera(self):
+        if self._cam_failed:
+            return None
+        try:
+            import mujoco
+            if self._renderer is None:
+                model = self.model
+                names = [mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_CAMERA, i)
+                        for i in range(model.ncam)]
+                print("Cameras in model:", names)
+                if not names:
+                    raise RuntimeError("model has no camera")
+                self._cam_id = names.index(CAMERA_NAME) if CAMERA_NAME in names else 0
+                h, w = CAMERA_SIZE
+                self._renderer = mujoco.Renderer(model, height=h, width=w)
+            self._renderer.update_scene(self.data, camera=self._cam_id)
+            return self._renderer.render()          # uint8 RGB (H, W, 3)
+        except Exception:
+            LOG.exception("Camera rendering disabled")
+            self._cam_failed = True                 # do not retry every step
+            return None
+        
+    def draw_lidar(self, scn) -> None:
+        import mujoco
+        scn.ngeom = 0
+        lidar = self._last_lidar
+        ranges = getattr(lidar, "ranges", None)
+        if not DRAW_LIDAR or ranges is None:
+            return
+        ranges = np.asarray(ranges, dtype=float)
+        valid = np.asarray(lidar.valid, dtype=bool)
+        n = ranges.size
+        angles = getattr(lidar, "angles", None)
+        angles = (np.asarray(angles, dtype=float) if angles is not None
+                  else LIDAR_ANGLE0 + np.arange(n) * (2.0 * math.pi / n))
+        x, y, yaw = (float(v) for v in self.sim.ground_truth())     # display only
+        origin = np.array([x, y, LIDAR_Z])
+        rgba = np.array(LIDAR_RGBA, dtype=np.float32)
+        count = 0
+        for i in range(0, n, LIDAR_STRIDE):
+            if not valid[i] or count >= scn.maxgeom:
+                continue
+            a = yaw + angles[i]
+            end = origin + ranges[i] * np.array([math.cos(a), math.sin(a), 0.0])
+            g = scn.geoms[count]
+            mujoco.mjv_initGeom(g, mujoco.mjtGeom.mjGEOM_CAPSULE,
+                                np.zeros(3), np.zeros(3), np.zeros(9), rgba)
+            mujoco.mjv_connector(g, mujoco.mjtGeom.mjGEOM_CAPSULE, 0.004, origin, end)
+            count += 1
+        scn.ngeom = count
 
     def step(self) -> StatusMessage:
         if self.finished:
@@ -485,6 +588,9 @@ class PipelineTrial:
 
         # 1) sensing and estimation (no ground truth)
         frame = self.sensing.read()
+        self._last_lidar = frame.lidar
+        if self.state is not None and self._step % CAMERA_EVERY == 0:
+            publish_camera(self.state, SimpleNamespace(image=self._render_camera()), self._step)
         est.predict(frame.odometry.ds, frame.odometry.dtheta)
         est.update(frame.marker)
         est.update_lidar(frame.lidar)
@@ -556,6 +662,11 @@ class PipelineTrial:
         m.print_report(res, self.cfg)
 
     def close(self) -> None:
+        if self._renderer is not None:
+            try:
+                self._renderer.close()
+            except Exception:
+                LOG.exception("Closing the camera renderer failed")
         self.sim.close()
 
 # ----------------------------------------------------------------------------
@@ -634,7 +745,8 @@ def create_app(state: SharedState, token: str, port: int = DEFAULT_PORT,
         resp.headers["Content-Type"] = "text/html; charset=utf-8"
         resp.headers["Content-Security-Policy"] = (
             f"default-src 'none'; script-src 'nonce-{nonce}'; style-src 'nonce-{nonce}'; "
-            "connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+            "img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; "   # <-- sửa dòng này
+            "frame-ancestors 'none'")
         return resp
 
     @app.get("/api/health")
@@ -652,6 +764,15 @@ def create_app(state: SharedState, token: str, port: int = DEFAULT_PORT,
                     defaults=config_to_payload(base_cfg, base_cfg.sim.seed),
                     status=state.snapshot(),
                     limits={"max_obstacles": MAX_OBSTACLES, "max_waypoints": MAX_WAYPOINTS})
+    
+    @app.get("/api/camera.jpg")
+    def camera():
+        jpeg = state.latest_frame()
+        if jpeg is None:
+            return json_error("No frame yet.", 404)
+        resp = make_response(jpeg)
+        resp.headers["Content-Type"] = "image/jpeg"
+        return resp
 
     @app.post("/api/apply")
     def apply_config():
@@ -762,7 +883,7 @@ def main(argv=None) -> int:
     if not args.no_browser:
         webbrowser.open(url)
     try:
-        serve_simulation(state, lambda c, s: PipelineTrial(c, s), use_viewer, cfg.sim.control_dt)
+        serve_simulation(state, lambda c, s: PipelineTrial(c, s, state=state), use_viewer, cfg.sim.control_dt)
     except KeyboardInterrupt:
         print("\nStopping...")
     finally:
@@ -803,6 +924,7 @@ button { margin: 2px; padding: 4px 10px; }
 .badge.failed, .badge.error { background: #c0392b66; }
 .badge.navigating, .badge.docking { background: #2e86c166; }
 .note { font-size: .8rem; opacity: .75; }
+#cam { display: block; width: 100%; max-width: 480px; background: #000; border-radius: 4px; } /* NEW */
 </style>
 </head>
 <body>
@@ -861,6 +983,9 @@ button { margin: 2px; padding: 4px 10px; }
     </table>
     <div class="note">Detailed logs (EKF, NIS, RMSE) are printed in the terminal.
       Editing is locked while the robot is running.</div>
+  </fieldset>
+  <fieldset><legend>Camera <small>(display only)</small></legend>   <!-- NEW -->
+    <img id="cam" alt="camera view">
   </fieldset>
 </div>
 </div>
@@ -1036,6 +1161,14 @@ async function poll() {
     }
     setTimeout(poll, 200);
 }
+
+// NEW: camera view (latest-frame polling; the next request starts after the previous one finishes)
+const cam = $('cam');
+function nextFrame() { cam.src = '/api/camera.jpg?t=' + Date.now(); }
+cam.addEventListener('load', () => setTimeout(nextFrame, 100));
+cam.addEventListener('error', () => setTimeout(nextFrame, 500));
+nextFrame();
+
 poll();
 })();
 </script>

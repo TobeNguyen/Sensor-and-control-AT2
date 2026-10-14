@@ -156,6 +156,61 @@ class TestMarkerPose(unittest.TestCase):
         img = np.array([[300, 220], [300, 260], [340, 260], [340, 220]], dtype=float)
         self.assertIsNone(cal.solve_marker_pose(img, K, np.zeros(5), self.S))
 
+    def test_validate_estimated_pose(self):
+        K = cal.camera_matrix(CONFIG)
+        rvec, tvec = self._true_pose(0.2, (-0.1, 0.0, 1.0))
+        img, _ = cv2.projectPoints(cal.marker_object_points(self.S), rvec, tvec, K, np.zeros(5))
+        img = img.reshape(4, 2)
+        ok, err = cal.validate_estimated_pose(img, rvec, tvec, K, np.zeros(5), self.S)
+        self.assertTrue(ok)
+        self.assertAlmostEqual(err, 0.0, places=6)
+        bad = img + np.array([5.0, 0.0])                      # 5 px shift of all corners
+        ok, err = cal.validate_estimated_pose(bad, rvec, tvec, K, np.zeros(5), self.S)
+        self.assertFalse(ok)
+        self.assertAlmostEqual(err, 5.0, places=3)
+        ok, err = cal.validate_estimated_pose(None, rvec, tvec, K, np.zeros(5), self.S)
+        self.assertFalse(ok)
+        self.assertEqual(err, float("inf"))
+        ok, _ = cal.validate_estimated_pose(img[:3], rvec, tvec, K, np.zeros(5), self.S)
+        self.assertFalse(ok)
+
+    def test_pose_error_with_pixel_noise(self):
+        K = cal.camera_matrix(CONFIG)
+        rvec, tvec = self._true_pose(0.2, (-0.1, 0.0, 1.0))
+        clean, _ = cv2.projectPoints(cal.marker_object_points(self.S), rvec, tvec, K, np.zeros(5))
+        clean = clean.reshape(4, 2)
+        rng_ = np.random.default_rng(0)
+        errs = []
+        for _ in range(200):
+            noisy = clean + rng_.normal(0, 0.5, (4, 2))
+            sol = cal.solve_marker_pose(noisy, K, np.zeros(5), self.S)
+            if sol is not None:
+                errs.append(abs(sol[1][2, 0] - 1.0))
+        self.assertGreater(len(errs), 150)             # success rate > 75 %
+        self.assertLess(np.mean(errs), 0.03)           # mean depth error < 3 cm
+        print(f"\n[noise 0.5px] success {len(errs)}/200, mean depth err {np.mean(errs)*100:.2f} cm")
+
+    def test_reprojection_gate_rejects_noisy_pose(self):
+        K = cal.camera_matrix(CONFIG)
+        rvec, tvec = self._true_pose(0.2, (-0.1, 0.0, 1.0))
+        clean, _ = cv2.projectPoints(cal.marker_object_points(self.S), rvec, tvec, K, np.zeros(5))
+        noisy = clean.reshape(4, 2) + np.random.default_rng(1).normal(0, 1.0, (4, 2))
+        self.assertIsNotNone(cal.solve_marker_pose(noisy, K, np.zeros(5), self.S, max_reproj_px=5.0))
+        self.assertIsNone(cal.solve_marker_pose(noisy, K, np.zeros(5), self.S, max_reproj_px=1e-3))
+
+    def test_distortion_must_be_compensated(self):
+        K = cal.camera_matrix(CONFIG)
+        dist = np.array([-0.3, 0.1, 0.0, 0.0, 0.0])
+        rvec, tvec = self._true_pose(0.2, (0.25, 0.0, 1.0))
+        img, _ = cv2.projectPoints(cal.marker_object_points(self.S), rvec, tvec, K, dist)
+        sol_ok = cal.solve_marker_pose(img, K, dist, self.S)
+        self.assertIsNotNone(sol_ok)
+        err_ok = abs(sol_ok[1][2, 0] - 1.0)
+        self.assertLess(err_ok, 0.02)
+        sol_bad = cal.solve_marker_pose(img, K, np.zeros(5), self.S)   # ignoring distortion
+        if sol_bad is not None:
+            self.assertGreater(abs(sol_bad[1][2, 0] - 1.0), err_ok)
+
 
 class TestWorldFrame(unittest.TestCase):
     def test_round_trip(self):
@@ -167,7 +222,7 @@ class TestWorldFrame(unittest.TestCase):
         np.testing.assert_allclose(cal.robot_to_world((0, 0, math.pi / 2), [1, 0]), [0, 1], atol=1e-12)
 
     def test_marker_world_position_matches_ekf_measurement_model(self):
-        landmark = np.array(CONFIG.env.dock_pose[:2]) if hasattr(CONFIG, "env") else np.array([1.9, 1.0])
+        landmark = np.array([1.9, 1.0])
         pose = np.array([0.5, 0.2, 0.7])
         rng, bearing = measurement_model(pose, landmark)
         np.testing.assert_allclose(cal.marker_world_position(pose, rng, bearing), landmark, atol=1e-9)
@@ -196,6 +251,14 @@ class TestConsistencyChecks(unittest.TestCase):
         wrong_fov = cal.CameraIntrinsics(K2, np.zeros(5), intr.image_size, cal.SOURCE_NOMINAL)
         self.assertEqual(cal.check_frame_conventions(CONFIG, shifted), [])
         self.assertTrue(cal.check_frame_conventions(CONFIG, wrong_fov))
+
+    def test_each_unit_error_detected_separately(self):
+        from dataclasses import replace
+        cam = CONFIG.camera
+        self.assertEqual(len(cal.check_units(replace(CONFIG, camera=replace(cam, marker_size=150.0)))), 1)
+        self.assertEqual(len(cal.check_units(replace(CONFIG, camera=replace(cam, fovy_deg=1.0)))), 1)
+        big_robot = replace(CONFIG.robot, body_radius=1.0)             # offset 1.01 m > 0.5 m
+        self.assertEqual(len(cal.check_units(replace(CONFIG, robot=big_robot))), 1)
 
 
 class TestCalibrationProcedure(unittest.TestCase):
@@ -284,6 +347,69 @@ class TestPersistenceAndBundle(unittest.TestCase):
         bad = cal.CameraIntrinsics(np.eye(3), np.zeros(5), (640, 480), cal.SOURCE_NOMINAL)
         with self.assertRaises(ValueError):
             cal.get_calibration(CONFIG, bad)
+
+    def test_load_rejects_corrupt_file(self):
+        import json
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "bad.json"
+            p.write_text(json.dumps({"K": [[1, 0], [0, 1]], "dist_coeffs": [0] * 5,
+                                    "image_size": [640, 480], "source": "nominal_mujoco"}))
+            with self.assertRaises(ValueError):
+                cal.load_intrinsics(p)
+            p.write_text(json.dumps({"K": cal.camera_matrix(CONFIG).tolist(), "dist_coeffs": [0] * 5,
+                                    "image_size": [640, 480], "source": "guess"}))
+            with self.assertRaises(ValueError):
+                cal.load_intrinsics(p)
+
+    def test_sample_image_gray_does_not_crash(self):
+        gray = np.full((480, 640), 128, np.uint8)
+        c = cal.get_calibration(CONFIG, sample_image=gray)              # nominal -> check is skipped
+        self.assertFalse(c.intrinsics.is_calibrated)
+        res = cal.validate_calibration_image_effect(gray, c.K, c.dist_coeffs)
+        self.assertEqual(res["status"], "success")
+        self.assertAlmostEqual(res["mean_pixel_difference"], 0.0, places=6)
+        self.assertEqual(cal.validate_calibration_image_effect(np.empty(0), c.K, c.dist_coeffs)["status"], "error")
+
+class TestNoiseModelAndLidar(unittest.TestCase):
+    def test_covariance_properties(self):
+        intr = cal.nominal_intrinsics(CONFIG)
+        S = CONFIG.camera.marker_size
+        R1 = cal.marker_measurement_covariance(0.8, intr, S)
+        R2 = cal.marker_measurement_covariance(2.0, intr, S)
+        np.testing.assert_allclose(R1, R1.T)
+        self.assertTrue(np.all(np.linalg.eigvalsh(R1) > 0))
+        self.assertGreater(R2[0, 0], R1[0, 0])                 # range noise grows with distance
+        R3 = cal.marker_measurement_covariance(0.8, intr, S, sigma_px=1.0)
+        self.assertGreater(R3[1, 1], R1[1, 1])                 # more pixel noise -> larger R
+
+    def test_covariance_matches_monte_carlo(self):
+        """The analytic range sigma should be the same order as the simulated one."""
+        K = cal.camera_matrix(CONFIG)
+        S = CONFIG.camera.marker_size
+        Rx = cv2.Rodrigues(np.array([math.pi, 0.0, 0.0]))[0]
+        rvec, tvec = cv2.Rodrigues(Rx)[0], np.array([[0.0], [0.0], [1.0]])
+        clean, _ = cv2.projectPoints(cal.marker_object_points(S), rvec, tvec, K, np.zeros(5))
+        g = np.random.default_rng(2)
+        rs = []
+        for _ in range(300):
+            sol = cal.solve_marker_pose(clean.reshape(4, 2) + g.normal(0, 0.5, (4, 2)), K, np.zeros(5), S)
+            if sol is not None:
+                rs.append(cal.marker_pose_from_pnp(sol[0], sol[1], CONFIG)[0])
+        sim = float(np.std(rs))
+        ana = math.sqrt(cal.marker_measurement_covariance(1.0 + OFF, cal.nominal_intrinsics(CONFIG), S)[0, 0])
+        self.assertGreater(sim / ana, 0.2)
+        self.assertLess(sim / ana, 5.0)
+        print(f"\n[range sigma] simulated {sim*1000:.1f} mm vs analytic {ana*1000:.1f} mm")
+
+    def test_lidar_filtering_and_frame(self):
+        ranges = [0.05, 1.0, np.inf, 2.0, np.nan, 4.0]
+        angles = [0.0, 0.0, 0.0, math.pi / 2, 0.0, 0.0]
+        pts, ok = cal.lidar_to_robot(ranges, angles)
+        self.assertEqual(pts.shape, (2, 2))                    # only 1.0 m and 2.0 m remain
+        np.testing.assert_allclose(pts[0], [1.0, 0.0], atol=1e-12)
+        np.testing.assert_allclose(pts[1], [0.0, 2.0], atol=1e-12)   # +90 deg = robot left (+y)
+        pts_off, _ = cal.lidar_to_robot([1.0], [0.0], offset=(-0.05, 0.0))
+        np.testing.assert_allclose(pts_off[0], [0.95, 0.0], atol=1e-12)
 
 
 if __name__ == "__main__":

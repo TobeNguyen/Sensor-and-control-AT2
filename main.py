@@ -14,7 +14,7 @@ from typing import Optional
 
 import numpy as np
 
-from calibration import get_calibration
+from calibration import get_calibration, marker_measurement_covariance
 from config import CONFIG, RESULTS_DIR, Config
 from controller import LQRTracker
 from docking import DockingController
@@ -148,10 +148,15 @@ def theory_block(cfg: Config = CONFIG, estimator=None) -> str:
         f"frame conventions OK | camera offset {cal.forward_offset:.2f} m",
         f"LiDAR: {cfg.lidar.num_beams} beams, {cfg.lidar.range_min}-{cfg.lidar.range_max} m, "
         f"sigma {cfg.lidar.noise_std} m | camera period 0.1 s (Sensing default)",
+                "Marker noise model (sigma_px = 0.5): " + ", ".join(
+        f"{d} m -> ({math.sqrt(marker_measurement_covariance(d, cal.intrinsics, cfg.camera.marker_size)[0, 0]) * 1000:.1f} mm, "
+        f"{math.sqrt(marker_measurement_covariance(d, cal.intrinsics, cfg.camera.marker_size)[1, 1]):.4f} rad)"
+        for d in (0.5, 1.0, 2.0)),
         "=== C. ESTIMATION (estimator.py) ===",
         f"{type(estimator).__name__ if estimator is not None else 'EKF'} | "
         f"R std (range, bearing) = ({cfg.camera.range_noise_std} m, {cfg.camera.bearing_noise_std} rad) | "
-        f"P0 std = {ekf_cfg.init_pose_std} | gate = {getattr(estimator, 'gate', 'n/a')}",
+        f"P0 std = {ekf_cfg.init_pose_std} | gate = {getattr(estimator, 'gate', 'n/a')} | "
+        f"marker R: {'per-measurement' if getattr(estimator, 'use_marker_cov', False) else 'fixed (config)'}",
         "=== D. CONTROL (controller.py, LQR) ===",
         f"Q = diag{cfg.controller.q_diag}, R = diag{cfg.controller.r_diag}",
         f"K = {np.round(tracker.K, 3).tolist()}",
@@ -206,12 +211,19 @@ def print_report(result: RunResult, cfg: Config = CONFIG, dr_rmse: Optional[floa
     m = result.metrics(cfg)
     dr = "not run (use --compare)" if dr_rmse is None else f"{dr_rmse:.3f} m"
     print("=== FINAL REPORT ===")
-    print(f"B. Sensing    : mean valid LiDAR beams {r['mean_lidar_valid']:.0f}/{cfg.lidar.num_beams}")
+    n_cam, n_det = result.camera_stats
+    print(f"B. Sensing    : mean valid LiDAR beams {r['mean_lidar_valid']:.0f}/{cfg.lidar.num_beams} | "
+        f"marker accepted {n_det}/{n_cam} camera frames ({100 * n_det / max(1, n_cam):.0f} %)")
     print(f"C. Estimation : marker updates {r['marker_updates']} | "
         f"position RMSE {r['position_rmse']:.3f} m | heading RMSE {r['heading_rmse']:.3f} rad")
     print(f"                mean NEES {r['mean_nees']:.2f} (consistent filter: ~3) | "
         f"final sigma {np.round(r['final_sigma'], 4).tolist()}")
     print(f"                dead-reckoning baseline RMSE: {dr}")
+    d = result.diag
+    if d:
+        print(f"                gate rejected {d['n_rejected']} (forced recoveries {d['n_recovered']}) | "
+            f"mean NIS/dof {d['nis_per_dof']:.2f} (consistent: ~1) | "
+            f"LiDAR updates {d['n_lidar_updates']} (rejected {d['n_lidar_rejected']})")
     print(f"D. Control    : mean/max v {r['mean_v']:.2f}/{r['max_v']:.2f} m/s | "
         f"mean/max |w| {r['mean_abs_w']:.2f}/{r['max_abs_w']:.2f} rad/s | "
           f"saturated {100 * r['saturated_fraction']:.1f} % of steps")
@@ -234,6 +246,8 @@ class RunResult:
     estimate: np.ndarray        # final estimated pose
     truth: np.ndarray           # final true pose (EVALUATION ONLY)
     log: TrialLog
+    camera_stats: tuple = (0, 0)                # (camera frames processed, accepted detections)
+    diag: dict = field(default_factory=dict)    # EKF counters + NIS (evaluation/diagnostics)
 
     def metrics(self, cfg: Config = CONFIG) -> dict:
         err = self.estimate - self.truth
@@ -271,12 +285,15 @@ def _viewer(sim: Simulation, enabled: bool):
 def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=None,
                 scene_dir: Optional[Path] = None, viewer: bool = False,
                 stop_on_collision: bool = True, verbose: bool = False,
-                dock_use_estimate: bool = True) -> RunResult:
-    estimator = EKFEstimator(cfg, gate=9.21) if estimator is None else estimator
+                dock_use_estimate: bool = True, marker_sigma_px: float = 0.5,
+                use_marker_cov: bool = False) -> RunResult:
+    estimator = (EKFEstimator(cfg, gate=9.21, use_marker_cov=use_marker_cov)
+                if estimator is None else estimator)
     nav, dock, log = Navigator(cfg), DockingController(cfg), TrialLog()
     phase, reason = Phase.NAVIGATE, "timeout"
     nav_time: Optional[float] = None
     collided_any = False
+    cam_stats = (0, 0)
     start = np.array(cfg.env.start_pose, dtype=float)
     dt = cfg.sim.control_dt
     report_every = max(1, int(round(1.0 / dt)))      # one table row per simulated second
@@ -287,7 +304,7 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
 
     with Simulation(cfg, seed=seed, scene_dir=scene_dir) as sim:
         sim.reset(tuple(start))
-        sensing = Sensing(sim, cfg)
+        sensing = Sensing(sim, cfg, marker_sigma_px=marker_sigma_px)
         estimator.reset(start)               # known start pose (a prior, not ground truth)
 
         with _viewer(sim, viewer) as view:
@@ -352,14 +369,21 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
                     time.sleep(max(0.0, dt - (time.perf_counter() - t0)))   # real-time pacing
                 step += 1
 
+        cam_stats = (sensing.n_camera, sensing.n_detect)
         truth = sim.ground_truth()           # final pose, evaluation only
         sim_time = sim.time
 
     if verbose:
         print(table_footer())
 
+    diag = {k: int(getattr(estimator, k, 0)) for k in
+            ("n_updates", "n_rejected", "n_recovered", "n_lidar_updates", "n_lidar_rejected")}
+    diag["nis_per_dof"] = (estimator.mean_nis_per_dof()
+                        if hasattr(estimator, "mean_nis_per_dof") else float("nan"))
+
     return RunResult(phase is Phase.DONE, reason, sim_time, nav_time, collided_any, phase,
-                    np.array(estimator.x, dtype=float), truth, log)
+                    np.array(estimator.x, dtype=float), truth, log,
+                    camera_stats=cam_stats, diag=diag)
 
 # Save trajectory and estimation error with its uncertainty
 def plot_run(result: RunResult, cfg: Config = CONFIG, path: Optional[Path] = None) -> Path:
@@ -415,6 +439,45 @@ def _ensure_mjpython() -> None:
     # Launch via python so a broken shebang (spaces in the path) is bypassed
     os.execv(sys.executable, [sys.executable, str(mjpython), *sys.argv])
 
+# Repeated trials with different noise seeds: success rate and mean +- std of the key metrics
+def run_trials(n: int, seed0: int = 0, cfg: Config = CONFIG, use_marker_cov: bool = False,
+            marker_sigma_px: float = 0.5, scene_dir: Optional[Path] = None) -> int:
+    rows = []
+    print(f"marker R: {'per-measurement' if use_marker_cov else 'fixed'} | sigma_px {marker_sigma_px}")
+    print(f"{'seed':>5} {'result':>7} {'reason':>15} {'time':>6} {'pos RMSE':>9} "
+        f"{'NEES':>6} {'NIS/dof':>8} {'det %':>6} {'rej':>4} {'dock lat':>9}")
+    for i in range(n):
+        res = run_pipeline(cfg, seed=seed0 + i, scene_dir=scene_dir,
+                        marker_sigma_px=marker_sigma_px, use_marker_cov=use_marker_cov)
+        rep = compute_report(res, cfg)
+        n_cam, n_det = res.camera_stats
+        row = {"ok": res.success, "reason": res.reason, "time": res.time,
+            "rmse": rep.get("position_rmse", float("nan")),
+            "nees": rep.get("mean_nees", float("nan")),
+            "nis": res.diag.get("nis_per_dof", float("nan")),
+               "det": 100.0 * n_det / max(1, n_cam),
+            "rej": res.diag.get("n_rejected", 0),
+            "lat": res.metrics(cfg)["dock_lateral"]}
+        rows.append(row)
+        print(f"{seed0 + i:>5} {'OK' if res.success else 'FAIL':>7} {res.reason:>15} {row['time']:>6.1f} "
+            f"{row['rmse']:>9.3f} {row['nees']:>6.2f} {row['nis']:>8.2f} {row['det']:>6.0f} "
+            f"{row['rej']:>4} {row['lat']:>9.3f}", flush=True)
+
+    ok = np.array([r["ok"] for r in rows])
+    print(f"\nSuccess rate : {int(ok.sum())}/{n} ({100 * ok.mean():.0f} %)")
+    for label, key in (("Position RMSE [m]", "rmse"), ("Mean NEES (~3)", "nees"),
+                    ("Mean NIS/dof (~1)", "nis"), ("Marker accepted [%]", "det"),
+                    ("Gate rejections", "rej"), ("Dock lateral [m]", "lat")):
+        v = np.array([r[key] for r in rows], dtype=float)
+        print(f"{label:<20}: {np.nanmean(v):.3f} +- {np.nanstd(v):.3f}")
+    failures = {}
+    for r in rows:
+        if not r["ok"]:
+            failures[r["reason"]] = failures.get(r["reason"], 0) + 1
+    if failures:
+        print("Failure causes:", failures)
+    return 0 if ok.all() else 1
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Track A: navigation + visual docking in MuJoCo")
     parser.add_argument("--seed", type=int, default=None, help="noise seed (default: config)")
@@ -425,15 +488,25 @@ def build_parser() -> argparse.ArgumentParser:
                         help="also run a dead-reckoning baseline (no marker updates) for comparison")
     parser.add_argument("--dock-raw", action="store_true",
                         help="dock on the raw marker measurement instead of the EKF estimate")
+    parser.add_argument("--trials", type=int, default=0,
+                        help="run N headless trials (seeds seed..seed+N-1) and print statistics")
+    parser.add_argument("--marker-cov", action="store_true",
+                        help="EKF uses the per-measurement marker covariance from sensing.py")
+    parser.add_argument("--sigma-px", type=float, default=0.5,
+                        help="assumed ArUco corner noise [px] used to build the marker covariance")
     return parser
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
+    if args.trials > 0:
+        return run_trials(args.trials, args.seed or 0, CONFIG,
+                        use_marker_cov=args.marker_cov, marker_sigma_px=args.sigma_px)
     use_viewer = not args.no_viewer
     if use_viewer:
         _ensure_mjpython()
     result = run_pipeline(CONFIG, seed=args.seed, viewer=use_viewer, verbose=True,
-                        dock_use_estimate=not args.dock_raw)
+                        dock_use_estimate=not args.dock_raw,
+                        marker_sigma_px=args.sigma_px, use_marker_cov=args.marker_cov)
 
     dr_rmse = None
     if args.compare:

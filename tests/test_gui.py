@@ -7,19 +7,29 @@ import time
 import unittest
 from contextlib import contextmanager
 from dataclasses import replace
+from types import SimpleNamespace
+from unittest import mock
+
+import numpy as np
 
 import gui
 from config import CONFIG
 from gui import (MAX_OBSTACLES, MAX_PENDING_COMMANDS, ApiError, CollisionCounter,
                 CommandRejected, SharedState, StatusMessage, config_to_payload, create_app,
-                make_config, parse_payload, randomize_obstacles, serve_simulation,
-                status_to_dict, validate_config)
+                encode_jpeg, make_config, parse_payload, publish_camera,
+                randomize_obstacles, serve_simulation, status_to_dict, validate_config)
 
 try:
     import flask  # noqa: F401
     HAVE_FLASK = True
 except ImportError:
     HAVE_FLASK = False
+
+try:
+    import cv2  # noqa: F401
+    HAVE_CV2 = True
+except ImportError:
+    HAVE_CV2 = False
 
 START, DOCK = CONFIG.env.start_pose, CONFIG.env.dock_pose
 INTERMEDIATE = CONFIG.env.waypoints[:-1]
@@ -245,6 +255,80 @@ class TestSharedState(unittest.TestCase):
         self.assertTrue(self.state.wait_for_rebuild())      # ignores 'start', returns on 'apply'
         self.state.request_stop()
         self.assertFalse(self.state.wait_for_rebuild())
+
+# ----------------------------------------------------------------------------
+class TestCameraFrame(unittest.TestCase):
+    def setUp(self):
+        self.state = SharedState(CONFIG, 1)
+
+    def test_no_frame_initially(self):
+        self.assertIsNone(self.state.latest_frame())
+
+    def test_publish_keeps_only_the_latest(self):
+        self.state.publish_frame(b"one")
+        self.state.publish_frame(b"two")
+        self.assertEqual(self.state.latest_frame(), b"two")
+
+    def test_new_trial_clears_old_frame(self):
+        self.state.publish_frame(b"old")
+        self.state.new_trial()
+        self.assertIsNone(self.state.latest_frame())
+
+
+class TestEncodeJpeg(unittest.TestCase):
+    def test_rejects_bad_input(self):
+        bad = {
+            "none": None,
+            "list": [[0, 0, 0]],
+            "float": np.zeros((4, 4, 3), dtype=np.float32),
+            "gray": np.zeros((4, 4), dtype=np.uint8),
+            "four channels": np.zeros((4, 4, 4), dtype=np.uint8),
+        }
+        for name, image in bad.items():
+            with self.subTest(name):
+                self.assertIsNone(encode_jpeg(image))
+
+    @unittest.skipUnless(HAVE_CV2, "opencv is not installed")
+    def test_valid_image_gives_jpeg_bytes(self):
+        out = encode_jpeg(np.zeros((48, 64, 3), dtype=np.uint8))
+        self.assertIsInstance(out, bytes)
+        self.assertTrue(out.startswith(b"\xff\xd8"))       # JPEG start-of-image marker
+
+    def test_encoder_failure_returns_none(self):
+        image = np.zeros((4, 4, 3), dtype=np.uint8)
+        with mock.patch.dict("sys.modules", {"cv2": None}):    # import cv2 raises ImportError
+            self.assertIsNone(encode_jpeg(image))
+
+
+class TestPublishCamera(unittest.TestCase):
+    def setUp(self):
+        self.state = SharedState(CONFIG, 1)
+        self.frame = SimpleNamespace(image=np.zeros((4, 4, 3), dtype=np.uint8))
+
+    def test_no_state_does_nothing(self):
+        self.assertFalse(publish_camera(None, self.frame, 0))
+
+    def test_publishes_only_every_n_steps(self):
+        with mock.patch.object(gui, "encode_jpeg", return_value=b"jpg"):
+            results = [publish_camera(self.state, self.frame, s, every=3) for s in range(6)]
+        self.assertEqual(results, [True, False, False, True, False, False])
+        self.assertEqual(self.state.latest_frame(), b"jpg")
+
+    def test_frame_without_image_is_skipped(self):
+        self.assertFalse(publish_camera(self.state, SimpleNamespace(), 0))
+        self.assertIsNone(self.state.latest_frame())
+
+    def test_failed_encoding_keeps_previous_frame(self):
+        self.state.publish_frame(b"previous")
+        with mock.patch.object(gui, "encode_jpeg", return_value=None):
+            self.assertFalse(publish_camera(self.state, self.frame, 0))
+        self.assertEqual(self.state.latest_frame(), b"previous")
+
+    def test_camera_does_not_touch_status_or_commands(self):
+        with mock.patch.object(gui, "encode_jpeg", return_value=b"jpg"):
+            publish_camera(self.state, self.frame, 0)
+        self.assertIsNone(self.state.next_command())
+        self.assertEqual(self.state.snapshot()["state"], "IDLE")
 
 
 # ----------------------------------------------------------------------------
@@ -561,6 +645,44 @@ class TestWebApp(unittest.TestCase):
     def test_oversized_body_is_413(self):
         r = self.post("/api/apply", {"pad": "x" * 40000})
         self.assertEqual(r.status_code, 413)
+
+    # ---- camera ----
+    def test_camera_404_json_when_no_frame(self):
+        r = self.get("/api/camera.jpg")
+        self.assertEqual(r.status_code, 404)
+        self.assertIn("error", r.get_json())
+
+    def test_camera_returns_latest_jpeg(self):
+        self.state.publish_frame(b"\xff\xd8fake\xff\xd9")
+        r = self.get("/api/camera.jpg")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.headers["Content-Type"], "image/jpeg")
+        self.assertEqual(r.get_data(), b"\xff\xd8fake\xff\xd9")
+        self.assertEqual(r.headers["Cache-Control"], "no-store")
+        self.assertEqual(r.headers["X-Content-Type-Options"], "nosniff")
+
+    def test_camera_follows_newest_frame(self):
+        self.state.publish_frame(b"a")
+        self.state.publish_frame(b"b")
+        self.assertEqual(self.get("/api/camera.jpg").get_data(), b"b")
+
+    def test_camera_respects_host_guard(self):
+        self.state.publish_frame(b"x")
+        r = self.get("/api/camera.jpg", base_url="http://evil.example:8765")
+        self.assertEqual(r.status_code, 403)
+
+    def test_camera_is_get_only(self):
+        self.assertEqual(self.post("/api/camera.jpg").status_code, 405)
+
+    def test_index_allows_same_origin_images_only(self):
+        csp = self.get("/").headers["Content-Security-Policy"]
+        self.assertIn("img-src 'self'", csp)
+        self.assertNotIn("img-src *", csp)
+        self.assertIn("default-src 'none'", csp)
+
+    def test_page_has_camera_view(self):
+        self.assertIn('id="cam"', gui.PAGE)
+        self.assertIn("/api/camera.jpg", gui.PAGE)
 
 
 if __name__ == "__main__":

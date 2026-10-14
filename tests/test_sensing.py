@@ -9,8 +9,8 @@ cv2 = pytest.importorskip("cv2")
 from config import CONFIG
 from robot_model import measurement_model
 from sensing import (
-    Sensing, camera_forward_offset, camera_matrix, detect_marker, lidar_points,
-    make_lidar_scan, sector_min_range,
+    MAX_REPROJ_PX, MarkerMeasurement, Sensing, camera_forward_offset, camera_matrix,
+    detect_marker, lidar_points, make_lidar_scan, sector_min_range,
 )
 
 N_BEAMS = CONFIG.lidar.num_beams
@@ -26,11 +26,11 @@ def beam_index(angle):
     return int(round(angle / (2.0 * math.pi) * N_BEAMS)) % N_BEAMS
 
 
-def synthetic_marker_image(shift_px=0, marker_id=None):
+def synthetic_marker_image(shift_px=0, marker_id=None, black_px=BLACK_PX):
     """White image with the marker centred (plus a horizontal shift)."""
     dictionary = cv2.aruco.getPredefinedDictionary(getattr(cv2.aruco, CONFIG.camera.aruco_dict))
     mid = CONFIG.camera.marker_id if marker_id is None else marker_id
-    marker = cv2.aruco.generateImageMarker(dictionary, mid, BLACK_PX)
+    marker = cv2.aruco.generateImageMarker(dictionary, mid, black_px)
     pad = 20
     marker = cv2.copyMakeBorder(marker, pad, pad, pad, pad, cv2.BORDER_CONSTANT, value=255)
     h, w, size = CONFIG.camera.height, CONFIG.camera.width, marker.shape[0]
@@ -103,6 +103,44 @@ def test_marker_on_the_left_of_image_has_positive_bearing():
 def test_marker_on_the_right_of_image_has_negative_bearing():
     m = detect_marker(synthetic_marker_image(shift_px=80))
     assert m.bearing < 0
+
+# ------------------------------------------------- noise model and quality gates
+def test_marker_measurement_defaults():
+    m = MarkerMeasurement(1.0, 0.0, 0.0, 0, 0.0)
+    assert m.cov is None and math.isnan(m.reproj_error)
+
+
+def test_detect_marker_returns_valid_covariance():
+    m = detect_marker(synthetic_marker_image(), camera_matrix())
+    assert m is not None and m.cov is not None and m.cov.shape == (2, 2)
+    np.testing.assert_allclose(m.cov, m.cov.T)
+    assert np.all(np.linalg.eigvalsh(m.cov) > 0)
+    assert 0.0 <= m.reproj_error <= MAX_REPROJ_PX
+
+
+def test_covariance_grows_with_distance():
+    K = camera_matrix()
+    near = detect_marker(synthetic_marker_image(black_px=120), K)
+    far = detect_marker(synthetic_marker_image(black_px=60), K)
+    assert near is not None and far is not None
+    assert far.range > near.range
+    assert far.cov[0, 0] > near.cov[0, 0]          # range variance increases with distance
+
+
+def test_covariance_scales_with_sigma_px():
+    K = camera_matrix()
+    img = synthetic_marker_image()
+    a = detect_marker(img, K, sigma_px=0.5)
+    b = detect_marker(img, K, sigma_px=1.0)
+    assert b.cov[1, 1] == pytest.approx(4.0 * a.cov[1, 1])   # variance ~ sigma^2
+
+
+def test_reprojection_gate_rejects_marker():
+    assert detect_marker(synthetic_marker_image(), camera_matrix(), max_reproj_px=-1.0) is None
+
+
+def test_view_angle_gate_rejects_marker():
+    assert detect_marker(synthetic_marker_image(), camera_matrix(), max_view_angle=-1.0) is None
 
 
 # ---------------------------------------------------------------------- LiDAR
@@ -206,6 +244,40 @@ def test_sensing_uses_the_calibration_module():
     assert sensing.camera_matrix is calibration.camera_matrix
     assert sensing.solve_marker_pose is calibration.solve_marker_pose
 
+def test_sensing_exposes_new_calibration_functions():
+    import calibration
+    import sensing
+    assert sensing.marker_measurement_covariance is calibration.marker_measurement_covariance
+    assert sensing.MAX_REPROJ_PX == calibration.MAX_REPROJ_PX
+
+
+def test_sensing_counts_camera_frames_and_detections():
+    sim = FakeSim()
+    sim.image = synthetic_marker_image()
+    sensing = Sensing(sim, camera_period=0.0)
+    sensing.read(); sensing.read()
+    assert (sensing.n_camera, sensing.n_detect) == (2, 2)
+    sim.image = np.full((CONFIG.camera.height, CONFIG.camera.width, 3), 255, np.uint8)
+    sensing.read()
+    assert (sensing.n_camera, sensing.n_detect) == (3, 2)
+    sensing.reset()
+    assert (sensing.n_camera, sensing.n_detect) == (0, 0)
+
+
+def test_sensing_sigma_px_changes_covariance():
+    sim = FakeSim()
+    sim.image = synthetic_marker_image()
+    lo = Sensing(sim, camera_period=0.0, marker_sigma_px=0.5).read().marker
+    hi = Sensing(sim, camera_period=0.0, marker_sigma_px=2.0).read().marker
+    assert hi.cov[1, 1] > lo.cov[1, 1]
+
+
+def test_sensing_quality_gates_can_reject_everything():
+    sim = FakeSim()
+    sim.image = synthetic_marker_image()
+    assert Sensing(sim, camera_period=0.0, max_view_angle=-1.0).read().marker is None
+    assert Sensing(sim, camera_period=0.0, max_reproj_px=-1.0).read().marker is None
+
 
 # ------------------------------------------------------ Sensing (real MuJoCo)
 @pytest.fixture
@@ -274,3 +346,20 @@ def test_real_marker_not_seen_when_facing_away(real_sim):
     dx, dy, _ = CONFIG.env.dock_pose
     real_sim.reset((dx - 0.7, dy, math.pi))
     assert read_or_skip(Sensing(real_sim, camera_period=0.0)).marker is None
+
+def test_real_marker_has_covariance_and_small_reprojection_error(real_sim):
+    dx, dy, _ = CONFIG.env.dock_pose
+    real_sim.reset((dx - 0.7, dy, 0.0))
+    m = read_or_skip(Sensing(real_sim, camera_period=0.0)).marker
+    assert m is not None and m.cov is not None
+    assert m.reproj_error < MAX_REPROJ_PX
+
+
+def test_real_marker_noise_grows_with_range(real_sim):
+    dx, dy, _ = CONFIG.env.dock_pose
+    real_sim.reset((dx - 0.5, dy, 0.0))
+    near = read_or_skip(Sensing(real_sim, camera_period=0.0)).marker
+    real_sim.reset((dx - 1.2, dy, 0.0))
+    far = read_or_skip(Sensing(real_sim, camera_period=0.0)).marker
+    assert near is not None and far is not None
+    assert far.cov[0, 0] > near.cov[0, 0]

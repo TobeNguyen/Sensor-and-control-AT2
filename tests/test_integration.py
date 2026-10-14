@@ -10,7 +10,8 @@ pytest.importorskip("cv2")
 from config import CONFIG
 from estimator import EKFEstimator
 from main import (
-    Phase, RunResult, TrialLog, build_parser, dock_errors, plot_run, run_pipeline,
+    Phase, RunResult, TrialLog, build_parser, dock_errors, plot_run, print_report,
+    run_pipeline, run_trials, theory_block,
 )
 from robot_model import wrap_angle
 
@@ -58,6 +59,35 @@ def test_run_result_metrics_and_summary():
 def test_plot_run_writes_a_png(tmp_path):
     out = plot_run(make_fake_result(), CONFIG, tmp_path / "run.png")
     assert out.exists() and out.stat().st_size > 0
+
+
+def test_parser_new_options():
+    args = build_parser().parse_args(["--trials", "5", "--marker-cov", "--sigma-px", "1.0"])
+    assert args.trials == 5 and args.marker_cov and args.sigma_px == 1.0
+    default = build_parser().parse_args([])
+    assert default.trials == 0 and not default.marker_cov and default.sigma_px == 0.5
+
+
+def test_run_result_new_fields_have_defaults():
+    r = make_fake_result()
+    assert r.camera_stats == (0, 0) and r.diag == {}
+
+
+def test_print_report_shows_sensing_and_ekf_diagnostics(capsys):
+    r = make_fake_result()
+    r.camera_stats = (10, 8)
+    r.diag = {"n_updates": 8, "n_rejected": 1, "n_recovered": 0,
+            "n_lidar_updates": 40, "n_lidar_rejected": 2, "nis_per_dof": 1.1}
+    print_report(r, CONFIG)
+    out = capsys.readouterr().out
+    assert "marker accepted 8/10" in out and "(80 %)" in out
+    assert "mean NIS/dof 1.10" in out and "LiDAR updates 40" in out
+
+
+def test_theory_block_mentions_marker_noise_model():
+    text = theory_block(CONFIG, EKFEstimator(CONFIG))
+    assert "Marker noise model" in text and "fixed (config)" in text
+    assert "per-measurement" in theory_block(CONFIG, EKFEstimator(CONFIG, use_marker_cov=True))
 
 
 # ------------------------------------------------------------ real MuJoCo pipeline
@@ -154,3 +184,27 @@ def test_ekf_is_not_worse_than_dead_reckoning(scene_dir, result):
     dr = run_pipeline(seed=0, scene_dir=scene_dir,
                     estimator=EKFEstimator(CONFIG, use_marker=False))
     assert result.metrics()["position_error"] <= dr.metrics()["position_error"] + 0.02
+
+def test_pipeline_records_camera_and_ekf_diagnostics(result):
+    n_cam, n_det = result.camera_stats
+    assert n_cam > 0 and 0 < n_det <= n_cam
+    assert result.diag["n_updates"] > 0
+    assert result.diag["n_lidar_updates"] > 0
+
+
+def test_pipeline_filter_is_roughly_consistent(result):
+    # Loose sanity band for mean NIS/dof (ideal ~1). Tight chi-square bounds go in the report.
+    assert 0.1 < result.diag["nis_per_dof"] < 10.0
+
+
+def test_pipeline_with_per_measurement_covariance(scene_dir):
+    res = run_pipeline(seed=0, scene_dir=scene_dir, use_marker_cov=True)
+    assert res.success and not res.collided
+    assert res.metrics()["position_error"] < 0.15
+
+
+def test_run_trials_prints_statistics(scene_dir, capsys):
+    code = run_trials(2, seed0=0, scene_dir=scene_dir)
+    out = capsys.readouterr().out
+    assert code in (0, 1)
+    assert "Success rate" in out and "Mean NEES" in out

@@ -29,11 +29,12 @@ def chi2_bounds(dof: int, n: int, alpha: float = 0.05) -> tuple[float, float]:
 
 class EKFEstimator:
     def __init__(self, cfg: Config = CONFIG, landmark=None, q_extra: Optional[np.ndarray] = None,
-                odom_cov_scale: float = 1.0, R: Optional[np.ndarray] = None,
-                gate: Optional[float] = None, use_marker: bool = True,
-                use_view: bool = True, R_view: Optional[float] = None,
-                use_lidar: bool = True, lidar_noise_scale: float = 2.0,
-                lidar_gate: float = 6.63, lidar_stride: int = 30, max_rejects: int = 10):
+            odom_cov_scale: float = 1.0, R: Optional[np.ndarray] = None,
+            gate: Optional[float] = None, use_marker: bool = True,
+            use_view: bool = True, R_view: Optional[float] = None,
+            use_lidar: bool = True, lidar_noise_scale: float = 2.0,
+            lidar_gate: float = 6.63, lidar_stride: int = 30, max_rejects: int = 10,
+            use_marker_cov: bool = False):
         self.cfg = cfg
         self.landmark = default_landmark(cfg) if landmark is None else np.asarray(landmark, float)
         self.dock_yaw = float(cfg.env.dock_pose[2])
@@ -46,6 +47,7 @@ class EKFEstimator:
         self.max_rejects = max_rejects      # consecutive rejections before the lock-out recovery
         self.use_marker = use_marker
         self.use_view = use_view
+        self.use_marker_cov = use_marker_cov
         # LiDAR update against the known room map (walls and obstacles)
         self.use_lidar = use_lidar
         self.lidar_noise_scale = lidar_noise_scale   # inflates sigma_lidar to cover map errors
@@ -117,13 +119,20 @@ class EKFEstimator:
 
         view = getattr(marker, "view_angle", None)
         use_view = self.use_view and view is not None and math.isfinite(view)
+
+        R_cam = self.R
+        cov = getattr(marker, "cov", None) if self.use_marker_cov else None
+        if cov is not None:
+            cov = np.asarray(cov, dtype=float)
+            if cov.shape == (2, 2) and np.all(np.isfinite(cov)):
+                R_cam = cov
         try:
             if use_view:
                 z = np.array([marker.range, marker.bearing, view], dtype=float)
                 H = measurement_jacobian_pose(self.x, self.landmark)
                 z_pred = measurement_model_pose(self.x, self.landmark, self.dock_yaw)
                 R = np.zeros((3, 3))
-                R[:2, :2] = self.R
+                R[:2, :2] = R_cam
                 R[2, 2] = self.R_view
             else:
                 z = np.array([marker.range, marker.bearing], dtype=float)

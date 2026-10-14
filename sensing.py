@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Optional
 
@@ -11,7 +11,9 @@ import numpy as np
 
 from config import CONFIG, Config
 from calibration import (camera_matrix, camera_forward_offset,
-                        solve_marker_pose, marker_pose_from_pnp)
+                        solve_marker_pose, marker_pose_from_pnp,
+                        marker_measurement_covariance, CameraIntrinsics,
+                        SOURCE_NOMINAL, MAX_REPROJ_PX)
 from robot_model import odometry_increment
 from simulation import Simulation
 
@@ -30,6 +32,8 @@ class MarkerMeasurement:
     view_angle: float     # [rad] 0 when the marker faces the robot head-on
     marker_id: int
     time: float
+    cov: Optional[np.ndarray] = field(default=None, compare=False)   # 2x2 R for [range, bearing]
+    reproj_error: float = field(default=float("nan"), compare=False) # RMS corner error [px]
 
     @property
     def z(self) -> np.ndarray:
@@ -59,7 +63,10 @@ def detect_marker(image_rgb: np.ndarray,
                 K: Optional[np.ndarray] = None,
                 dist_coeffs: Optional[np.ndarray] = None,
                 cfg: Config = CONFIG,
-                time: float = 0.0) -> Optional[MarkerMeasurement]:
+                time: float = 0.0,
+                sigma_px: float = 0.5,
+                max_reproj_px: float = MAX_REPROJ_PX,
+                max_view_angle: float = math.radians(70.0)) -> Optional[MarkerMeasurement]:
     K = camera_matrix(cfg) if K is None else K
     dist_coeffs = np.zeros(5) if dist_coeffs is None else dist_coeffs
 
@@ -74,19 +81,29 @@ def detect_marker(image_rgb: np.ndarray,
     # If the marker appears more than once, keep the largest detection.
     image_pts = max(candidates, key=lambda c: cv2.contourArea(c.reshape(4, 2))).reshape(4, 2)
 
-    # Pose in the camera frame; rejects the flipped IPPE solution (marker facing away).
-    sol = solve_marker_pose(image_pts, K, dist_coeffs, cfg.camera.marker_size)
+    # Pose in the camera frame; rejects the flipped IPPE solution and high reprojection error.
+    sol = solve_marker_pose(image_pts, K, dist_coeffs, cfg.camera.marker_size,
+                            max_reproj_px=max_reproj_px)
     if sol is None:
         return None
-    rvec, tvec, _ = sol
+    rvec, tvec, reproj = sol
 
-    # Convert to the robot frame (camera offset and axis conventions live in calibration.py).
     rng, bearing, view_angle = marker_pose_from_pnp(rvec, tvec, cfg)
+    if abs(view_angle) > max_view_angle:      # grazing view: pose is unreliable
+        return None
+
+    # Per-measurement noise covariance R (grows with distance)
+    intr = CameraIntrinsics(np.asarray(K, dtype=float), np.asarray(dist_coeffs, dtype=float),
+                            (cfg.camera.width, cfg.camera.height), SOURCE_NOMINAL)
+    cov = marker_measurement_covariance(rng, intr, cfg.camera.marker_size, sigma_px, cfg)
+
     return MarkerMeasurement(range=rng,
                             bearing=bearing,
                             view_angle=view_angle,
                             marker_id=int(cfg.camera.marker_id),
-                            time=float(time))
+                            time=float(time),
+                            cov=cov,
+                            reproj_error=float(reproj))
 
 # Build a LidarScan and flag the beams that returned a usable hit
 def make_lidar_scan(ranges, angles, cfg: Config = CONFIG, time: float = 0.0) -> LidarScan:
@@ -113,17 +130,25 @@ class Sensing:
     def __init__(self, sim, cfg: Config = CONFIG,
                 camera_matrix_: Optional[np.ndarray] = None,
                 dist_coeffs: Optional[np.ndarray] = None,
-                camera_period: Optional[float] = 0.1):
+                camera_period: Optional[float] = 0.1,
+                marker_sigma_px: float = 0.5,
+                max_reproj_px: float = MAX_REPROJ_PX,
+                max_view_angle: float = math.radians(70.0)):
         self.sim = sim
         self.cfg = cfg
         self.K = camera_matrix(cfg) if camera_matrix_ is None else camera_matrix_
         self.dist_coeffs = np.zeros(5) if dist_coeffs is None else dist_coeffs
         self.camera_period = camera_period
+        self.marker_sigma_px = marker_sigma_px
+        self.max_reproj_px = max_reproj_px
+        self.max_view_angle = max_view_angle
         self.reset()
 
     def reset(self) -> None:
         self._prev_enc = np.asarray(self.sim.read_encoders(), dtype=float)
         self._last_cam_time = -math.inf
+        self.n_camera = 0      # camera frames processed
+        self.n_detect = 0      # frames that produced an accepted marker measurement
 
     def _camera_due(self, t: float) -> bool:
         if self.camera_period is None:
@@ -143,7 +168,11 @@ class Sensing:
         if self._camera_due(t):
             self._last_cam_time = t
             marker = detect_marker(self.sim.read_camera(), self.K, self.dist_coeffs,
-                                self.cfg, t)
+                                self.cfg, t, sigma_px=self.marker_sigma_px,
+                                max_reproj_px=self.max_reproj_px,
+                                max_view_angle=self.max_view_angle)
+            self.n_camera += 1
+            self.n_detect += int(marker is not None)
         return SensorFrame(t, lidar, OdometryIncrement(ds, dtheta, t), marker)
 
 if __name__ == "__main__":
