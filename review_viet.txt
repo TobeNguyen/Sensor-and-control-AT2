@@ -2,9 +2,11 @@
 TÀI LIỆU REVIEW TRACK A - TurtleBot3: điều hướng waypoint + docking bằng camera
 Môn: 41014 Sensors and Control in Mechatronics Systems
 Lần chạy xác nhận gần nhất: [ngày/giờ]  |  Lệnh: pytest -v  /  python main.py
-Kết quả pytest: [__ pass, __ fail]   (đã biết: 248 pass, 4 fail, cả 4 đều
-thuộc docking, trước các sửa đổi docking/config mới nhất)
-Kết quả main.py: [SUCCESS/FAILURE, lý do, thời gian, range/lateral/heading]
+Kết quả pytest: [__ pass, 0 fail]
+Kết quả main.py: [SUCCESS, thời gian __ s, range __ m, lateral __ m,
+                 heading/axis __ rad, va chạm: không]
+Độ nhất quán (cùng lần chạy): mean NEES [__] (mục tiêu ~3), mean NIS [__]
+                 (~2), RMSE EKF [__] m so với dead-reckoning [__] m (--compare)
 =====================================================================
 
 CHÚ GIẢI TRẠNG THÁI
@@ -20,14 +22,14 @@ CHÚ GIẢI TRẠNG THÁI
 Mục tiêu
   TurtleBot3 (vi sai, LiDAR 2D + camera) trong MuJoCo đi qua phòng có 3
   vật cản tròn, đi theo 4 waypoint, rồi docking bằng thị giác vào marker
-  ArUco (ID 0, DICT_4X4_50) ở trạm sạc. Demo phần cứng dùng lại cùng
-  pipeline.
+  ArUco (ID 0, DICT_4X4_50, 0.15 m) ở trạm sạc. Demo phần cứng dùng lại
+  cùng pipeline.
 
 Ràng buộc bắt buộc
   Controller chỉ dùng pose ƯỚC LƯỢNG. Ground truth chỉ được ghi lại để
   đánh giá.
 
-Luồng hoạt động (mỗi bước điều khiển 0.02 s, 50 Hz)
+Luồng hoạt động (mỗi bước điều khiển 0.02 s, 50 Hz; camera 10 Hz)
   simulation -> sensing.py + calibration.py (odometry, LiDAR, marker:
   range/bearing/view angle) -> estimator.py (EKF predict + update)
   -> navigation.py (TRACK/AVOID) -> docking.py (visual servoing)
@@ -37,8 +39,8 @@ Luồng hoạt động (mỗi bước điều khiển 0.02 s, 50 Hz)
 Tiêu chí demo thành công
   1. Pipeline chạy hết từ đầu đến cuối, không crash.
   2. Không va chạm, kết thúc trước giới hạn 120 s.
-  3. Pose cuối: cách marker 0.40 +/- 0.05 m, lệch ngang < 0.06-0.08 m,
-     lệch hướng < 0.2 rad.
+  3. Docked theo đúng quy tắc trong code: range <= 0.45 m (đích 0.40 +/-
+     0.05), |bearing| <= 0.05 rad, |axis| <= 0.10 rad.
   4. Controller dùng ước lượng EKF (có test xác nhận).
   5. Mọi số liệu đưa ra đều lấy từ một lần chạy có log của code đã nộp.
 
@@ -53,20 +55,31 @@ Tiêu chí demo thành công
             y' = y + ds*sin(theta + dtheta/2)
             theta' = theta + dtheta
   Lý do   : là mô hình dự đoán của EKF và đối tượng của LQR.
-            Thông số: r = 0.033 m, L = 0.287 m.
+            r = 0.033 m, L = 0.287 m.
 
 2.2 State-space, controllability, observability  (robot_model.py)
   Ý nghĩa : trạng thái nào điều khiển được, trạng thái nào suy ra được.
   Công thức: e[k+1] = A e[k] + B du[k]; điều khiển được nếu
-            rank[B AB A^2B] = n; quan sát được nếu rank[H; HA; HA^2] = n
-  Kết quả : hạng 3/3 khi đang chạy, 2/3 khi dừng (cả hai).
-  Lý do   : khi đứng yên hệ không đầy đủ điều khiển/quan sát, nên phải
-            nêu rõ điều kiện làm việc khi phân tích mô hình.
+            rank[B AB A^2B] = n; quan sát được nếu rank[H; HF; HF^2] = n
+            (H = Jacobian của phép đo marker)
+  Kết quả : hạng 3/3 khi đang chạy (v = 0.15-0.2 m/s), 2/3 khi dừng (cả
+            hai). Đã kiểm tra bằng số.
+  Lý do   : khi đứng yên, ma trận điều khiển mất hướng ngang (xe vi sai
+            không đi ngang được). Với quan sát: một phép đo range+bearing
+            tới điểm đã biết vẫn còn một hướng không quan sát được là
+            robot xoay quanh marker (vị trí tiếp tuyến và heading đổi
+            cùng nhau). Khi di chuyển theo thời gian thì cả 3 trạng thái
+            quan sát được. Lưu ý: EKF chỉ dùng range và bearing, không
+            dùng view angle của marker.
+  Lưu ý   : khi chạy chậm, singular value nhỏ nhất rất bé (~1e-3 trong một
+            bước) nên khả năng quan sát được tích lũy dần theo thời gian.
 
 2.3 Mô hình camera, hiệu chuẩn, hệ tọa độ  (calibration.py)
   Ý nghĩa : quan hệ giữa pixel và tia đo; liên kết hệ camera, robot, world.
   Công thức: u = fx*X/Z + cx, v = fy*Y/Z + cy; K = [[fx 0 cx],[0 fy cy],
             [0 0 1]]; fx = (H/2)/tan(fovy/2) = 415.7 px (640x480, 60 độ)
+            PnP (IPPE + iterative) cho pose marker theo mét (kích thước
+            marker 0.15 m cho thang đo)
             p_robot = R*p_cam + t (camera lệch 0.23 m về phía trước)
   Lý do   : range/bearing của marker phải được đổi sang hệ robot trước
             khi EKF dùng.
@@ -80,34 +93,44 @@ Tiêu chí demo thành công
 
 2.5 EKF, covariance, innovation  (estimator.py)
   Ý nghĩa : kết hợp odometry (dự đoán) với range/bearing của marker (cập nhật).
-  Công thức: x- = f(x, ds, dtheta);  P- = F P F^T + Q
+  Công thức: x- = f(x, ds, dtheta)
+            P- = F P F^T + G Su G^T (+ q_extra)
+            Su lấy từ nhiễu encoder (0.002 rad): sigma_ds ~ 4.7e-5 m,
+            sigma_dtheta ~ 3.3e-4 rad mỗi bước
             nu = z - h(x-);  S = H P- H^T + R;  K = P- H^T S^-1
-            x = x- + K nu;  P = (I - K H) P-
+            x = x- + K nu
+            P = (I-KH) P- (I-KH)^T + K R K^T   (dạng Joseph)
             h(x) = [ sqrt(dx^2+dy^2),  atan2(dy,dx) - theta ]
             (innovation của bearing được wrap về [-pi, pi])
   Lý do   : odometry bị trôi; một landmark đã biết giữ cho sai số bị chặn.
-  Cấu hình: P0 std 0.05; Q std 0.01 mỗi bước; R std (0.02 m, 0.01 rad).
+  Cấu hình: P0 std 0.05; R std (0.02 m, 0.01 rad); gate mặc định tắt.
+  Thành thật: nhiễu quá trình lấy từ cấu hình nhiễu encoder, R lấy từ cấu
+            hình camera. Cả hai chưa được đo từ dữ liệu.
 
 2.6 Điều khiển phản hồi LQR  (controller.py)
   Ý nghĩa : phản hồi trạng thái tối ưu trên sai lệch bám quỹ đạo.
   Công thức: cực tiểu sum(e^T Q e + du^T R du);  du = -K e
             Q = diag(10,10,1), R = diag(1,1); K từ phương trình Riccati
-            rời rạc; lệnh bị giới hạn v <= 0.26 m/s, |w| <= 1.82 rad/s
-  Lý do   : cho bám quỹ đạo ổn định, dễ chỉnh; max |cực| vòng kín = 0.988
-            (<1, ổn định).
+            rời rạc tại v = 0.15 m/s; lệnh bị giới hạn v <= 0.26 m/s,
+            |w| <= 1.82 rad/s; tốc độ tiến bị giảm khi gần vật cản
+  Lý do   : bám quỹ đạo ổn định, dễ chỉnh; max |cực| vòng kín = 0.988 (<1).
 
 2.7 Né vật cản và bám mục tiêu  (navigation.py)
   Ý nghĩa : đến waypoint mà không va chạm, chỉ dùng LiDAR.
   Công thức: kiểm tra hành lang trống nửa rộng (body_radius + margin), dài
             0.6 m; chọn hướng trống gần hướng goal nhất, có chi phí
-            hysteresis; TRACK <-> AVOID có độ trễ khi thoát.
+            hysteresis; TRACK <-> AVOID, chỉ thoát AVOID sau 25 bước
+            thông thoáng liên tiếp (0.5 s); bàn giao cho docking nếu kẹt
+            gần waypoint cuối.
   Lý do   : phản ứng nhanh, rẻ; điểm yếu đã biết là local minimum.
 
 2.8 Visual servoing  (docking.py)
   Ý nghĩa : lái theo quan sát marker cho đến khi căn thẳng với marker.
-  Công thức: v = clip(K_range*(range - 0.40), 0.03, 0.12), giảm khi bearing/
-            axis lớn
+  Công thức: v = clip(K_range*(range - 0.40), 0.03, 0.12), giảm khi bearing
+            và axis lớn
             w = (K_bearing + K_axis)*bearing - K_axis*view_angle
+            (K_bearing = 1.5, K_axis = 4.0)
+            khi range <= 0.45: v = 0, chỉ căn marker vào giữa ảnh
             docked nếu range <= 0.45, |bearing| <= 0.05, |axis| <= 0.10
             axis = bearing - view_angle
   Lý do   : sai lệch từ camera là tín hiệu trực tiếp nhất để căn chỉnh.
@@ -131,40 +154,40 @@ Tiêu chí demo thành công
 =====================================================================
 Thành phần             T.thái  Ghi chú / bằng chứng
 ---------------------  ------  ----------------------------------------
-Mô hình, hạng ma trận  [T]     test_robot_model.py pass hết (Jacobian
-                               được kiểm so với đạo hàm số)
-Sensing (LiDAR, ArUco, [T]     test_sensing.py pass hết, gồm test MuJoCo
-odometry)                      thật
-Intrinsics camera      [A]     Giá trị DANH NGHĨA từ camera MuJoCo,
-                               không phải kết quả hiệu chuẩn. Không gọi
-                               là "calibrated".
-Quy trình hiệu chuẩn   [B]     Hàm chessboard khôi phục intrinsics trên
-                               ảnh tổng hợp. Chưa chạy trên ảnh thật,
-                               chưa báo cáo reprojection error.
-EKF predict/update     [T]     test_estimator.py pass hết; có cập nhật
-                               marker trong lần chạy đầy đủ
-Tuning EKF (Q, R)      [A]     Chưa suy ra từ nhiễu đo thực tế. Lần chạy
-                               trước: mean NEES 29.96 (mục tiêu ~3), tức
-                               quá tự tin. Cần đo lại.
+Mô hình, hạng ma trận  [T]     test_robot_model.py pass (Jacobian được
+                               kiểm so với đạo hàm số)
+Sensing (LiDAR, ArUco, [T]     test_sensing.py pass, gồm test MuJoCo thật
+odometry)
+Intrinsics camera      [A]     Giá trị DANH NGHĨA từ camera MuJoCo, không
+                               phải kết quả hiệu chuẩn. Không gọi là
+                               "calibrated".
+Quy trình hiệu chuẩn   [B]     Hàm chessboard đã viết; kiểm tra có test
+                               trên ảnh tổng hợp trước khi nói là đã
+                               test. Chưa chạy trên ảnh thật, chưa báo cáo
+                               reprojection error.
+EKF predict/update     [T]     test_estimator.py pass; có cập nhật marker
+                               trong lần chạy đầy đủ
+Tuning EKF (nhiễu)     [A]     Nhiễu quá trình từ cấu hình encoder, R từ
+                               cấu hình camera; chưa đo thực tế. Lần chạy
+                               trước: mean NEES 29.96 (mục tiêu ~3). Giá
+                               trị hiện tại: [__] - điền từ lần chạy mới.
 Gating cho EKF         [B]     Đã có và có unit test; tắt trong lần chạy
                                mặc định (gate = None)
-So sánh dead-reckoning [B]     Test pass; python main.py --compare cho
-                               RMSE cả lần chạy [chạy lệnh này]
+So sánh dead-reckoning [B]     Test pass; --compare cho RMSE cả lần chạy:
+                               [điền]
 Controller LQR         [T]     Ổn định (max |cực| 0.988); test pass.
                                Trọng số chưa được biện minh hay quét.
-Không dùng ground      [T]     test_control_does_not_depend_on_ground_
-truth trong điều khiển         truth pass
-Navigation / né vật    [B]     Test vòng kín pass. Lần chạy thật trước
-cản                            đây bị lặp trong AVOID (timeout) với
-                               waypoint cũ. Đã sửa (waypoint, margin, độ
-                               trễ thoát, quy tắc bàn giao):
-                               [xác nhận bằng lần chạy main.py mới]
-Docking                [P]     Pytest gần nhất: 4 fail (đến nơi nhưng
-                               lệch trục -> ALIGN timeout). Đã đề xuất
-                               sửa (waypoint cuối cách dock 0.7 m, giảm
-                               tốc khi lệch trục). [cập nhật sau khi chạy lại]
-Tích hợp (main.py)     [B]     Chạy end-to-end, có log, bảng, báo cáo,
-                               biểu đồ. Kết quả thành công: [điền]
+Không dùng ground      [T]     test_control_does_not_depend_on_ground_truth
+truth trong điều khiển         pass
+Navigation / né vật    [T]     Test pass; lần chạy đầy đủ kết thúc, không
+cản                            limit cycle: tỉ lệ AVOID [__ %], thời gian
+                               nav [__ s]. Là heuristic, không có chứng
+                               minh.
+Docking                [T]     Test pass; lần chạy đầy đủ đã docked: range
+                               [__], lateral [__], axis [__]. Chỉ ở case
+                               danh nghĩa.
+Tích hợp (main.py)     [T]     Chạy end-to-end, có log, bảng, báo cáo, biểu
+                               đồ. Seed [__], ngày [__].
 Đánh giá Monte Carlo   [P]     Chưa có trong code đã nộp
 Chuyển sang phần cứng  [P]     Chưa bắt đầu
 Mất marker / trượt     [F]     Dự kiến cho teammate
@@ -179,18 +202,14 @@ và điều kiện tạo ra nó (seed, config, ngày).
 =====================================================================
 Ưu tiên  Việc                                 Phụ trách   Nghiệm thu
 -------  -----------------------------------  ----------  --------------
-P0       Docking thành công ở case danh       Thien       pytest: 0 fail
-         nghĩa (chạy lại test, áp dụng sửa)               main.py:
-                                                          SUCCESS, không
-                                                          va chạm
-P0       Xác nhận navigation kết thúc, không  Thien       Có log tỉ lệ
-         bị limit cycle với waypoint mới                  AVOID và thời
-                                                          gian
+XONG     Docking thành công ở case danh       Thien       pytest 0 fail;
+         nghĩa, navigation kết thúc không                 main.py SUCCESS
+         limit cycle
 P0       Chuẩn bị demo phần cứng (cùng        [tên]       Pipeline chạy
          pipeline, cảm biến thật)                         trên robot, chỉ
                                                           dùng ước lượng
-P1       Đo nhiễu cảm biến; chọn Q, R có      [teammate]  Mean NEES 2-5;
-         chủ đích; bật gating                             giải thích cách
+P1       Đo nhiễu cảm biến; chọn nhiễu và R   [teammate]  Mean NEES 2-5;
+         có chủ đích; bật gating                          giải thích cách
                                                           chọn
 P1       So sánh dead-reckoning với EKF       [teammate]  Bảng RMSE từ
                                                           --compare
@@ -205,6 +224,8 @@ P2       Robustness: mất marker, trượt bánh,  [teammate]  Đồ thị đá
 P2       Biện minh và quét trọng số LQR       [teammate]  Bảng nỗ lực
                                                           điều khiển / sai
                                                           số
+P2       Dùng view angle của marker trong     [teammate]  Quan sát đầy đủ
+         EKF (tùy chọn)                                   từ một khung ảnh
 P3       Dọn repo/README để tái lập được      Cả nhóm     Clone mới chạy
                                                           được
 
@@ -219,9 +240,12 @@ Q1. What is the state and what are the inputs?
       góc. Odometry tích phân theo điểm giữa (theta + dtheta/2).
 
 Q2. Is the system controllable and observable?
-  EN: Yes while moving (rank 3/3). When stopped, both ranks drop to 2/3.
-  VI: Khi đang chạy thì có (hạng 3/3). Khi dừng thì hạng giảm còn 2/3, vì
-      một landmark đứng yên không đủ để suy ra cả hướng của robot.
+  EN: Yes while moving (rank 3/3). When stopped, both ranks drop to 2/3:
+      a unicycle cannot move sideways, and range+bearing to one marker
+      cannot tell apart a rotation of the robot around the marker.
+  VI: Khi đang chạy thì có (hạng 3/3). Khi dừng thì hạng giảm còn 2/3: xe
+      vi sai không đi ngang được, và range+bearing tới một marker không
+      phân biệt được việc robot xoay quanh marker.
 
 Q3. Why an EKF and not a linear KF?
   EN: Both the motion model and the range-bearing model are nonlinear;
@@ -231,16 +255,19 @@ Q3. Why an EKF and not a linear KF?
 
 Q4. What does the EKF fuse?
   EN: Odometry in the prediction step; marker range and bearing in the
-      update step.
+      update step. Without the marker, P grows.
   VI: Odometry dùng để dự đoán, range và bearing của marker dùng để hiệu
       chỉnh. Khi mất marker, filter chỉ dự đoán và độ bất định P tăng.
 
-Q5. How did you choose Q and R?
-  EN: Currently from the configured sensor noise, not from measured data.
-      NEES showed over-confidence, so re-tuning is the next step.
-  VI: Hiện lấy từ cấu hình nhiễu, chưa đo thực tế. NEES lớn hơn nhiều so
-      với 3 nghĩa là filter quá tự tin. Hãy nói thật điều này; hướng xử lý
-      là đo nhiễu, tăng Q, kiểm tra lại NEES.
+Q5. How did you choose the noise parameters?
+  EN: Process noise comes from the encoder noise setting propagated
+      through the motion Jacobian; R from the camera noise setting.
+      Neither was measured. An earlier NEES of ~30 showed
+      over-confidence, so re-tuning from measured noise is next.
+  VI: Nhiễu quá trình lấy từ cấu hình nhiễu encoder (truyền qua Jacobian
+      chuyển động), R lấy từ cấu hình camera. Cả hai chưa đo thực tế. NEES
+      cũ ~30 cho thấy filter quá tự tin; hướng xử lý là đo nhiễu, tăng
+      nhiễu quá trình, kiểm tra lại NEES. Hãy nói thật điều này.
 
 Q6. How do you know the filter is consistent?
   EN: NEES (expected ~3) and NIS (expected ~2). Our NEES is [value], so
@@ -255,17 +282,17 @@ Q7. Does the controller use ground truth?
 
 Q8. Are the camera parameters calibrated?
   EN: No, they are nominal MuJoCo intrinsics. The calibration routine
-      exists but is only tested on synthetic views.
-  VI: Chưa. Đây là thông số danh nghĩa của MuJoCo. Hàm hiệu chuẩn có và
-      đã test trên ảnh tổng hợp; hiệu chuẩn ảnh thật và reprojection error
-      chưa làm. Không được gọi chúng là "đã hiệu chuẩn".
+      exists; real-image calibration and reprojection error are pending.
+  VI: Chưa. Đây là thông số danh nghĩa của MuJoCo. Hàm hiệu chuẩn có;
+      hiệu chuẩn ảnh thật và reprojection error chưa làm. Không được gọi
+      chúng là "đã hiệu chuẩn".
 
 Q9. Why LQR, and how were the weights chosen?
   EN: LQR gives stable optimal feedback on the linearised error. Q =
-      diag(10,10,1), R = I give max |pole| 0.988; a weight sweep is
-      still to do.
-  VI: LQR cho phản hồi tối ưu và ổn định. Q ưu tiên sai số vị trí hơn hướng.
-      Chưa quét trọng số nên đừng nói đã tối ưu.
+      diag(10,10,1) favours position over heading; R = I; max |pole|
+      0.988. A weight sweep is still to do.
+  VI: LQR cho phản hồi tối ưu và ổn định. Q ưu tiên sai số vị trí hơn
+      hướng. Chưa quét trọng số nên đừng nói đã tối ưu.
 
 Q10. How does navigation avoid obstacles, and what are its limits?
   EN: It finds free corridors from LiDAR and picks the free heading
@@ -273,7 +300,7 @@ Q10. How does navigation avoid obstacles, and what are its limits?
       trapped in local minima.
   VI: Dùng LiDAR tìm hướng trống gần hướng goal nhất, có hysteresis. Vì
       là phản ứng cục bộ nên có thể kẹt (lần chạy đầu đã bị lặp vòng). Đã
-      xử lý bằng waypoint mới và độ trễ thoát AVOID.
+      xử lý bằng waypoint mới, độ trễ thoát AVOID và quy tắc bàn giao.
 
 Q11. How does docking work?
   EN: Visual servoing: speed from range error, steering from bearing
@@ -288,8 +315,12 @@ Q12. What happens if the marker is lost?
       để tìm; quá thời gian thì FAILED. Phục hồi tốt hơn là phần nâng cao.
 
 Q13. What are the known limitations?
-  EN: Nominal calibration, untuned Q/R, no Monte Carlo statistics, no
-      back-off-and-retry in docking, hardware not yet validated.
-  VI: Hiệu chuẩn danh nghĩa, Q/R chưa tối ưu, chưa có thống kê Monte
-      Carlo, docking chưa biết lùi và thử lại, chưa kiểm chứng trên phần
-      cứng. Nêu thẳng giới hạn này sẽ được đánh giá tốt hơn là che giấu.
+  EN: Nominal calibration, unmeasured noise parameters, ideal simulated
+      sensors (no wheel slip), no Monte Carlo statistics, heuristic
+      avoidance, single landmark, no back-off-and-retry, hardware not
+      yet validated.
+  VI: Hiệu chuẩn danh nghĩa, nhiễu chưa đo, cảm biến mô phỏng lý tưởng
+      (không trượt bánh), chưa có thống kê Monte Carlo, né vật cản là
+      heuristic, chỉ một landmark, docking chưa biết lùi và thử lại, chưa
+      kiểm chứng trên phần cứng. Nêu thẳng giới hạn sẽ được đánh giá tốt
+      hơn là che giấu.

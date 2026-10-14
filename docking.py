@@ -11,7 +11,7 @@ import numpy as np
 from config import CONFIG, Config
 from calibration import camera_forward_offset
 from controller import limit_command
-from robot_model import default_landmark, measurement_model, wrap_angle
+from robot_model import default_landmark, measurement_model, view_angle_model, wrap_angle
 from sensing import MarkerMeasurement, OdometryIncrement, Sensing
 
 DOCK_MAX_SPEED = 0.12        # [m/s]
@@ -29,6 +29,8 @@ MAX_DOCK_TIME = 90.0         # [s] total time limit for docking
 MARKER_FACE_OFFSET = 0.005   # [m] half thickness of the marker panel (see simulation.py)
 VISIBILITY_MARGIN = 1.2      # marker must fit in the image with this safety factor
 AXIS_SLOW = 0.6              # [rad] forward speed is reduced as |axis| grows towards this
+BLIND_TIMEOUT = 4.0          # [s] estimate-driven docking: longest time without a real detection
+CONFIRM_WINDOW = 1.0         # [s] DOCKED needs a real marker detection at least this recent
 
 class DockPhase(Enum):
     SEARCH = "search"
@@ -74,6 +76,17 @@ def propagate_marker(rng: float, bearing: float, view_angle: float,
     qy = -s * (px - tx) + c * (py - ty)
     return math.hypot(qx, qy), math.atan2(qy, qx), float(wrap_angle(view_angle - dtheta))
 
+# Marker range, bearing and view angle predicted from an ESTIMATED robot pose (None if unusable)
+def marker_from_pose(x_est, cfg: Config = CONFIG, landmark=None) -> Optional[tuple[float, float, float]]:
+    x = np.asarray(x_est, dtype=float)
+    if x.shape != (3,) or not np.all(np.isfinite(x)):
+        return None
+    lm = default_landmark(cfg) if landmark is None else landmark
+    rng, bearing = measurement_model(x, lm)
+    if rng < 1e-6:
+        return None
+    return float(rng), float(bearing), float(view_angle_model(x, cfg.env.dock_pose[2]))
+
 def is_docked(rng: float, bearing: float, view_angle: float, cfg: Config = CONFIG) -> bool:
     d = cfg.docking
     axis = wrap_angle(bearing - view_angle)
@@ -93,6 +106,8 @@ def docking_command(rng: float, bearing: float, view_angle: float,
     axis = float(wrap_angle(bearing - view_angle))
     speed *= float(np.clip(1.0 - abs(axis) / AXIS_SLOW, 0.3, 1.0))     # slow down while off the marker axis
     w = (K_BEARING + K_AXIS) * bearing - K_AXIS * view_angle
+    if abs(bearing) >= BETA_MAX:                                        # not moving: just turn towards the marker
+        w = (K_BEARING + K_AXIS) * bearing                              # (the view term could cancel it: dead-lock)
     return limit_command(speed, w, cfg)
 
 def _is_valid(marker: Optional[MarkerMeasurement]) -> bool:
@@ -112,6 +127,8 @@ class DockingController:
         self._arrived_time = 0.0
         self._t_start: Optional[float] = None
         self._last_t: Optional[float] = None
+        self._last_seen: Optional[float] = None   # time of the last REAL marker detection
+        self._unseen_time = 0.0                   # time since the last real detection [s]
 
     def begin(self, x_est=None, landmark=None) -> None:
         self.reset()
@@ -138,8 +155,14 @@ class DockingController:
         self.phase = DockPhase.FAILED
         return self._command(0.0, 0.0)
     
+    # Docking command for one control step.
+    # With x_est=None the raw marker measurement drives the controller (propagated with odometry
+    # for up to MEASUREMENT_TIMEOUT). With x_est (EKF pose) the controller works on the
+    # range / bearing / view angle predicted from the estimate, so it keeps going through short
+    # marker losses. Real detections still matter: they feed the EKF, reset the blind timer and
+    # are required (within CONFIRM_WINDOW) before DOCKED is declared.
     def update(self, marker: Optional[MarkerMeasurement],
-            odometry: OdometryIncrement) -> DockCommand:
+            odometry: OdometryIncrement, x_est=None) -> DockCommand:
         t = float(odometry.time)
         dt = 0.0 if self._last_t is None else max(0.0, t - self._last_t)
         self._last_t = t
@@ -147,6 +170,18 @@ class DockingController:
             self._t_start = t
         if self.finished:
             return self._command(0.0, 0.0)
+
+        # Bookkeeping of real detections (used by both modes)
+        if _is_valid(marker):
+            self._last_seen = t
+            self._unseen_time = 0.0
+        else:
+            self._unseen_time += dt
+
+        if x_est is not None:
+            est = marker_from_pose(x_est, self.cfg)
+            if est is not None:
+                return self._update_estimated(est, marker, t, dt)
 
         # Keep the stored measurement up to date.
         if _is_valid(marker):
@@ -188,6 +223,47 @@ class DockingController:
 
         v, w = docking_command(m.range, m.bearing, m.view_angle, self.cfg)
         return self._command(v, w, m)
+
+    # Docking step driven by the estimated pose. `est` = (range, bearing, view angle) from the EKF.
+    def _update_estimated(self, est, marker: Optional[MarkerMeasurement],
+                        t: float, dt: float) -> DockCommand:
+        rng, bearing, view = est
+        if t - self._t_start > MAX_DOCK_TIME:
+            return self._fail()
+
+        # Blind for too long: the estimate may be wrong, so stop trusting it and search instead.
+        if self._unseen_time > BLIND_TIMEOUT:
+            self.phase = DockPhase.SEARCH
+            self._arrived_time = 0.0
+            self._search_time += dt
+            if self._search_time > self.cfg.docking.max_search_time:
+                return self._fail()
+            return self._command(0.0, self._search_sign * SEARCH_OMEGA)
+        self._search_time = 0.0
+
+        if _is_valid(marker):
+            self._search_sign = 1.0 if marker.bearing >= 0.0 else -1.0
+        meas = _Measurement(rng, bearing, view, t)
+        self._meas = meas
+
+        seen_recently = (self._last_seen is not None
+                        and (t - self._last_seen) <= CONFIRM_WINDOW + 1e-9)
+        if seen_recently and is_docked(rng, bearing, view, self.cfg):
+            self.phase = DockPhase.DOCKED
+            return self._command(0.0, 0.0, meas)
+
+        d = self.cfg.docking
+        if rng <= d.target_distance + d.distance_tolerance:
+            self.phase = DockPhase.ALIGN
+            self._arrived_time += dt
+            if self._arrived_time > ALIGN_TIMEOUT:
+                return self._fail()
+        else:
+            self.phase = DockPhase.APPROACH
+            self._arrived_time = 0.0
+
+        v, w = docking_command(rng, bearing, view, self.cfg)
+        return self._command(v, w, meas)
     
 if __name__ == "__main__":
     from simulation import Simulation

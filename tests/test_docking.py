@@ -10,11 +10,12 @@ pytest.importorskip("cv2")
 import docking
 from config import CONFIG
 from docking import (
-    ALIGN_TIMEOUT, BETA_MAX, DOCK_MAX_SPEED, DOCK_MIN_SPEED, K_AXIS, K_BEARING, K_CENTER,
-    K_RANGE, SEARCH_OMEGA, DockCommand, DockPhase, DockingController, docking_command,
-    is_docked, min_visible_range, propagate_marker,
+    ALIGN_TIMEOUT, BETA_MAX, BLIND_TIMEOUT, DOCK_MAX_SPEED, DOCK_MIN_SPEED, K_AXIS, K_BEARING,
+    K_CENTER, K_RANGE, MAX_DOCK_TIME, SEARCH_OMEGA, DockCommand, DockPhase, DockingController,
+    docking_command, is_docked, marker_from_pose, min_visible_range, propagate_marker,
 )
-from robot_model import measurement_model, motion_model, wrap_angle
+from estimator import EKFEstimator
+from robot_model import measurement_model, motion_model, view_angle_model, wrap_angle
 from sensing import (
     MarkerMeasurement, OdometryIncrement, Sensing, camera_forward_offset, camera_matrix,
 )
@@ -122,6 +123,11 @@ def test_docking_command_turns_first_when_marker_is_far_off_centre():
     v, w = docking_command(1.0, BETA_MAX + 0.1, 0.0)
     assert v == 0.0 and w > 0
 
+
+def test_docking_command_never_lets_the_view_term_cancel_the_turn_towards_the_marker():
+    # Far off-centre the robot does not translate; the view term must not stop it from turning.
+    v, w = docking_command(1.0, -(BETA_MAX + 0.1), -1.0)
+    assert v == 0.0 and w < 0
 
 def test_docking_command_view_angle_term():
     assert docking_command(1.0, 0.0, +0.2)[1] < 0
@@ -260,9 +266,9 @@ def true_marker(pose, t, rng=None):
     if abs(b) >= HALF_FOV or r <= MIN_RANGE or abs(view) >= 1.2:
         return None                                        # outside the field of view
     if rng is not None:                                    # measurement noise
-        r += rng.normal(0.0, 0.01)
-        b += rng.normal(0.0, 0.005)
-        view += rng.normal(0.0, 0.03)
+        r += rng.normal(0.0, CONFIG.camera.range_noise_std)
+        b += rng.normal(0.0, CONFIG.camera.bearing_noise_std)
+        view += rng.normal(0.0, getattr(CONFIG.camera, "view_noise_std", 0.03))
     return marker(r, b, view, t)
 
 
@@ -322,11 +328,191 @@ def test_closed_loop_docks_with_measurement_noise():
 def test_closed_loop_fails_when_the_marker_is_never_seen():
     far_away = (DOCK_X - 0.7, DOCK_Y, math.pi)              # facing away from the marker
     dock = DockingController()
-    cmd = None
+    dock.begin(far_away)
+    x, cmd = np.array(far_away, dtype=float), None
     for k in range(int((D.max_search_time + 2.0) / DT)):
-        cmd = dock.update(None, odom(k * DT))
-    assert far_away is not None and cmd.phase is DockPhase.FAILED
+        cmd = dock.update(None, odom(k * DT))               # the camera never delivers a detection
+        if cmd.finished:
+            break
+        x = motion_model(x, cmd.v * DT, cmd.w * DT)
+    assert cmd.phase is DockPhase.FAILED
+    np.testing.assert_allclose(x[:2], far_away[:2])         # it only rotated, it never drove blind
 
+
+def test_closed_loop_search_finds_a_marker_behind_the_robot():
+    x, cmd, _ = run_dock((DOCK_X - 0.7, DOCK_Y, math.pi))
+    assert cmd.phase is DockPhase.DOCKED
+    check_final_pose(x, lateral_tol=0.05, heading_tol=0.2)
+
+
+def test_docking_fails_after_the_total_time_limit():
+    dock = DockingController()
+    cmd = None
+    for k in range(int((MAX_DOCK_TIME + 1.0) / DT)):         # robot never moves, marker stays far
+        cmd = dock.update(marker(1.5, 0.0, 0.0, k * DT), odom(k * DT))
+    assert cmd.phase is DockPhase.FAILED and cmd.finished
+
+
+# ----------------------------------------- docking driven by the EKF estimate (x_est)
+def test_marker_from_pose_matches_the_models():
+    pose = np.array([DOCK_X - 0.8, DOCK_Y - 0.1, 0.15])
+    r, b, v = marker_from_pose(pose)
+    r_ref, b_ref = measurement_model(pose, LANDMARK)
+    assert r == pytest.approx(r_ref) and b == pytest.approx(b_ref)
+    assert v == pytest.approx(view_angle_model(pose, DOCK_YAW))
+
+
+def test_marker_from_pose_rejects_unusable_poses():
+    assert marker_from_pose([float("nan"), 0.0, 0.0]) is None
+    assert marker_from_pose([DOCK_X, DOCK_Y, 0.0]) is None   # on top of the marker
+    assert marker_from_pose([1.0, 2.0]) is None              # wrong shape
+
+
+def test_estimate_mode_keeps_approaching_without_a_marker():
+    pose = (DOCK_X - 1.0, DOCK_Y, HEAD_ON)
+    dock = DockingController()
+    dock.update(marker(1.0, 0.0, 0.0, 0.0), odom(0.0), pose)
+    cmd = None
+    for k in range(1, int(1.5 / DT)):                        # 1.5 s with no detection
+        cmd = dock.update(None, odom(k * DT), pose)
+    assert cmd.phase is DockPhase.APPROACH and cmd.v > 0.0  # raw mode would be searching by now
+    assert cmd.marker_range == pytest.approx(1.0)
+
+
+def test_estimate_mode_turns_towards_the_marker_when_facing_away():
+    cmd = DockingController().update(None, odom(0.0), (DOCK_X - 0.7, DOCK_Y, math.pi / 2))
+    assert cmd.v == 0.0 and cmd.w < 0.0                     # marker is on the right
+
+
+def test_estimate_mode_stops_trusting_the_estimate_when_blind_for_too_long():
+    pose = (DOCK_X - 1.0, DOCK_Y, HEAD_ON)
+    dock = DockingController()
+    cmd = None
+    n_blind = int((BLIND_TIMEOUT + 1.0) / DT)
+    for k in range(int((BLIND_TIMEOUT + D.max_search_time + 2.0) / DT)):
+        cmd = dock.update(None, odom(k * DT), pose)
+        if k == n_blind:
+            assert cmd.phase is DockPhase.SEARCH and cmd.v == 0.0
+    assert cmd.phase is DockPhase.FAILED
+
+
+def test_estimate_mode_needs_a_real_detection_to_declare_docked():
+    pose = (DOCK_X - D.target_distance, DOCK_Y, HEAD_ON)    # the estimate says "docked"
+    dock = DockingController()
+    cmd = dock.update(None, odom(0.0), pose)
+    assert cmd.phase is DockPhase.ALIGN and not cmd.docked
+    cmd = dock.update(marker(D.target_distance, 0.0, 0.0, DT), odom(DT), pose)
+    assert cmd.docked and cmd.finished
+
+
+def test_estimate_mode_falls_back_to_the_raw_measurement_for_an_unusable_pose():
+    cmd = DockingController().update(marker(0.8, 0.0, 0.0, 0.0), odom(0.0), [float("nan"), 0.0, 0.0])
+    assert cmd.phase is DockPhase.APPROACH
+    assert cmd.marker_range == pytest.approx(0.8)
+
+
+def run_dock_ekf(x0, seed=0, bias=0.0, blackout=None, use_estimate=True, max_time=60.0):
+    """Docking with the EKF in the loop: noisy odometry with a heading bias [rad/step], noisy
+    10 Hz camera and an optional camera blackout window (t0, t1) [s]. The controller never sees
+    the true pose; the EKF starts from a perturbed pose drawn from its own P0."""
+    rng = np.random.default_rng(seed)
+    rob = CONFIG.robot
+    s_ds = rob.wheel_radius * rob.encoder_noise_std / math.sqrt(2.0)
+    s_dth = rob.wheel_radius * rob.encoder_noise_std * math.sqrt(2.0) / rob.wheel_base
+    x = np.array(x0, dtype=float)
+    ekf = EKFEstimator(CONFIG, gate=9.21, use_lidar=False)
+    ekf.reset(x + rng.normal(0.0, CONFIG.ekf.init_pose_std))
+    dock = DockingController()
+    dock.begin(ekf.x)
+    ds = dth = 0.0
+    last_cam = -math.inf
+    cmd, t = None, 0.0
+    for k in range(int(max_time / DT)):
+        t = k * DT
+        ds_m = ds + rng.normal(0.0, s_ds)
+        dth_m = dth + bias + rng.normal(0.0, s_dth)
+        m = None
+        if t - last_cam >= 0.1 - 1e-9:
+            last_cam = t
+            if blackout is None or not (blackout[0] <= t < blackout[1]):
+                m = true_marker(x, t, rng)
+        ekf.predict(ds_m, dth_m)
+        ekf.update(m)
+        cmd = dock.update(m, odom(t, ds_m, dth_m), ekf.x.copy() if use_estimate else None)
+        if cmd.finished:
+            break
+        ds, dth = cmd.v * DT, cmd.w * DT
+        x = motion_model(x, ds, dth)
+    return x, cmd, t
+
+
+def final_pose_ok(x, lateral_tol=0.08, heading_tol=0.25):
+    """Ground-truth check of the final pose (evaluation only)."""
+    rng = math.hypot(DOCK_X - x[0], DOCK_Y - x[1])
+    return (D.target_distance - D.distance_tolerance <= rng <= D.target_distance + D.distance_tolerance + 0.04
+            and lateral_error(x) < lateral_tol
+            and abs(wrap_angle(x[2] - HEAD_ON)) < heading_tol)
+
+
+def test_closed_loop_with_ekf_docks_from_the_handoff_pose():
+    wx, wy = CONFIG.env.waypoints[-1]
+    x, cmd, t = run_dock_ekf((wx, wy, math.pi / 2), seed=1)
+    assert cmd.phase is DockPhase.DOCKED and t < 40.0
+    assert final_pose_ok(x)
+
+
+def test_closed_loop_with_ekf_survives_odometry_bias_and_a_marker_blackout():
+    wx, wy = CONFIG.env.waypoints[-1]
+    x, cmd, _ = run_dock_ekf((wx, wy, math.pi / 2), seed=2, bias=0.0004, blackout=(2.0, 4.0))
+    assert cmd.phase is DockPhase.DOCKED
+    assert final_pose_ok(x, lateral_tol=0.10, heading_tol=0.30)
+
+
+def test_estimate_mode_docks_faster_than_raw_mode_through_a_marker_blackout():
+    # The marker disappears for 2 s during the approach. Raw mode has to stop and search,
+    # estimate mode keeps driving on the EKF prediction.
+    wx, wy = CONFIG.env.waypoints[-1]
+    times = {True: [], False: []}
+    ok = {True: 0, False: 0}
+    for seed in range(10):
+        for use_estimate in (True, False):
+            x, cmd, t = run_dock_ekf((wx, wy, math.pi / 2), seed=seed, bias=0.0004,
+                                    blackout=(2.0, 4.0), use_estimate=use_estimate)
+            times[use_estimate].append(t)
+            ok[use_estimate] += int(cmd.phase is DockPhase.DOCKED and final_pose_ok(x))
+    print("blackout 2 s, mean docking time [s] (EKF | raw):",
+        round(float(np.mean(times[True])), 1), round(float(np.mean(times[False])), 1))
+    assert ok[True] >= 9 and ok[True] >= ok[False]
+    assert np.mean(times[True]) < np.mean(times[False])
+
+
+def success_rate(pos_span, heading_span, n_trials, use_estimate):
+    """Fraction of random handoff poses that end DOCKED AND pass the ground-truth pose check."""
+    wx, wy = CONFIG.env.waypoints[-1]
+    ok = 0
+    for seed in range(n_trials):
+        r = np.random.default_rng(100 + seed)
+        x0 = (wx + r.uniform(-pos_span, pos_span), wy + r.uniform(-pos_span, pos_span),
+            math.pi / 2 + r.uniform(-heading_span, heading_span))
+        x, cmd, _ = run_dock_ekf(x0, seed=seed, bias=0.0004, use_estimate=use_estimate)
+        ok += int(cmd.phase is DockPhase.DOCKED and final_pose_ok(x))
+    return ok / n_trials
+
+
+def test_repeated_trials_nominal_envelope():
+    # Handoff within +-0.10 m and +-0.3 rad of the nominal pose: the system should always dock.
+    rate = success_rate(0.10, 0.3, 20, use_estimate=True)
+    print("nominal envelope, success rate (EKF estimate):", rate)
+    assert rate >= 0.95
+
+
+def test_repeated_trials_stress_envelope():
+    # +-0.15 m / +-0.5 rad includes starts very close to the marker and far off its axis. There the
+    # control law can stall: robot arrives at the target range with a view-angle error above
+    # AXIS_TOLERANCE and ALIGN only rotates in place, so it times out. Known limit, so only a floor.
+    rate = success_rate(0.15, 0.5, 20, use_estimate=True)
+    print("stress envelope, success rate (EKF estimate):", rate)
+    assert rate >= 0.85
 
 # --------------------------------------------------------- real MuJoCo (optional)
 @pytest.fixture

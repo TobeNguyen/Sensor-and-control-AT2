@@ -44,6 +44,7 @@ class CameraConfig:
     marker_size: float = 0.15      # side length [m]
     range_noise_std: float = 0.02  # [m]
     bearing_noise_std: float = 0.01  # [rad]
+    view_noise_std: float = 0.03     # [rad] std of the marker view angle (third camera measurement)
 
 @dataclass(frozen=True)
 class EKFConfig:

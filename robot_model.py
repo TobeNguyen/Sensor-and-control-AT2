@@ -61,11 +61,66 @@ def measurement_jacobian(x, landmark) -> np.ndarray:
     return np.array([[-dx / r, -dy / r, 0.0],
                     [dy / q, -dx / q, -1.0]])
 
-# Measurement residual with the bearing wrapped to (-pi, pi)
+# Measurement residual with the bearing (and the view angle, if present) wrapped to (-pi, pi)
 def innovation(z, z_pred) -> np.ndarray:
     nu = np.asarray(z, dtype=float) - np.asarray(z_pred, dtype=float)
     nu[1] = wrap_angle(nu[1])
+    if nu.shape[0] > 2:
+        nu[2] = wrap_angle(nu[2])
     return nu
+
+# Expected view angle of the dock marker: 0 when the robot looks straight at the marker face.
+# The marker normal points along dock_yaw, so the robot heading that faces it is dock_yaw - pi.
+def view_angle_model(x, dock_yaw: float) -> float:
+    return wrap_angle(dock_yaw - math.pi - x[2])
+
+# Expected [range, bearing, view_angle] measurement of the dock marker from pose x
+def measurement_model_pose(x, landmark, dock_yaw: float) -> np.ndarray:
+    r, b = measurement_model(x, landmark)
+    return np.array([r, b, view_angle_model(x, dock_yaw)])
+
+# 3x3 Jacobian of [range, bearing, view_angle]; the view angle depends on theta only
+def measurement_jacobian_pose(x, landmark) -> np.ndarray:
+    return np.vstack([measurement_jacobian(x, landmark), [0.0, 0.0, -1.0]])
+
+# Expected range of one LiDAR beam in the known room map (4 walls + circular obstacles).
+# beam_angle is in the robot frame; range_max is returned when nothing is hit.
+def lidar_range_model(x, beam_angle: float, cfg: Config = CONFIG) -> float:
+    px, py, th = x
+    a = th + beam_angle
+    c, s = math.cos(a), math.sin(a)
+    hx, hy = cfg.env.room_half_size
+    best = cfg.lidar.range_max
+    # Inner wall faces at x = +-hx and y = +-hy
+    if c > 1e-9:
+        best = min(best, (hx - px) / c)
+    elif c < -1e-9:
+        best = min(best, (-hx - px) / c)
+    if s > 1e-9:
+        best = min(best, (hy - py) / s)
+    elif s < -1e-9:
+        best = min(best, (-hy - py) / s)
+    # Ray-circle intersection for every obstacle (nearest entry point)
+    for ox, oy, r in cfg.env.obstacles:
+        qx, qy = px - ox, py - oy
+        b = qx * c + qy * s
+        disc = b * b - (qx * qx + qy * qy - r * r)
+        if disc >= 0.0:
+            t = -b - math.sqrt(disc)
+            if 0.0 < t < best:
+                best = t
+    return float(best)
+
+# Gradient of the expected beam range w.r.t. [x, y, theta] (central finite differences)
+def lidar_jacobian(x, beam_angle: float, cfg: Config = CONFIG, eps: float = 1e-6) -> np.ndarray:
+    x = np.asarray(x, dtype=float)
+    H = np.zeros(3)
+    for i in range(3):
+        d = np.zeros(3)
+        d[i] = eps
+        H[i] = (lidar_range_model(x + d, beam_angle, cfg)
+                - lidar_range_model(x - d, beam_angle, cfg)) / (2.0 * eps)
+    return H
 
 # Tracking error expressed in the robot frame
 def pose_error(x, x_ref) -> np.ndarray:
@@ -112,9 +167,11 @@ def analyse_model(x, v: float, w: float, landmark=None, cfg: Config = CONFIG) ->
     Ad, Bd = tracking_error_model(v, w, dt)
     F = jacobian_F(x, v * dt, w * dt)
     H = measurement_jacobian(x, landmark)
+    H3 = measurement_jacobian_pose(x, landmark)      # range + bearing + marker view angle
     return {
         "controllability_rank": int(np.linalg.matrix_rank(controllability_matrix(Ad, Bd))),
         "observability_rank": int(np.linalg.matrix_rank(observability_matrix(F, H))),
+        "observability_rank_with_view": int(np.linalg.matrix_rank(observability_matrix(F, H3))),
         "n_states": N_STATE,
     }
 

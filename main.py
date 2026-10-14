@@ -254,7 +254,7 @@ class RunResult:
             f"Dock lateral error: {m['dock_lateral']:.3f} m",
             f"Dock heading error: {m['dock_heading']:.3f} rad",
         ])
-    
+
 @contextmanager
 def _viewer(sim: Simulation, enabled: bool):
     if not enabled:
@@ -270,8 +270,9 @@ def _viewer(sim: Simulation, enabled: bool):
 
 def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=None,
                 scene_dir: Optional[Path] = None, viewer: bool = False,
-                stop_on_collision: bool = True, verbose: bool = False) -> RunResult:
-    estimator = EKFEstimator(cfg) if estimator is None else estimator
+                stop_on_collision: bool = True, verbose: bool = False,
+                dock_use_estimate: bool = True) -> RunResult:
+    estimator = EKFEstimator(cfg, gate=9.21) if estimator is None else estimator
     nav, dock, log = Navigator(cfg), DockingController(cfg), TrialLog()
     phase, reason = Phase.NAVIGATE, "timeout"
     nav_time: Optional[float] = None
@@ -301,6 +302,7 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
                 frame = sensing.read()
                 estimator.predict(frame.odometry.ds, frame.odometry.dtheta)
                 estimator.update(frame.marker)
+                estimator.update_lidar(frame.lidar)
                 x_est = np.array(estimator.x, dtype=float)
 
                 # 2) decide the velocity command from the ESTIMATED pose only
@@ -314,7 +316,8 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
                     else:
                         v, w = ncmd.v, ncmd.w
                 if phase is Phase.DOCK:
-                    dcmd = dock.update(frame.marker, frame.odometry)
+                    dcmd = dock.update(frame.marker, frame.odometry,
+                                    x_est if dock_use_estimate else None)
                     if dcmd.finished:
                         phase = Phase.DONE if dcmd.docked else Phase.FAILED
                         reason = "docked" if dcmd.docked else "docking failed"
@@ -420,6 +423,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--plot", action="store_true", help="save results/run.png")
     parser.add_argument("--compare", action="store_true",
                         help="also run a dead-reckoning baseline (no marker updates) for comparison")
+    parser.add_argument("--dock-raw", action="store_true",
+                        help="dock on the raw marker measurement instead of the EKF estimate")
     return parser
 
 def main(argv=None) -> int:
@@ -427,12 +432,13 @@ def main(argv=None) -> int:
     use_viewer = not args.no_viewer
     if use_viewer:
         _ensure_mjpython()
-    result = run_pipeline(CONFIG, seed=args.seed, viewer=use_viewer, verbose=True)
+    result = run_pipeline(CONFIG, seed=args.seed, viewer=use_viewer, verbose=True,
+                        dock_use_estimate=not args.dock_raw)
 
     dr_rmse = None
     if args.compare:
         baseline = run_pipeline(CONFIG, seed=args.seed,
-                                estimator=EKFEstimator(CONFIG, use_marker=False))
+                                estimator=EKFEstimator(CONFIG, use_marker=False, use_lidar=False))
         dr_rmse = compute_report(baseline, CONFIG).get("position_rmse")
 
     print()

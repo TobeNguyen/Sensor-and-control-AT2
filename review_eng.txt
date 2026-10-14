@@ -2,9 +2,11 @@
 TRACK A REVIEW SHEET - TurtleBot3 visual waypoint navigation + docking
 Course: 41014 Sensors and Control in Mechatronics Systems
 Last verified run: [date/time]  |  Command: pytest -v  /  python main.py
-pytest result: [__ passed, __ failed]   (last known: 248 passed, 4 failed,
-all 4 docking-related, before the latest docking/config fixes)
-main.py result: [SUCCESS/FAILURE, reason, time, dock range/lateral/heading]
+pytest result: [__ passed, 0 failed]
+main.py result: [SUCCESS, time __ s, dock range __ m, lateral __ m,
+                 heading/axis __ rad, collision: none]
+Consistency (same run): mean NEES [__] (target ~3), mean NIS [__] (~2),
+                 EKF RMSE [__] m vs dead-reckoning [__] m (--compare)
 =====================================================================
 
 STATUS LEGEND
@@ -20,14 +22,14 @@ STATUS LEGEND
 Goal
   A TurtleBot3 (differential drive, 2D LiDAR + camera) in MuJoCo drives
   through a room with 3 circular obstacles, follows 4 waypoints, then
-  docks visually to an ArUco marker (ID 0, DICT_4X4_50) at the charging
-  station. Hardware demo reuses the same pipeline.
+  docks visually to an ArUco marker (ID 0, DICT_4X4_50, 0.15 m) at the
+  charging station. The hardware demo reuses the same pipeline.
 
 Hard constraint
   The controller uses the ESTIMATED pose only. Ground truth is logged
   for evaluation only.
 
-Data flow (per 0.02 s control step, 50 Hz)
+Data flow (per 0.02 s control step, 50 Hz; camera at 10 Hz)
   simulation -> sensing.py + calibration.py (odometry, LiDAR, marker
   range/bearing/view angle) -> estimator.py (EKF predict + update)
   -> navigation.py (TRACK/AVOID) -> docking.py (visual servoing)
@@ -37,10 +39,10 @@ Data flow (per 0.02 s control step, 50 Hz)
 Demo success criteria
   1. Pipeline runs end to end without crashing.
   2. No collision, finishes before the 120 s limit.
-  3. Final pose: range 0.40 +/- 0.05 m from marker, lateral error
-     < 0.06-0.08 m, heading error < 0.2 rad.
-  4. Controller input is the EKF estimate (tests confirm this).
-  5. Numbers shown come from a logged run of the submitted code.
+  3. Docked per the code's own rule: range <= 0.45 m (target 0.40 +/-
+     0.05), |bearing| <= 0.05 rad, |axis| <= 0.10 rad.
+  4. Controller input is the EKF estimate (a test confirms this).
+  5. Every number shown comes from a logged run of the submitted code.
 
 =====================================================================
 02 - THEORY CHEAT SHEET
@@ -52,63 +54,83 @@ Demo success criteria
             x' = x + ds*cos(theta + dtheta/2)
             y' = y + ds*sin(theta + dtheta/2)
             theta' = theta + dtheta
-  Why     : it is the prediction model of the EKF and the plant of the
-            LQR. Parameters: r = 0.033 m, L = 0.287 m.
+  Why     : prediction model of the EKF and plant of the LQR.
+            r = 0.033 m, L = 0.287 m.
 
 2.2 State-space, controllability, observability  (robot_model.py)
   Meaning : which states can be steered and which can be inferred.
   Core    : e[k+1] = A e[k] + B du[k];  controllable if rank[B AB A^2B]=n
-            observable if rank[H; HA; HA^2]=n
-  Result  : rank 3/3 while moving, 2/3 when stopped (both).
-  Why     : the system is not fully controllable/observable at standstill,
-            so the model analysis must state the operating condition.
+            observable if rank[H; HF; HF^2]=n  (H = marker Jacobian)
+  Result  : rank 3/3 while moving (v = 0.15-0.2 m/s), 2/3 when stopped
+            (both). Checked numerically.
+  Why     : at standstill the controllability matrix loses the lateral
+            direction (a unicycle cannot move sideways). For observability,
+            one range+bearing measurement of a known point leaves one
+            direction unobservable: rotating the robot around the marker
+            (tangential position and heading change together). Motion
+            over time makes all 3 states observable. Note: the EKF uses
+            only range and bearing, not the marker view angle.
+  Caveat  : while moving slowly the smallest singular value is small
+            (~1e-3 over one step), so observability builds up over time.
 
 2.3 Camera model, calibration, coordinate frames  (calibration.py)
   Meaning : how pixels relate to metric rays; how camera, robot and
             world frames connect.
   Core    : u = fx*X/Z + cx, v = fy*Y/Z + cy; K = [[fx 0 cx],[0 fy cy],
             [0 0 1]]; fx = (H/2)/tan(fovy/2) = 415.7 px (640x480, 60 deg)
-            p_robot = R*p_cam + t (camera offset 0.23 m forward)
+            PnP (IPPE + iterative) gives the marker pose in metres
+            (marker size 0.15 m gives the scale)
+            p_robot = R*p_cam + t (camera 0.23 m forward of robot centre)
   Why     : marker range/bearing must be expressed in the robot frame
             before the EKF uses them.
 
 2.4 LiDAR processing and measurement models  (sensing.py)
   Meaning : turn raw data into usable measurements.
   Core    : 360 beams, 0.12-3.5 m, sigma 0.01 m; point = r*[cos a, sin a];
-            marker: z = [range, bearing, view_angle] from ArUco pose
-  Why     : LiDAR gives free-space for avoidance; marker gives the
-            absolute correction for the EKF and the docking error.
+            marker: z = [range, bearing, view_angle] from the ArUco pose
+  Why     : LiDAR gives free space for avoidance; the marker gives the
+            absolute correction for the EKF and the error for docking.
 
 2.5 EKF, covariance, innovation  (estimator.py)
   Meaning : fuse odometry (prediction) with marker range/bearing (update).
-  Core    : x- = f(x, ds, dtheta);  P- = F P F^T + Q
+  Core    : x- = f(x, ds, dtheta)
+            P- = F P F^T + G Su G^T (+ q_extra)
+            Su from encoder noise (0.002 rad): sigma_ds ~ 4.7e-5 m,
+            sigma_dtheta ~ 3.3e-4 rad per step
             nu = z - h(x-);  S = H P- H^T + R;  K = P- H^T S^-1
-            x = x- + K nu;  P = (I - K H) P-
+            x = x- + K nu
+            P = (I-KH) P- (I-KH)^T + K R K^T   (Joseph form)
             h(x) = [ sqrt(dx^2+dy^2),  atan2(dy,dx) - theta ]
             (bearing innovation wrapped to [-pi, pi])
   Why     : odometry drifts; a single known landmark bounds the drift.
-  Config  : P0 std 0.05; Q std 0.01 per step; R std (0.02 m, 0.01 rad).
+  Config  : P0 std 0.05; R std (0.02 m, 0.01 rad); gate off by default.
+  Honest  : process noise comes from the encoder noise setting, and R from
+            the camera config. Neither is measured from data.
 
 2.6 LQR feedback control  (controller.py)
   Meaning : optimal state feedback on the tracking error.
   Core    : minimise sum(e^T Q e + du^T R du);  du = -K e
             Q = diag(10,10,1), R = diag(1,1); K from the discrete Riccati
-            equation; commands clipped to v <= 0.26 m/s, |w| <= 1.82 rad/s
-  Why     : gives stable, tunable tracking; closed-loop max |pole| = 0.988
-            (<1, stable).
+            equation at v = 0.15 m/s; commands clipped to v <= 0.26 m/s,
+            |w| <= 1.82 rad/s; forward speed scaled down near obstacles
+  Why     : stable, tunable tracking; closed-loop max |pole| = 0.988 (<1).
 
 2.7 Obstacle avoidance and goal tracking  (navigation.py)
   Meaning : reach waypoints without collision using only LiDAR.
   Core    : free-corridor test of half-width (body_radius + margin) and
             length 0.6 m; pick the free heading nearest the goal with a
-            hysteresis cost; TRACK <-> AVOID with an exit delay.
+            hysteresis cost; TRACK <-> AVOID, leave AVOID after 25 clear
+            steps (0.5 s); hand over to docking if stuck near the last
+            waypoint.
   Why     : reactive and cheap; known weakness is local minima.
 
 2.8 Visual servoing  (docking.py)
   Meaning : steer from the marker observation until aligned with it.
-  Core    : v = clip(K_range*(range - 0.40), 0.03, 0.12) scaled down for
-            large bearing/axis error
+  Core    : v = clip(K_range*(range - 0.40), 0.03, 0.12), scaled down for
+            large bearing and axis error
             w = (K_bearing + K_axis)*bearing - K_axis*view_angle
+            (K_bearing = 1.5, K_axis = 4.0)
+            inside range <= 0.45: v = 0, only centre the marker
             docked if range <= 0.45, |bearing| <= 0.05, |axis| <= 0.10
             axis = bearing - view_angle
   Why     : the camera error is the most direct signal for alignment.
@@ -118,7 +140,7 @@ Demo success criteria
   Core    : NAVIGATE -> DOCK -> DONE | FAILED; docking sub-states
             SEARCH, APPROACH, ALIGN, DOCKED, FAILED; collision and
             timeout checks; invalid estimate -> stop.
-  Why     : makes behaviour predictable and failures diagnosable.
+  Why     : predictable behaviour, easy to diagnose failures.
 
 2.10 RMSE, NEES, NIS, robustness  (main.py, estimator.py)
   Meaning : evidence that the estimator is accurate AND honest.
@@ -132,40 +154,38 @@ Demo success criteria
 =====================================================================
 Component              Status  Notes / evidence
 ---------------------  ------  ----------------------------------------
-Robot model, ranks     [T]     test_robot_model.py all pass (Jacobians
-                               checked against numerical ones)
-Sensing (LiDAR, ArUco, [T]     test_sensing.py all pass, incl. real
-odometry)                      MuJoCo tests
-Camera intrinsics      [A]     NOMINAL values from the MuJoCo camera,
-                               not a calibration result. Do not call
-                               them "calibrated".
-Calibration procedure  [B]     Chessboard routine recovers intrinsics on
-                               synthetic views only. Not run on real
-                               images; no reprojection error reported.
-EKF predict/update     [T]     test_estimator.py all pass; marker
-                               updates occur in the full run
-EKF tuning (Q, R)      [A]     Values not derived from measured noise.
-                               Earlier run: mean NEES 29.96 (target ~3),
-                               i.e. over-confident. Re-measure.
-EKF gating             [B]     Implemented and unit-tested; disabled in
-                               the default run (gate = None)
-Dead-reckoning         [B]     Test passes; python main.py --compare
-comparison                     gives the full-run RMSE [run it]
+Robot model, ranks     [T]     test_robot_model.py pass (Jacobians checked
+                               against numerical ones)
+Sensing (LiDAR, ArUco, [T]     test_sensing.py pass, incl. real MuJoCo
+odometry)                      tests
+Camera intrinsics      [A]     NOMINAL values from the MuJoCo camera, not
+                               a calibration result. Do not call them
+                               "calibrated".
+Calibration procedure  [B]     Chessboard routine implemented; check that
+                               a synthetic-view test exists before
+                               claiming it. Not run on real images; no
+                               reprojection error reported.
+EKF predict/update     [T]     test_estimator.py pass; marker updates
+                               occur in the full run
+EKF tuning (noise)     [A]     Process noise from encoder noise setting,
+                               R from camera config; not measured. Earlier
+                               run: mean NEES 29.96 (target ~3). Current
+                               value: [__] - fill from the latest run.
+EKF gating             [B]     Implemented and unit-tested; off in the
+                               default run (gate = None)
+Dead-reckoning         [B]     Test passes; --compare gives the full-run
+comparison                     RMSE: [fill in]
 LQR controller         [T]     Stable (max |pole| 0.988); tests pass.
-                               Weights are not yet justified or swept.
-No ground truth in     [T]     test_control_does_not_depend_on_ground_
-control                        truth passes
-Navigation / avoidance [B]     Closed-loop test passes. Earlier real run
-                               looped in AVOID (timeout) with the old
-                               waypoints. Fixes applied (waypoints,
-                               margins, exit delay, hand-over rule):
-                               [confirm with a new main.py run]
-Docking                [P]     Last pytest: 4 failures (off-axis arrival
-                               -> ALIGN timeout). Fixes proposed (last
-                               waypoint 0.7 m from dock, speed reduced
-                               while off-axis). [update after rerun]
-Integration (main.py)  [B]     Runs end to end, logs, table, report,
-                               plot. Success of the full run: [fill in]
+                               Weights not yet justified or swept.
+No ground truth in     [T]     test_control_does_not_depend_on_ground_truth
+control                        passes
+Navigation / avoidance [T]     Tests pass; full run finishes without a
+                               limit cycle: AVOID share [__ %], nav time
+                               [__ s]. Heuristic, not proven.
+Docking                [T]     Tests pass; full run docked: range [__],
+                               lateral [__], axis [__]. Nominal case only.
+Integration (main.py)  [T]     Runs end to end, logs, table, report, plot.
+                               Seed [__], date [__].
 Monte Carlo evaluation [P]     Not present in the submitted code
 Hardware port          [P]     Not started
 Marker loss / slip /   [F]     Planned for teammates
@@ -180,15 +200,12 @@ and conditions that produced it (seed, config, date).
 =====================================================================
 Pri  Task                                   Owner       Acceptance
 ---  -------------------------------------  ----------  --------------
-P0   Make nominal docking succeed           Thien       pytest: 0 failed
-     (rerun tests, apply fixes)                         main.py: SUCCESS,
-                                                        no collision
-P0   Confirm navigation finishes without    Thien       AVOID share and
-     limit cycle on the new waypoints                   time logged
+DONE Nominal docking succeeds, navigation   Thien       pytest 0 failed;
+     finishes without limit cycle                       main.py SUCCESS
 P0   Prepare hardware demo setup            [name]      Pipeline runs on
      (same pipeline, real sensors)                      robot, estimate
                                                         only in control
-P1   Measure sensor noise; set Q and R      [teammate]  Mean NEES in 2-5;
+P1   Measure sensor noise; set noise and R  [teammate]  Mean NEES in 2-5;
      deliberately; enable gating                        method explained
 P1   Dead-reckoning vs EKF comparison       [teammate]  --compare RMSE
                                                         table in report
@@ -201,6 +218,8 @@ P2   Robustness: marker loss, wheel slip,   [teammate]  Trade-off plots
      camera delay, back-off-and-retry                   and diagnosis
 P2   LQR weight justification and sweep     [teammate]  Effort vs error
                                                         table
+P2   Use marker view angle in the EKF       [teammate]  Full observability
+     (optional)                                         from one frame
 P3   Clean repo/README for reproducibility  Team        Fresh clone runs
 
 =====================================================================
@@ -211,8 +230,9 @@ Q1. What is the state and what are the inputs?
      midpoint-integrated odometry.
 
 Q2. Is the system controllable and observable?
-  A: Yes while moving (rank 3/3). When stopped, both ranks drop to 2/3,
-     so heading is not recoverable from a single landmark at standstill.
+  A: Yes while moving (rank 3/3). When stopped, both ranks drop to 2/3:
+     a unicycle cannot move sideways, and range+bearing to one marker
+     cannot tell apart a rotation of the robot around the marker.
 
 Q3. Why an EKF and not a linear KF?
   A: The motion model (sin/cos of theta) and the range-bearing model
@@ -220,12 +240,13 @@ Q3. Why an EKF and not a linear KF?
 
 Q4. What does the EKF fuse?
   A: Wheel odometry in the prediction step; marker range and bearing
-     from the camera in the update step.
+     from the camera in the update step. Without the marker, P grows.
 
-Q5. How did you choose Q and R?
-  A: Currently from the sensor noise settings in the config, not from
-     measured data. NEES showed the filter was over-confident, so
-     re-tuning is the planned next step. (Be honest about this.)
+Q5. How did you choose the noise parameters?
+  A: Process noise comes from the encoder noise setting propagated through
+     the motion Jacobian; R from the camera noise setting. Neither was
+     measured. An earlier NEES of ~30 showed over-confidence, so
+     re-tuning from measured noise is the planned next step.
 
 Q6. How do you know the filter is consistent?
   A: NEES (expected ~3) and NIS (expected ~2). Our logged NEES is
@@ -237,24 +258,23 @@ Q7. Does the controller use ground truth?
 
 Q8. Are the camera parameters calibrated?
   A: No. They are nominal MuJoCo intrinsics. The calibration routine
-     exists and is tested on synthetic views; real-image calibration
-     and reprojection error are pending.
+     exists; real-image calibration and reprojection error are pending.
 
 Q9. Why LQR, and how were the weights chosen?
   A: LQR gives stable optimal feedback on the linearised tracking error.
-     Q = diag(10,10,1), R = I give max |pole| 0.988. Weights have not
-     been swept yet; a sweep is planned.
+     Q = diag(10,10,1) favours position over heading; R = I. Max |pole|
+     0.988. A weight sweep is still to do.
 
 Q10. How does navigation avoid obstacles, and what are its limits?
   A: It checks free corridors from LiDAR and picks the free heading
      nearest the goal, with hysteresis. It is reactive, so it can get
-     trapped in local minima; we saw this and fixed it with waypoints
-     and an AVOID exit delay.
+     trapped in local minima; we saw this and fixed it with new waypoints,
+     an AVOID exit delay and a hand-over rule.
 
 Q11. How does docking work?
   A: Visual servoing: speed from range error, steering from bearing and
-     the marker view angle. It is docked when range, bearing and axis
-     error are inside tolerance.
+     the marker view angle. Docked when range, bearing and axis error are
+     inside tolerance.
 
 Q12. What happens if the marker is lost?
   A: Docking propagates the last measurement with odometry for 0.5 s,
@@ -262,5 +282,7 @@ Q12. What happens if the marker is lost?
      Robust recovery is a future enhancement.
 
 Q13. What are the known limitations?
-  A: Nominal calibration, untuned Q/R, no Monte Carlo statistics yet,
-     no back-off-and-retry in docking, hardware not yet validated.
+  A: Nominal calibration, unmeasured noise parameters, ideal simulated
+     sensors (no wheel slip), no Monte Carlo statistics, heuristic
+     avoidance, single landmark, no back-off-and-retry in docking,
+     hardware not yet validated.
