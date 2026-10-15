@@ -17,6 +17,10 @@ def wrap_angle(angle: float) -> float:
 def default_landmark(cfg: Config = CONFIG) -> np.ndarray:
     return np.array(cfg.env.dock_pose[:2], dtype=float)
 
+# {marker_id: (landmark position (2,), marker yaw)} for the dock and every extra tag
+def landmark_table(cfg: Config = CONFIG) -> dict:
+    return {int(i): (np.array(p[:2], dtype=float), float(p[2])) for i, p in cfg.tag_table().items()}
+
 # Convert two cumulative encoder readings
 def odometry_increment(enc_prev, enc_now, cfg: Config = CONFIG) -> tuple[float, float]:
     dl, dr = np.asarray(enc_now, dtype=float) - np.asarray(enc_prev, dtype=float)

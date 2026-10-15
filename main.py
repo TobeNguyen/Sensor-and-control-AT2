@@ -7,7 +7,7 @@ import os
 import sys
 import time
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
 from typing import Optional
@@ -18,15 +18,19 @@ from calibration import get_calibration, marker_measurement_covariance
 from config import CONFIG, RESULTS_DIR, Config
 from controller import LQRTracker
 from docking import DockingController
-from estimator import EKFEstimator, nees
+from estimator import EKFEstimator, chi2_bounds, nees
 from navigation import Navigator
+from recovery import RecoveryPhase, TagRecovery
 from robot_model import analyse_model, wrap_angle
 from sensing import Sensing
 from simulation import Simulation
 from visualization import RouteVisualizer
 
+MAX_RECOVERIES = 3   # maximum number of tag recoveries per run (avoid endless retry loops)
+
 class Phase(Enum):
     NAVIGATE = "navigate"
+    RECOVER = "recover"
     DOCK = "dock"
     DONE = "done"
     FAILED = "failed"
@@ -53,10 +57,12 @@ class TrialLog:
     nees: list = field(default_factory=list)         # evaluation only (uses ground truth)
     lidar_valid: list = field(default_factory=list)  # valid LiDAR beams per step
     updates: list = field(default_factory=list)      # cumulative EKF marker updates
-    mode: list = field(default_factory=list)         # TRACK / AVOID / DOCK-... / DONE
+    tag_updates: list = field(default_factory=list)  # cumulative EKF updates from extra tags
+    mode: list = field(default_factory=list)         # TRACK / AVOID / DOCK-... / RECOVER-... / DONE
 
     def record(self, t, truth, est, P, phase, v, w,
-            lidar_valid: int = 0, updates: int = 0, mode: str = "") -> None:
+            lidar_valid: int = 0, updates: int = 0, mode: str = "",
+            tag_updates: int = 0) -> None:
         self.t.append(float(t))
         self.truth.append(np.array(truth, dtype=float))
         self.est.append(np.array(est, dtype=float))
@@ -70,6 +76,7 @@ class TrialLog:
             self.nees.append(float("nan"))
         self.lidar_valid.append(int(lidar_valid))
         self.updates.append(int(updates))
+        self.tag_updates.append(int(tag_updates))
         self.mode.append(str(mode))
 
     def arrays(self) -> dict:
@@ -83,13 +90,15 @@ class TrialLog:
             "nees": np.array(self.nees),
             "lidar_valid": np.array(self.lidar_valid),
             "updates": np.array(self.updates),
+            "tag_updates": np.array(self.tag_updates),
             "mode": np.array(self.mode, dtype=str),
         }
 
 # ------------------------------------------------- live table + reports
-# Column titles and widths of the real-time monitor
-_COLS = (("Time (s)", 8), ("Pose est. x,y,th(deg)", 23), ("LiDAR valid", 12),
-        ("EKF upd", 8), ("v, w", 12), ("Mode", 14))
+# Column titles and widths of the real-time monitor# Column titles and widths of the real-time monitor
+_COLS = (("Time (s)", 8), ("Pose est. x,y,th(deg)", 23), ("sigma xy", 9),
+        ("LiDAR valid", 12), ("upd (tag)", 10), ("Tags seen", 10),
+        ("v, w", 12), ("Mode", 14))
 
 def _border(left: str, mid: str, right: str) -> str:
     return left + mid.join("─" * (w + 2) for _, w in _COLS) + right
@@ -109,23 +118,37 @@ def table_footer() -> str:
     return _border("└", "┴", "┘")
 
 # One table row: the pose shown is the ESTIMATED pose (never ground truth)
-def table_row(t, pose, lidar_valid, lidar_total, updates, v, w, mode) -> str:
+def table_row(t, pose, lidar_valid, lidar_total, updates, v, w, mode,
+            sigma_xy: float = float("nan"), tag_updates: int = 0, tags_seen=()) -> str:
+    seen = ",".join(str(i) for i in tags_seen) if len(tags_seen) else "-"
     return _line([
         f"{t:.1f}",
         f"{pose[0]:.2f},{pose[1]:.2f},{math.degrees(pose[2]):.1f}°",
+        f"{sigma_xy:.3f}",
         f"{lidar_valid}/{lidar_total}",
-        f"{updates}",
+        f"{updates} ({tag_updates})",
+        seen,
         f"{v:.2f},{w:.2f}",
         mode,
     ])
 
-# Mode label shown in the table (navigation, docking or final state)
-def mode_label(phase: Phase, ncmd=None, dcmd=None) -> str:
+# Mode label shown in the table (navigation, recovery, docking or final state)
+def mode_label(phase: Phase, ncmd=None, dcmd=None, rphase=None) -> str:
     if phase is Phase.NAVIGATE and ncmd is not None:
         return ncmd.phase.value.upper()
     if phase is Phase.DOCK and dcmd is not None:
         return "DOCK-" + dcmd.phase.value.upper()
+    if phase is Phase.RECOVER and rphase is not None:
+        return "RECOVER-" + rphase.value.upper()
     return phase.value.upper()
+
+# New navigator after a recovery. Lost while navigating: continue with the remaining waypoints.
+# Docking failed: drive back to the last waypoint (the hand-over point in front of the dock).
+def resume_navigator(nav: Navigator, cfg: Config, after_dock: bool) -> Navigator:
+    remaining = [nav.waypoints[-1]] if after_dock else nav.waypoints[nav.index:]
+    if not remaining:
+        remaining = [nav.waypoints[-1]]
+    return Navigator(cfg, tracker=nav.tracker, waypoints=remaining)
 
 # Static theory block printed once before the run: quantities that do not change in time
 def theory_block(cfg: Config = CONFIG, estimator=None) -> str:
@@ -137,6 +160,17 @@ def theory_block(cfg: Config = CONFIG, estimator=None) -> str:
     cal = get_calibration(cfg)
     n = moving["n_states"]
     ekf_cfg = cfg.ekf
+
+    # Extra checkpoint tags (everything in the tag table except the dock)
+    dock_id = int(cfg.camera.marker_id)
+    tags = {int(i): p for i, p in cfg.tag_table().items() if int(i) != dock_id}
+    tag_lines = []
+    for tid, (tx, ty, tyaw) in sorted(tags.items()):
+        sx = tx + cfg.tags.standoff * math.cos(tyaw)
+        sy = ty + cfg.tags.standoff * math.sin(tyaw)
+        tag_lines.append(f"  tag id {tid}: x = {tx:+.2f}, y = {ty:+.2f}, yaw = {math.degrees(tyaw):+.0f} deg"
+                        f" | stand-off ({sx:+.2f}, {sy:+.2f})")
+
     return "\n".join([
         "=== A. MODEL (robot_model.py) ===",
         f"Differential drive, state [x y theta], input [v w], control dt = {cfg.sim.control_dt} s",
@@ -167,8 +201,25 @@ def theory_block(cfg: Config = CONFIG, estimator=None) -> str:
         f"{len(cfg.env.waypoints)} waypoints, {len(cfg.env.obstacles)} obstacles, "
         f"dock at {tuple(round(v, 2) for v in cfg.env.dock_pose)}",
         "Controller input: ESTIMATED pose only (ground truth is logged for evaluation)",
+        "=== F. RECOVERY (recovery.py, tags in config.py) ===",
+        f"{len(tags)} extra tags (ids {', '.join(str(i) for i in sorted(tags)) or '-'}) | "
+        f"lost when sqrt(trace(Pxy)) > {cfg.tags.lost_std} m | stand-off {cfg.tags.standoff} m | "
+        f"spin {cfg.tags.spin_omega} rad/s | max {MAX_RECOVERIES} recoveries",
+        *tag_lines,
         "",
     ])
+
+
+# Obstacles that were really in the scene during the run (falls back to the config layout)
+def result_obstacles(result: RunResult, cfg: Config = CONFIG) -> list:
+    return list(result.obstacles) if result.obstacles is not None else list(cfg.env.obstacles)
+
+# Print the obstacle layout used in a run (to verify that it is random)
+def obstacles_text(obstacles) -> str:
+    lines = [f"Obstacles ({len(obstacles)}):"]
+    for i, (ox, oy, r) in enumerate(obstacles):
+        lines.append(f"  #{i}: x = {ox:+.3f} m, y = {oy:+.3f} m, r = {r:.2f} m")
+    return "\n".join(lines)
 
 # Quantitative metrics of one run (ground truth is used here for EVALUATION only)
 def compute_report(result: RunResult, cfg: Config = CONFIG) -> dict:
@@ -179,19 +230,27 @@ def compute_report(result: RunResult, cfg: Config = CONFIG) -> dict:
     err[:, 2] = (err[:, 2] + math.pi) % (2.0 * math.pi) - math.pi
     modes = a["mode"]
     nav_steps = np.isin(modes, ["TRACK", "AVOID"])
+    recover_steps = np.char.startswith(modes, "RECOVER")
     rob = cfg.robot
     hx, hy = cfg.env.room_half_size
     truth = a["truth"]
     clearance = min([float(np.min(np.hypot(truth[:, 0] - ox, truth[:, 1] - oy)) - r - rob.body_radius)
-                    for ox, oy, r in cfg.env.obstacles] or [float("inf")])
+                    for ox, oy, r in result_obstacles(result, cfg)] or [float("inf")])
     wall = float(np.min(np.minimum(hx - np.abs(truth[:, 0]), hy - np.abs(truth[:, 1])))
                 - rob.body_radius)
     saturated = (a["v"] >= 0.99 * rob.max_linear_vel) | (np.abs(a["w"]) >= 0.99 * rob.max_angular_vel)
-    finite_nees = a["nees"][np.isfinite(a["nees"])]
+    finite = np.isfinite(a["nees"])
+    finite_nees = a["nees"][finite]
+    max_nees, max_nees_time = float("nan"), float("nan")
+    if len(finite_nees):
+        i_max = int(np.argmax(finite_nees))
+        max_nees, max_nees_time = float(finite_nees[i_max]), float(a["t"][finite][i_max])
     return {
         "position_rmse": float(np.sqrt(np.mean(np.sum(err[:, :2] ** 2, axis=1)))),
         "heading_rmse": float(np.sqrt(np.mean(err[:, 2] ** 2))),
         "mean_nees": float(finite_nees.mean()) if len(finite_nees) else float("nan"),
+        "max_nees": max_nees,
+        "max_nees_time": max_nees_time,
         "final_sigma": a["sigma"][-1],
         "marker_updates": int(a["updates"][-1]),
         "mean_lidar_valid": float(a["lidar_valid"].mean()),
@@ -199,6 +258,7 @@ def compute_report(result: RunResult, cfg: Config = CONFIG) -> dict:
         "mean_abs_w": float(np.abs(a["w"]).mean()), "max_abs_w": float(np.abs(a["w"]).max()),
         "saturated_fraction": float(saturated.mean()),
         "avoid_fraction": float(np.sum(modes == "AVOID") / max(1, nav_steps.sum())),
+        "recover_time": float(recover_steps.sum() * cfg.sim.control_dt),
         "min_obstacle_clearance": clearance,
         "min_wall_clearance": wall,
     }
@@ -211,16 +271,23 @@ def print_report(result: RunResult, cfg: Config = CONFIG, dr_rmse: Optional[floa
         return
     m = result.metrics(cfg)
     dr = "not run (use --compare)" if dr_rmse is None else f"{dr_rmse:.3f} m"
+    d = result.diag
     print("=== FINAL REPORT ===")
     n_cam, n_det = result.camera_stats
-    print(f"B. Sensing    : mean valid LiDAR beams {r['mean_lidar_valid']:.0f}/{cfg.lidar.num_beams} | "
-        f"marker accepted {n_det}/{n_cam} camera frames ({100 * n_det / max(1, n_cam):.0f} %)")
-    print(f"C. Estimation : marker updates {r['marker_updates']} | "
-        f"position RMSE {r['position_rmse']:.3f} m | heading RMSE {r['heading_rmse']:.3f} rad")
+    sensing_line = (f"B. Sensing    : mean valid LiDAR beams {r['mean_lidar_valid']:.0f}/{cfg.lidar.num_beams} | "
+        f"dock marker accepted {n_det}/{n_cam} camera frames ({100 * n_det / max(1, n_cam):.0f} %)")
+    if d and "n_detect_any" in d:
+        sensing_line += (f" | any marker (dock or tag) {d['n_detect_any']}/{n_cam} "
+                        f"({100 * d['n_detect_any'] / max(1, n_cam):.0f} %)")
+    print(sensing_line)
+    est_line = f"C. Estimation : marker updates {r['marker_updates']}"
+    if d and "n_tag_updates" in d:
+        est_line += f" (dock {r['marker_updates'] - d['n_tag_updates']}, tags {d['n_tag_updates']})"
+    print(est_line + f" | position RMSE {r['position_rmse']:.3f} m | heading RMSE {r['heading_rmse']:.3f} rad")
     print(f"                mean NEES {r['mean_nees']:.2f} (consistent filter: ~3) | "
+        f"max NEES {r['max_nees']:.1f} at t = {r['max_nees_time']:.1f} s | "
         f"final sigma {np.round(r['final_sigma'], 4).tolist()}")
     print(f"                dead-reckoning baseline RMSE: {dr}")
-    d = result.diag
     if d:
         print(f"                gate rejected {d['n_rejected']} (forced recoveries {d['n_recovered']}) | "
             f"mean NIS/dof {d['nis_per_dof']:.2f} (consistent: ~1) | "
@@ -233,6 +300,30 @@ def print_report(result: RunResult, cfg: Config = CONFIG, dr_rmse: Optional[floa
         f"min wall clearance {r['min_wall_clearance']:.2f} m | collision {result.collided}")
     print(f"                docking range {m['dock_range']:.3f} m, lateral {m['dock_lateral']:.3f} m, "
         f"heading {m['dock_heading']:.3f} rad")
+    n_tags = len(cfg.tag_table()) - 1
+    print(f"F. Recovery   : {n_tags} extra tags | recoveries started {d.get('n_tag_recoveries', 0)}/{MAX_RECOVERIES} | "
+        f"tag updates {d.get('n_tag_updates', 0)} | time in recovery {r['recover_time']:.1f} s")
+    for event in result.events:
+        print(f"                {event}")
+
+    # Automatic sanity warnings (loose single-sample chi-square band: runs are correlated in time)
+    warnings = []
+    lo, hi = chi2_bounds(3, 1, alpha=0.01)
+    if math.isfinite(r["mean_nees"]) and not lo <= r["mean_nees"] <= hi:
+        warnings.append(f"mean NEES {r['mean_nees']:.1f} outside [{lo:.1f}, {hi:.1f}]: filter over-confident "
+                        f"or biased (worst at t = {r['max_nees_time']:.1f} s, NEES {r['max_nees']:.1f})")
+    if d.get("n_recovered", 0) > 0:
+        warnings.append(f"EKF gate lock-out recovery forced {d['n_recovered']} times: measurements were "
+                        f"rejected repeatedly, the estimate or the map may be wrong")
+    if d and math.isfinite(d.get("nis_per_dof", float("nan"))) and d["nis_per_dof"] > 3.0:
+        warnings.append(f"mean NIS/dof {d['nis_per_dof']:.2f} > 3: measurement noise is underestimated")
+    if result.collided:
+        warnings.append("collision detected during the run")
+    if warnings:
+        print("WARNINGS      :")
+        for w_ in warnings:
+            print(f"                - {w_}")
+
     print(f"Result        : {'SUCCESS' if result.success else 'FAILURE'} ({result.reason}) "
         f"in {result.time:.1f} s | ground truth used in control: NO (evaluation only)")
 
@@ -249,6 +340,8 @@ class RunResult:
     log: TrialLog
     camera_stats: tuple = (0, 0)                # (camera frames processed, accepted detections)
     diag: dict = field(default_factory=dict)    # EKF counters + NIS (evaluation/diagnostics)
+    obstacles: Optional[list] = None            # obstacle layout used in the run (None = config layout)
+    events: list = field(default_factory=list)  # timeline of LOST / RELOCALIZED / docking events
 
     def metrics(self, cfg: Config = CONFIG) -> dict:
         err = self.estimate - self.truth
@@ -288,24 +381,49 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
                 stop_on_collision: bool = True, verbose: bool = False,
                 dock_use_estimate: bool = True, marker_sigma_px: float = 0.5,
                 use_marker_cov: bool = False,
-                visualizer: Optional[RouteVisualizer] = None) -> RunResult:
-    estimator = (EKFEstimator(cfg, gate=9.21, use_marker_cov=use_marker_cov)
-                if estimator is None else estimator)
-    nav, dock, log = Navigator(cfg), DockingController(cfg), TrialLog()
+                visualizer: Optional[RouteVisualizer] = None,
+                randomize_obstacles: bool = False,
+                use_recovery: bool = True) -> RunResult:
+    log = TrialLog()
     phase, reason = Phase.NAVIGATE, "timeout"
     nav_time: Optional[float] = None
     collided_any = False
     cam_stats = (0, 0)
+    n_detect_any = 0
     viz_outputs = None
+    n_tag_recoveries = 0                 # how many times the tag recovery was started
+    recovery_after_dock = False          # True when the recovery was started by a failed docking
+    events: list = []                    # timeline strings, also printed live when verbose
+    last_target: Optional[int] = None    # tag the recovery is currently driving to
+    last_tags: tuple = ()                # ids seen in the latest processed camera frame
+    last_n_cam = -1
+    obstacles = list(cfg.env.obstacles)
     start = np.array(cfg.env.start_pose, dtype=float)
     dt = cfg.sim.control_dt
     report_every = max(1, int(round(1.0 / dt)))      # one table row per simulated second
 
-    if verbose:
-        print(theory_block(cfg, estimator))
-        print(table_header())
+    # Record an event and print it right away (verbose runs only)
+    def note(t: float, text: str) -> None:
+        events.append(f"[t={t:.1f}s] {text}")
+        if verbose:
+            print(f"  >> [t={t:5.1f}s] {text}", flush=True)
 
-    with Simulation(cfg, seed=seed, scene_dir=scene_dir) as sim:
+    with Simulation(cfg, seed=seed, scene_dir=scene_dir,
+                    randomize_obstacles=randomize_obstacles) as sim:
+        # Effective config: the obstacles that are really in the scene (random or fixed)
+        obstacles = list(sim.obstacles)
+        run_cfg = replace(cfg, env=replace(cfg.env, obstacles=tuple(obstacles)))
+        nav, dock = Navigator(run_cfg), DockingController(run_cfg)
+        recovery = TagRecovery(run_cfg, tracker=nav.tracker)
+
+        # The EKF LiDAR map must contain the obstacles that are really in the scene
+        if estimator is None:
+            estimator = EKFEstimator(run_cfg, gate=9.21, use_marker_cov=use_marker_cov)
+        if verbose:
+            print(obstacles_text(obstacles))
+            print(theory_block(run_cfg, estimator))
+            print(table_header())
+
         sim.reset(tuple(start))
         sensing = Sensing(sim, cfg, marker_sigma_px=marker_sigma_px)
         estimator.reset(start)               # known start pose (a prior, not ground truth)
@@ -323,49 +441,106 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
                 # 1) sensing and state estimation (no ground truth)
                 frame = sensing.read()
                 estimator.predict(frame.odometry.ds, frame.odometry.dtheta)
-                estimator.update(frame.marker)
+                for marker in frame.markers:         # dock + extra tags, matched by id in the EKF
+                    estimator.update(marker)
                 estimator.update_lidar(frame.lidar)
                 x_est = np.array(estimator.x, dtype=float)
+                sigma_xy = float(math.sqrt(max(float(np.trace(estimator.P[:2, :2])), 0.0)))
+                if sensing.n_camera != last_n_cam:   # a new camera frame was processed
+                    last_n_cam = sensing.n_camera
+                    last_tags = tuple(sorted(m.marker_id for m in frame.markers))
 
                 # 2) decide the velocity command from the ESTIMATED pose only
                 v = w = 0.0
                 ncmd = dcmd = None
+
+                # 2a) position uncertainty too large while navigating: start the tag recovery
+                if (use_recovery and phase is Phase.NAVIGATE and recovery.tags
+                        and n_tag_recoveries < MAX_RECOVERIES and estimator.is_lost()):
+                    recovery.start()
+                    n_tag_recoveries += 1
+                    recovery_after_dock = False
+                    last_target = None
+                    phase = Phase.RECOVER
+                    note(frame.time, f"LOST (sigma {sigma_xy:.3f} m > {cfg.tags.lost_std} m) "
+                                    f"-> tag recovery #{n_tag_recoveries} started (spinning to look for a tag)")
+
+                # 2b) recovery: spin / drive to the tags until the EKF is localised again
+                if phase is Phase.RECOVER:
+                    v, w = recovery.update(x_est, frame.lidar, not estimator.is_lost(),
+                                        frame.odometry.dtheta)
+                    if recovery.phase is RecoveryPhase.GOTO and recovery.target_id != last_target:
+                        last_target = recovery.target_id
+                        sx, sy = recovery.standoff_point(last_target)
+                        note(frame.time, f"recovery: no tag seen, driving to tag {last_target} "
+                                        f"stand-off ({sx:+.2f}, {sy:+.2f})")
+                    if recovery.phase is RecoveryPhase.DONE:
+                        note(frame.time, f"RELOCALIZED (sigma {sigma_xy:.3f} m, tag updates "
+                                        f"{int(getattr(estimator, 'n_tag_updates', 0))}) -> resume navigation")
+                        nav = resume_navigator(nav, run_cfg, recovery_after_dock)
+                        phase = Phase.NAVIGATE
+                        v = w = 0.0
+                    elif recovery.phase is RecoveryPhase.FAILED:
+                        note(frame.time, "recovery FAILED: every tag was tried without relocalizing")
+                        phase, reason = Phase.FAILED, "recovery failed"
+                        v = w = 0.0
+
+                # 2c) navigation
                 if phase is Phase.NAVIGATE:
                     ncmd = nav.update(x_est, frame.lidar)
                     if ncmd.finished:
                         phase, nav_time = Phase.DOCK, frame.time
                         dock.begin(x_est)
+                        note(frame.time, "navigation finished -> docking")
                     else:
                         v, w = ncmd.v, ncmd.w
+
+                # 2d) docking (a failed docking widens P and starts the tag recovery)
                 if phase is Phase.DOCK:
                     dcmd = dock.update(frame.marker, frame.odometry,
                                     x_est if dock_use_estimate else None)
                     if dcmd.finished:
-                        phase = Phase.DONE if dcmd.docked else Phase.FAILED
-                        reason = "docked" if dcmd.docked else "docking failed"
+                        if dcmd.docked:
+                            phase, reason = Phase.DONE, "docked"
+                            note(frame.time, "DOCKED")
+                        elif use_recovery and recovery.tags and n_tag_recoveries < MAX_RECOVERIES:
+                            estimator.inflate()              # accept the next tag detections
+                            recovery.start()
+                            n_tag_recoveries += 1
+                            recovery_after_dock = True
+                            last_target = None
+                            phase = Phase.RECOVER
+                            note(frame.time, f"docking failed -> P inflated -> tag recovery "
+                                            f"#{n_tag_recoveries} started")
+                        else:
+                            phase, reason = Phase.FAILED, "docking failed"
+                            note(frame.time, "docking failed (no recovery left)")
                     else:
                         v, w = dcmd.v, dcmd.w
 
                 # 3) logging and evaluation (the ONLY place ground truth is read)
                 hit = sim.collided
                 collided_any = collided_any or hit
-                mode = mode_label(phase, ncmd, dcmd)
+                mode = mode_label(phase, ncmd, dcmd,
+                                recovery.phase if phase is Phase.RECOVER else None)
                 n_valid = int(frame.lidar.valid.sum())
                 n_updates = int(getattr(estimator, "n_updates", 0))
+                n_tag_upd = int(getattr(estimator, "n_tag_updates", 0))
                 log.record(frame.time, sim.ground_truth(), x_est, estimator.P,
-                        phase.value, v, w, n_valid, n_updates, mode)
+                        phase.value, v, w, n_valid, n_updates, mode, n_tag_upd)
                 if visualizer is not None:
                     visualizer.record(frame.time, x_est, frame.lidar, mode, frame.marker, sim)
                     if phase is Phase.DONE:
                         visualizer.capture_target(sim, label="Docked at charging station")
                 if verbose and step % report_every == 0:
                     print(table_row(frame.time, x_est, n_valid, frame.lidar.valid.size,
-                                    n_updates, v, w, mode), flush=True)
+                                    n_updates, v, w, mode, sigma_xy, n_tag_upd, last_tags), flush=True)
 
                 if phase in (Phase.DONE, Phase.FAILED):
                     break
                 if hit and stop_on_collision:
                     phase, reason = Phase.FAILED, "collision"
+                    note(frame.time, "COLLISION")
                     break
 
                 # 4) act
@@ -382,6 +557,7 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
             viz_outputs = visualizer.finish(sim, success=phase is Phase.DONE,
                                             reason=reason, sim_time=sim.time)
         cam_stats = (sensing.n_camera, sensing.n_detect)
+        n_detect_any = sensing.n_detect_any
         truth = sim.ground_truth()           # final pose, evaluation only
         sim_time = sim.time
 
@@ -391,13 +567,16 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
             print("Route visualization saved to:", viz_outputs["visualization"])
 
     diag = {k: int(getattr(estimator, k, 0)) for k in
-            ("n_updates", "n_rejected", "n_recovered", "n_lidar_updates", "n_lidar_rejected")}
+            ("n_updates", "n_rejected", "n_recovered", "n_lidar_updates", "n_lidar_rejected",
+            "n_tag_updates")}
+    diag["n_tag_recoveries"] = n_tag_recoveries
+    diag["n_detect_any"] = int(n_detect_any)
     diag["nis_per_dof"] = (estimator.mean_nis_per_dof()
                         if hasattr(estimator, "mean_nis_per_dof") else float("nan"))
 
     return RunResult(phase is Phase.DONE, reason, sim_time, nav_time, collided_any, phase,
                     np.array(estimator.x, dtype=float), truth, log,
-                    camera_stats=cam_stats, diag=diag)
+                    camera_stats=cam_stats, diag=diag, obstacles=obstacles, events=events)
 
 # Save trajectory and estimation error with its uncertainty
 def plot_run(result: RunResult, cfg: Config = CONFIG, path: Optional[Path] = None) -> Path:
@@ -413,7 +592,7 @@ def plot_run(result: RunResult, cfg: Config = CONFIG, path: Optional[Path] = Non
 
     hx, hy = cfg.env.room_half_size
     ax.add_patch(Rectangle((-hx, -hy), 2 * hx, 2 * hy, fill=False, edgecolor="gray"))
-    for ox, oy, r in cfg.env.obstacles:
+    for ox, oy, r in result_obstacles(result, cfg):
         ax.add_patch(Circle((ox, oy), r, color="tab:red", alpha=0.4))
     wp = np.array(cfg.env.waypoints)
     ax.plot(wp[:, 0], wp[:, 1], "k^", label="waypoints")
@@ -455,14 +634,16 @@ def _ensure_mjpython() -> None:
 
 # Repeated trials with different noise seeds: success rate and mean +- std of the key metrics
 def run_trials(n: int, seed0: int = 0, cfg: Config = CONFIG, use_marker_cov: bool = False,
-            marker_sigma_px: float = 0.5, scene_dir: Optional[Path] = None) -> int:
+            marker_sigma_px: float = 0.5, scene_dir: Optional[Path] = None,
+            randomize_obstacles: bool = False) -> int:
     rows = []
     print(f"marker R: {'per-measurement' if use_marker_cov else 'fixed'} | sigma_px {marker_sigma_px}")
     print(f"{'seed':>5} {'result':>7} {'reason':>15} {'time':>6} {'pos RMSE':>9} "
-        f"{'NEES':>6} {'NIS/dof':>8} {'det %':>6} {'rej':>4} {'dock lat':>9}")
+        f"{'NEES':>6} {'NIS/dof':>8} {'det %':>6} {'rej':>4} {'rec':>4} {'dock lat':>9}")
     for i in range(n):
         res = run_pipeline(cfg, seed=seed0 + i, scene_dir=scene_dir,
-                        marker_sigma_px=marker_sigma_px, use_marker_cov=use_marker_cov)
+                        marker_sigma_px=marker_sigma_px, use_marker_cov=use_marker_cov,
+                        randomize_obstacles=randomize_obstacles)
         rep = compute_report(res, cfg)
         n_cam, n_det = res.camera_stats
         row = {"ok": res.success, "reason": res.reason, "time": res.time,
@@ -471,17 +652,19 @@ def run_trials(n: int, seed0: int = 0, cfg: Config = CONFIG, use_marker_cov: boo
             "nis": res.diag.get("nis_per_dof", float("nan")),
                "det": 100.0 * n_det / max(1, n_cam),
             "rej": res.diag.get("n_rejected", 0),
+            "rec": res.diag.get("n_tag_recoveries", 0),
             "lat": res.metrics(cfg)["dock_lateral"]}
         rows.append(row)
         print(f"{seed0 + i:>5} {'OK' if res.success else 'FAIL':>7} {res.reason:>15} {row['time']:>6.1f} "
             f"{row['rmse']:>9.3f} {row['nees']:>6.2f} {row['nis']:>8.2f} {row['det']:>6.0f} "
-            f"{row['rej']:>4} {row['lat']:>9.3f}", flush=True)
+            f"{row['rej']:>4} {row['rec']:>4} {row['lat']:>9.3f}", flush=True)
 
     ok = np.array([r["ok"] for r in rows])
     print(f"\nSuccess rate : {int(ok.sum())}/{n} ({100 * ok.mean():.0f} %)")
     for label, key in (("Position RMSE [m]", "rmse"), ("Mean NEES (~3)", "nees"),
                     ("Mean NIS/dof (~1)", "nis"), ("Marker accepted [%]", "det"),
-                    ("Gate rejections", "rej"), ("Dock lateral [m]", "lat")):
+                    ("Gate rejections", "rej"), ("Tag recoveries", "rec"),
+                    ("Dock lateral [m]", "lat")):
         v = np.array([r[key] for r in rows], dtype=float)
         print(f"{label:<20}: {np.nanmean(v):.3f} +- {np.nanstd(v):.3f}")
     failures = {}
@@ -512,27 +695,41 @@ def build_parser() -> argparse.ArgumentParser:
                         help="do not save the route picture / snapshots")
     parser.add_argument("--no-live-camera", action="store_true",
                         help="do not open the live camera window")
+    parser.add_argument("--fixed-obstacles", action="store_true",
+                        help="use the fixed obstacle layout from config instead of a random one")
     return parser
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
+    randomize = not args.fixed_obstacles
+
+    # A random obstacle layout needs a random seed; it is printed so the run can be reproduced
+    seed = args.seed
+    if randomize and seed is None:
+        seed = int.from_bytes(os.urandom(4), "little")
+    if randomize:
+        print(f"Random obstacles | seed {seed} (reproduce with --seed {seed})")
+
     if args.trials > 0:
-        return run_trials(args.trials, args.seed or 0, CONFIG,
-                        use_marker_cov=args.marker_cov, marker_sigma_px=args.sigma_px)
+        return run_trials(args.trials, seed or 0, CONFIG,
+                        use_marker_cov=args.marker_cov, marker_sigma_px=args.sigma_px,
+                        randomize_obstacles=randomize)
     use_viewer = not args.no_viewer
     if use_viewer:
         _ensure_mjpython()
     viz = None if args.no_viz else RouteVisualizer(
         CONFIG, live_view=use_viewer and not args.no_live_camera)
-    result = run_pipeline(CONFIG, seed=args.seed, viewer=use_viewer, verbose=True,
+    result = run_pipeline(CONFIG, seed=seed, viewer=use_viewer, verbose=True,
                         dock_use_estimate=not args.dock_raw,
                         marker_sigma_px=args.sigma_px, use_marker_cov=args.marker_cov,
-                        visualizer=viz)
+                        visualizer=viz, randomize_obstacles=randomize)
 
     dr_rmse = None
     if args.compare:
-        baseline = run_pipeline(CONFIG, seed=args.seed,
-                                estimator=EKFEstimator(CONFIG, use_marker=False, use_lidar=False))
+        # Same seed -> same obstacle layout as the main run
+        baseline = run_pipeline(CONFIG, seed=seed,
+                                estimator=EKFEstimator(CONFIG, use_marker=False, use_lidar=False),
+                                randomize_obstacles=randomize)
         dr_rmse = compute_report(baseline, CONFIG).get("position_rmse")
 
     print()

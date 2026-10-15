@@ -7,9 +7,10 @@ import numpy as np
 
 from config import CONFIG
 from estimator import EKFEstimator, chi2_bounds, nees
-from robot_model import (default_landmark, lidar_jacobian, lidar_range_model, measurement_jacobian,
-                        measurement_jacobian_pose, measurement_model, measurement_model_pose,
-                        motion_model, observability_matrix, view_angle_model, wrap_angle)
+from robot_model import (default_landmark, landmark_table, lidar_jacobian, lidar_range_model,
+                        measurement_jacobian, measurement_jacobian_pose, measurement_model,
+                        measurement_model_pose, motion_model, observability_matrix,
+                        view_angle_model, wrap_angle)
 
 LM = default_landmark(CONFIG)
 DOCK_YAW = CONFIG.env.dock_pose[2]
@@ -484,6 +485,72 @@ class TestConsistencyTools(unittest.TestCase):
         lo, hi = chi2_bounds(3, n=len(nees_vals), alpha=0.01)
         self.assertGreater(np.mean(nees_vals), lo)
         self.assertLess(np.mean(nees_vals), hi)
+
+class TestTagMarkers(unittest.TestCase):
+    def setUp(self):
+        self.truth = np.array([0.5, 1.0, 0.3])
+        self.lm_tag, _ = landmark_table(CONFIG)[1]          # extra tag with id 1
+
+    def tag_marker(self, pose):
+        r, b = measurement_model(pose, self.lm_tag)
+        return Marker(r, b, marker_id=1)
+
+    def test_tag_update_uses_the_tag_landmark(self):
+        ekf = EKFEstimator(CONFIG)
+        ekf.reset(self.truth + [0.10, -0.08, 0.06], np.diag([0.05, 0.05, 0.05]) ** 2 * 4)
+        err0 = np.linalg.norm(ekf.x[:2] - self.truth[:2])
+        for _ in range(30):
+            self.assertTrue(ekf.update(self.tag_marker(self.truth)))
+        # range and bearing to the TAG match the truth (the dock landmark would not give this)
+        r_est, b_est = measurement_model(ekf.x, self.lm_tag)
+        r_true, b_true = measurement_model(self.truth, self.lm_tag)
+        self.assertAlmostEqual(r_est, r_true, places=3)
+        self.assertAlmostEqual(wrap_angle(b_est - b_true), 0.0, places=3)
+        self.assertLess(np.linalg.norm(ekf.x[:2] - self.truth[:2]), err0)
+
+    def test_n_tag_updates_counts_only_extra_tags(self):
+        ekf = EKFEstimator(CONFIG)
+        ekf.reset(self.truth)
+        ekf.update(exact_marker(self.truth))                 # dock
+        self.assertEqual((ekf.n_updates, ekf.n_tag_updates), (1, 0))
+        ekf.update(self.tag_marker(self.truth))              # extra tag
+        self.assertEqual((ekf.n_updates, ekf.n_tag_updates), (2, 1))
+        ekf.reset(self.truth)
+        self.assertEqual((ekf.n_updates, ekf.n_tag_updates), (0, 0))
+
+    def test_unknown_tag_id_is_ignored(self):
+        ekf = EKFEstimator(CONFIG)
+        ekf.reset(self.truth)
+        x = ekf.x.copy()
+        self.assertFalse(ekf.update(Marker(1.0, 0.1, marker_id=max(landmark_table(CONFIG)) + 1)))
+        np.testing.assert_array_equal(ekf.x, x)
+
+    def test_position_std_and_is_lost_follow_the_threshold(self):
+        ekf = EKFEstimator(CONFIG)
+        ekf.reset(self.truth, np.diag([0.001, 0.001, 0.001]))
+        self.assertAlmostEqual(ekf.position_std(), math.sqrt(0.002))
+        self.assertFalse(ekf.is_lost())
+        ekf.reset(self.truth, np.diag([0.1, 0.1, 0.01]))
+        self.assertGreater(ekf.position_std(), CONFIG.tags.lost_std)
+        self.assertTrue(ekf.is_lost())
+
+    def test_inflate_makes_the_filter_lost_and_clears_the_reject_counter(self):
+        ekf = EKFEstimator(CONFIG)
+        ekf.reset(self.truth, np.diag([0.001, 0.001, 0.001]))
+        ekf._reject_run = 5
+        ekf.inflate()
+        self.assertTrue(ekf.is_lost())
+        self.assertEqual(ekf._reject_run, 0)
+        self.assertTrue(is_psd(ekf.P))
+
+    def test_inflate_lets_a_tag_through_that_the_gate_rejected(self):
+        ekf = EKFEstimator(CONFIG, gate=9.21)
+        ekf.reset(self.truth + [0.3, -0.2, 0.1], np.diag([0.02, 0.02, 0.02]) ** 2)
+        marker = self.tag_marker(self.truth)
+        self.assertFalse(ekf.update(marker))                 # confident but wrong: gated out
+        ekf.inflate()
+        self.assertTrue(ekf.update(marker))                  # uncertain: accepted
+        self.assertLess(np.linalg.norm(ekf.x[:2] - self.truth[:2]), 0.3)
 
 if __name__ == "__main__":
     unittest.main()

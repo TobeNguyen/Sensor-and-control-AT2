@@ -11,7 +11,7 @@ from config import CONFIG, Config
 from robot_model import (default_landmark, innovation, jacobian_F, jacobian_G,
                         lidar_jacobian, lidar_range_model, measurement_jacobian,
                         measurement_jacobian_pose, measurement_model, measurement_model_pose,
-                        motion_model, wrap_angle)
+                        motion_model, wrap_angle, landmark_table)
 
 # Normalised Estimation Error Squared: e^T P^-1 e.
 # For a consistent 3-state filter its average is about 3 (chi-square, 3 dof).
@@ -36,8 +36,12 @@ class EKFEstimator:
             lidar_gate: float = 6.63, lidar_stride: int = 30, max_rejects: int = 10,
             use_marker_cov: bool = False):
         self.cfg = cfg
-        self.landmark = default_landmark(cfg) if landmark is None else np.asarray(landmark, float)
-        self.dock_yaw = float(cfg.env.dock_pose[2])
+        # Every known marker: {id: (position, yaw)}. `landmark` (optional) overrides the dock position.
+        self.landmarks = landmark_table(cfg)
+        dock_id = int(cfg.camera.marker_id)
+        if landmark is not None:
+            self.landmarks[dock_id] = (np.asarray(landmark, float), self.landmarks[dock_id][1])
+        self.landmark, self.dock_yaw = self.landmarks[dock_id]   # dock only, kept for old code
         self.q_extra = np.zeros((3, 3)) if q_extra is None else np.asarray(q_extra, float)
         self.R = cfg.R_camera() if R is None else np.asarray(R, dtype=float)
         # Variance of the marker view angle (third camera measurement)
@@ -72,6 +76,7 @@ class EKFEstimator:
         self.nis_history: list = []       # NIS of every accepted marker update
         self.nis_dof: list = []           # degrees of freedom of each NIS (2 or 3)
         self.n_updates = 0
+        self.n_tag_updates = 0            # accepted updates from extra tags (not the dock)
         self.n_rejected = 0
         self.n_recovered = 0              # forced updates after a gate lock-out
         self._reject_run = 0              # consecutive gate rejections
@@ -86,12 +91,11 @@ class EKFEstimator:
         self.P = 0.5 * (P + P.T)
         self.x = motion_model(self.x, ds, dtheta)
 
-    # A usable marker has the right id and finite, positive range
+    # A usable marker has a known id and finite, positive range
     def _is_valid(self, marker) -> bool:
         values = (marker.range, marker.bearing)
         return (all(math.isfinite(v) for v in values) and marker.range > 0.0
-                and getattr(marker, "marker_id", self.cfg.camera.marker_id)
-                == self.cfg.camera.marker_id)
+                and int(getattr(marker, "marker_id", self.cfg.camera.marker_id)) in self.landmarks)
 
     # Gate threshold for a measurement with `dof` degrees of freedom. The configured gate is
     # defined for 2 dof; for other sizes keep the same confidence level (same chi-square quantile).
@@ -116,6 +120,8 @@ class EKFEstimator:
     def update(self, marker) -> bool:
         if not self.use_marker or marker is None or not self._is_valid(marker):
             return False
+        marker_id = int(getattr(marker, "marker_id", self.cfg.camera.marker_id))
+        landmark, tag_yaw = self.landmarks[marker_id]
 
         view = getattr(marker, "view_angle", None)
         use_view = self.use_view and view is not None and math.isfinite(view)
@@ -129,15 +135,15 @@ class EKFEstimator:
         try:
             if use_view:
                 z = np.array([marker.range, marker.bearing, view], dtype=float)
-                H = measurement_jacobian_pose(self.x, self.landmark)
-                z_pred = measurement_model_pose(self.x, self.landmark, self.dock_yaw)
+                H = measurement_jacobian_pose(self.x, landmark)
+                z_pred = measurement_model_pose(self.x, landmark, tag_yaw)
                 R = np.zeros((3, 3))
                 R[:2, :2] = R_cam
                 R[2, 2] = self.R_view
             else:
                 z = np.array([marker.range, marker.bearing], dtype=float)
-                H = measurement_jacobian(self.x, self.landmark)
-                z_pred = measurement_model(self.x, self.landmark)
+                H = measurement_jacobian(self.x, landmark)
+                z_pred = measurement_model(self.x, landmark)
                 R = self.R
         except ValueError:                      # robot on top of the landmark: skip
             return False
@@ -170,8 +176,10 @@ class EKFEstimator:
         P = A @ self.P @ A.T + K @ R @ K.T       # Joseph form
         self.P = 0.5 * (P + P.T)
         self.nis_history.append(nis)
-        self.nis_dof.append(len(z))
         self.n_updates += 1
+        self.nis_dof.append(len(z))
+        if marker_id != int(self.cfg.camera.marker_id):
+            self.n_tag_updates += 1
         return True
 
     # EKF correction with a few LiDAR beams compared against the known room map.
@@ -207,3 +215,17 @@ class EKFEstimator:
             self.n_lidar_updates += 1
             applied += 1
         return applied
+    
+    # Position uncertainty: sqrt(trace of the xy block of P) [m]
+    def position_std(self) -> float:
+        return float(math.sqrt(max(float(np.trace(self.P[:2, :2])), 0.0)))
+
+    # True when the position uncertainty is above cfg.tags.lost_std
+    def is_lost(self) -> bool:
+        return self.position_std() > self.cfg.tags.lost_std
+
+    # Declare the pose uncertain (e.g. after a failed docking): widen P so that the next
+    # tag detections are accepted instead of being gated out as outliers.
+    def inflate(self, pos_std: float = 0.5, yaw_std: float = 0.5) -> None:
+        self.P = np.diag([pos_std ** 2, pos_std ** 2, yaw_std ** 2])
+        self._reject_run = 0

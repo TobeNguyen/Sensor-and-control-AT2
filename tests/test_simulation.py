@@ -1,6 +1,8 @@
-# Including libraries
 import math
 import struct
+from dataclasses import replace
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 
@@ -8,8 +10,9 @@ pytest.importorskip("mujoco")
 
 from config import CONFIG
 from simulation import (
-    MESH_FILES, MESH_SUBDIR, Simulation, build_scene_xml, generate_marker_image,
-    meshes_available, wrap_angle,
+    MESH_FILES, MESH_SUBDIR, MARKER_FILE, Simulation, build_scene_xml, generate_marker_image,
+    marker_filename, meshes_available, point_segment_distance, random_obstacles,
+    write_scene_files, wrap_angle,
 )
 
 @pytest.fixture
@@ -245,3 +248,168 @@ def test_broken_meshes_fall_back_to_the_cylinder(tmp_path):
     with Simulation(scene_dir=tmp_path) as sim:
         assert not sim.uses_meshes
         assert sim.model.nmesh == 0
+
+# ------------------------------------------------- Random obstacles
+SEEDS = list(range(20))
+
+
+def _layout(seed):
+    return random_obstacles(CONFIG, np.random.default_rng(seed))
+
+
+def test_default_keeps_fixed_obstacle_layout(sim):
+    # randomize_obstacles=False must reproduce the layout from the config
+    assert sim.obstacles == list(CONFIG.env.obstacles)
+
+
+def test_random_layout_is_reproducible_with_same_seed():
+    assert _layout(3) == _layout(3)
+
+
+def test_random_layout_differs_between_seeds():
+    layouts = {tuple(_layout(s)) for s in range(5)}
+    assert len(layouts) > 1
+
+
+@pytest.mark.parametrize("seed", SEEDS)
+def test_random_layout_keeps_count_and_radii(seed):
+    obs = _layout(seed)
+    assert len(obs) == len(CONFIG.env.obstacles)
+    assert [r for _, _, r in obs] == [r for _, _, r in CONFIG.env.obstacles]
+
+
+@pytest.mark.parametrize("seed", SEEDS)
+def test_random_obstacles_stay_inside_room_with_robot_gap(seed):
+    hx, hy = CONFIG.env.room_half_size
+    robot_d = 2.0 * CONFIG.robot.body_radius
+    for x, y, r in _layout(seed):
+        assert abs(x) + r <= hx - robot_d + 1e-9
+        assert abs(y) + r <= hy - robot_d + 1e-9
+
+
+@pytest.mark.parametrize("seed", SEEDS)
+def test_random_obstacles_keep_start_and_dock_free(seed):
+    sx, sy, _ = CONFIG.env.start_pose
+    dx, dy, _ = CONFIG.env.dock_pose
+    robot_d = 2.0 * CONFIG.robot.body_radius
+    for x, y, r in _layout(seed):
+        assert math.hypot(x - sx, y - sy) >= r + robot_d
+        assert math.hypot(x - dx, y - dy) >= r + robot_d
+
+
+@pytest.mark.parametrize("seed", SEEDS)
+def test_random_obstacles_leave_gap_between_each_other(seed):
+    obs = _layout(seed)
+    robot_d = 2.0 * CONFIG.robot.body_radius
+    for i in range(len(obs)):
+        for j in range(i + 1, len(obs)):
+            (xi, yi, ri), (xj, yj, rj) = obs[i], obs[j]
+            assert math.hypot(xi - xj, yi - yj) >= ri + rj + robot_d
+
+
+def test_random_obstacles_raise_when_impossible():
+    # Stub config with far too many obstacles for the room
+    cfg = SimpleNamespace(
+        env=SimpleNamespace(
+            room_half_size=(1.0, 1.0),
+            start_pose=(0.0, 0.0, 0.0),
+            dock_pose=(0.9, 0.0, 0.0),
+            obstacles=[(0.0, 0.0, 0.2)] * 50,
+        ),
+        robot=SimpleNamespace(body_radius=CONFIG.robot.body_radius),
+    )
+    with pytest.raises(RuntimeError):
+        random_obstacles(cfg, np.random.default_rng(0), max_tries=50)
+
+
+def test_build_scene_xml_uses_custom_obstacles():
+    custom = [(0.1, 0.2, 0.15), (-0.3, 0.4, 0.25)]
+    xml = build_scene_xml(CONFIG, obstacles=custom)
+    assert 'name="obstacle_0"' in xml and 'name="obstacle_1"' in xml
+    assert 'name="obstacle_2"' not in xml
+    assert 'pos="0.1 0.2 ' in xml and 'pos="-0.3 0.4 ' in xml
+
+
+def test_randomized_simulation_matches_obstacle_list(tmp_path):
+    import mujoco
+    with Simulation(scene_dir=tmp_path, seed=5, randomize_obstacles=True) as sim:
+        assert len(sim.obstacles) == len(CONFIG.env.obstacles)
+        assert sim.obstacles != list(CONFIG.env.obstacles)
+        for i, (ox, oy, r) in enumerate(sim.obstacles):
+            gid = mujoco.mj_name2id(sim.model, mujoco.mjtObj.mjOBJ_GEOM, f"obstacle_{i}")
+            assert gid >= 0
+            np.testing.assert_allclose(sim.model.geom_pos[gid][:2], (ox, oy), atol=1e-9)
+            assert sim.model.geom_size[gid][0] == pytest.approx(r)
+        # the robot must not start inside an obstacle
+        assert not sim.collided
+
+@pytest.mark.parametrize("seed", SEEDS)
+def test_random_obstacles_keep_the_waypoint_path_clear(seed):
+    pts = ([tuple(CONFIG.env.start_pose[:2])]
+        + [tuple(w[:2]) for w in CONFIG.env.waypoints]
+        + [tuple(CONFIG.env.dock_pose[:2])])
+    for x, y, r in _layout(seed):
+        for a, b in zip(pts[:-1], pts[1:]):
+            assert point_segment_distance(x, y, *a, *b) >= r + CONFIG.robot.body_radius
+
+# ------------------------------------------------- extra checkpoint tags
+DOCK_ID = CONFIG.camera.marker_id
+EXTRA_TAG_IDS = sorted(i for i in CONFIG.tag_table() if i != DOCK_ID)
+
+
+def test_scene_xml_contains_every_extra_tag():
+    xml = build_scene_xml(CONFIG)
+    assert 'name="dock_marker"' in xml
+    for tid in EXTRA_TAG_IDS:
+        assert f'name="tag_marker_{tid}"' in xml
+        assert marker_filename(tid, CONFIG) in xml
+
+
+def test_scene_xml_has_no_tags_when_n_tags_is_zero():
+    cfg = replace(CONFIG, tags=replace(CONFIG.tags, n_tags=0))
+    xml = build_scene_xml(cfg)
+    assert "tag_marker_" not in xml and 'name="dock_marker"' in xml
+
+
+def test_write_scene_files_creates_every_marker_texture(tmp_path):
+    write_scene_files(CONFIG, tmp_path)
+    assert (tmp_path / MARKER_FILE).is_file()
+    for tid in EXTRA_TAG_IDS:
+        assert (tmp_path / marker_filename(tid, CONFIG)).is_file()
+
+
+def test_marker_filename_keeps_the_dock_file():
+    assert marker_filename(DOCK_ID, CONFIG) == MARKER_FILE
+    assert marker_filename(DOCK_ID + 1, CONFIG) != MARKER_FILE
+
+
+@pytest.mark.parametrize("tag_id", EXTRA_TAG_IDS)
+def test_tag_panels_exist_in_the_model_at_the_configured_pose(sim, tag_id):
+    import mujoco
+    gid = mujoco.mj_name2id(sim.model, mujoco.mjtObj.mjOBJ_GEOM, f"tag_marker_{tag_id}")
+    assert gid >= 0
+    tx, ty, _ = CONFIG.tag_table()[tag_id]
+    np.testing.assert_allclose(sim.model.geom_pos[gid][:2], (tx, ty), atol=1e-9)
+
+
+@pytest.mark.parametrize("tag_id", EXTRA_TAG_IDS)
+def test_camera_detects_each_extra_tag_from_its_standoff_point(sim, tag_id):
+    cv2 = pytest.importorskip("cv2")
+    tx, ty, tyaw = CONFIG.tag_table()[tag_id]
+    s = CONFIG.tags.standoff
+    sim.reset((tx + s * math.cos(tyaw), ty + s * math.sin(tyaw), wrap_angle(tyaw + math.pi)))
+    img = _render_or_skip(sim)
+    dictionary = cv2.aruco.getPredefinedDictionary(getattr(cv2.aruco, CONFIG.camera.aruco_dict))
+    detector = cv2.aruco.ArucoDetector(dictionary, cv2.aruco.DetectorParameters())
+    _, ids, _ = detector.detectMarkers(cv2.cvtColor(img, cv2.COLOR_RGB2GRAY))
+    assert ids is not None and tag_id in ids.flatten()
+
+
+@pytest.mark.parametrize("seed", SEEDS)
+def test_random_obstacles_keep_the_tag_standoff_points_free(seed):
+    s = CONFIG.tags.standoff
+    points = [(tx + s * math.cos(tyaw), ty + s * math.sin(tyaw))
+            for tid, (tx, ty, tyaw) in CONFIG.tag_table().items() if tid != DOCK_ID]
+    for x, y, r in _layout(seed):
+        for px, py in points:
+            assert math.hypot(x - px, y - py) >= r + CONFIG.robot.body_radius

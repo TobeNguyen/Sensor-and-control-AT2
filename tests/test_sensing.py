@@ -10,7 +10,7 @@ from config import CONFIG
 from robot_model import measurement_model
 from sensing import (
     MAX_REPROJ_PX, MarkerMeasurement, Sensing, camera_forward_offset, camera_matrix,
-    detect_marker, lidar_points, make_lidar_scan, sector_min_range,
+    detect_marker, detect_markers, lidar_points, make_lidar_scan, sector_min_range,
 )
 
 N_BEAMS = CONFIG.lidar.num_beams
@@ -363,3 +363,94 @@ def test_real_marker_noise_grows_with_range(real_sim):
     far = read_or_skip(Sensing(real_sim, camera_period=0.0)).marker
     assert near is not None and far is not None
     assert far.cov[0, 0] > near.cov[0, 0]
+
+# ------------------------------------------------- extra checkpoint tags
+def synthetic_multi_marker_image(placements, black_px=BLACK_PX):
+    """White image with several markers: placements = [(marker_id, shift_px), ...]."""
+    dictionary = cv2.aruco.getPredefinedDictionary(getattr(cv2.aruco, CONFIG.camera.aruco_dict))
+    h, w = CONFIG.camera.height, CONFIG.camera.width
+    img = np.full((h, w), 255, np.uint8)
+    for mid, shift_px in placements:
+        marker = cv2.aruco.generateImageMarker(dictionary, mid, black_px)
+        marker = cv2.copyMakeBorder(marker, 20, 20, 20, 20, cv2.BORDER_CONSTANT, value=255)
+        size = marker.shape[0]
+        x0, y0 = w // 2 - size // 2 + shift_px, h // 2 - size // 2
+        img[y0:y0 + size, x0:x0 + size] = marker
+    return np.stack([img] * 3, axis=2)
+
+
+DOCK_ID = CONFIG.camera.marker_id
+TAG_ID = DOCK_ID + 1
+
+
+def test_detect_markers_returns_every_known_id():
+    img = synthetic_multi_marker_image([(DOCK_ID, 160), (TAG_ID, -160)])
+    found = detect_markers(img, camera_matrix())
+    assert sorted(m.marker_id for m in found) == [DOCK_ID, TAG_ID]
+
+
+def test_detect_markers_bearing_follows_the_image_side():
+    img = synthetic_multi_marker_image([(DOCK_ID, 160), (TAG_ID, -160)])
+    by_id = {m.marker_id: m for m in detect_markers(img, camera_matrix())}
+    assert by_id[TAG_ID].bearing > 0       # left of the image
+    assert by_id[DOCK_ID].bearing < 0      # right of the image
+
+
+def test_detect_markers_ignores_ids_outside_the_tag_table():
+    unknown = max(CONFIG.tag_table()) + 5
+    img = synthetic_multi_marker_image([(unknown, 0)])
+    assert detect_markers(img, camera_matrix()) == []
+
+
+def test_detect_markers_is_empty_on_a_blank_image():
+    blank = np.full((CONFIG.camera.height, CONFIG.camera.width, 3), 255, np.uint8)
+    assert detect_markers(blank, camera_matrix()) == []
+
+
+def test_detect_marker_still_returns_only_the_dock():
+    img = synthetic_multi_marker_image([(DOCK_ID, 160), (TAG_ID, -160)])
+    m = detect_marker(img, camera_matrix())
+    assert m is not None and m.marker_id == DOCK_ID
+    assert detect_marker(synthetic_multi_marker_image([(TAG_ID, 0)]), camera_matrix()) is None
+
+
+def test_sensing_frame_separates_the_dock_from_the_tags():
+    sim = FakeSim()
+    sim.image = synthetic_multi_marker_image([(DOCK_ID, 160), (TAG_ID, -160)])
+    sensing = Sensing(sim, camera_period=0.0)
+    frame = sensing.read()
+    assert frame.marker is not None and frame.marker.marker_id == DOCK_ID
+    assert sorted(m.marker_id for m in frame.markers) == [DOCK_ID, TAG_ID]
+    assert (sensing.n_detect, sensing.n_detect_any) == (1, 1)
+
+
+def test_sensing_tag_only_frame_has_no_dock_marker():
+    sim = FakeSim()
+    sim.image = synthetic_multi_marker_image([(TAG_ID, 0)])
+    sensing = Sensing(sim, camera_period=0.0)
+    frame = sensing.read()
+    assert frame.marker is None
+    assert [m.marker_id for m in frame.markers] == [TAG_ID]
+    assert (sensing.n_detect, sensing.n_detect_any) == (0, 1)
+    sensing.reset()
+    assert (sensing.n_detect, sensing.n_detect_any) == (0, 0)
+
+
+def test_sensing_blank_frame_has_no_markers():
+    frame = Sensing(FakeSim(), camera_period=0.0).read()
+    assert frame.marker is None and frame.markers == ()
+
+
+def test_real_extra_tag_is_seen_from_its_standoff_point(real_sim):
+    from robot_model import wrap_angle
+    for tid, (tx, ty, tyaw) in CONFIG.tag_table().items():
+        if tid == DOCK_ID:
+            continue
+        s = CONFIG.tags.standoff
+        real_sim.reset((tx + s * math.cos(tyaw), ty + s * math.sin(tyaw), wrap_angle(tyaw + math.pi)))
+        frame = read_or_skip(Sensing(real_sim, camera_period=0.0))
+        by_id = {m.marker_id: m for m in frame.markers}
+        assert tid in by_id
+        assert by_id[tid].range == pytest.approx(s, abs=0.1)
+        assert by_id[tid].bearing == pytest.approx(0.0, abs=0.1)
+        assert frame.marker is None          # the dock is not in view from here

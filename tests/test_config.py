@@ -1,6 +1,6 @@
 # Including libraries
 import math
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 
 import numpy as np
 import pytest
@@ -99,3 +99,90 @@ def test_waypoint_segments_are_clear_of_obstacles():
             t = np.clip(np.dot(np.array([ox, oy]) - a, ab) / np.dot(ab, ab), 0.0, 1.0)
             d = np.linalg.norm(a + t * ab - np.array([ox, oy]))
             assert d > r + need, f"segment {a}->{b} passes {d:.2f} m from obstacle ({ox}, {oy})"
+
+# ------------------------------------------------- extra checkpoint tags
+def _tag_config(n_tags):
+    return replace(CONFIG, tags=replace(CONFIG.tags, n_tags=n_tags))
+
+
+def test_zero_tags_leaves_only_the_dock():
+    table = _tag_config(0).tag_table()
+    assert list(table) == [CONFIG.camera.marker_id]
+    assert table[CONFIG.camera.marker_id] == pytest.approx(CONFIG.env.dock_pose)
+
+
+@pytest.mark.parametrize("n", [1, 2, 4, 8])
+def test_tag_ids_are_consecutive_and_unique(n):
+    table = _tag_config(n).tag_table()
+    mid = CONFIG.camera.marker_id
+    assert len(table) == n + 1
+    assert sorted(table) == list(range(mid, mid + n + 1))
+
+
+@pytest.mark.parametrize("n", [1, 2, 4, 8])
+def test_tags_sit_on_the_walls_and_face_into_the_room(n):
+    cfg = _tag_config(n)
+    hx, hy = cfg.env.room_half_size
+    for tid, (x, y, yaw) in cfg.tag_table().items():
+        if tid == cfg.camera.marker_id:
+            continue
+        assert abs(x) <= hx and abs(y) <= hy
+        on_wall = (math.isclose(abs(x), hx - cfg.tags.inset, abs_tol=1e-9)
+                or math.isclose(abs(y), hy - cfg.tags.inset, abs_tol=1e-9))
+        assert on_wall
+        # a point 0.5 m in front of the tag is inside the room and closer to the centre
+        fx, fy = x + 0.5 * math.cos(yaw), y + 0.5 * math.sin(yaw)
+        assert abs(fx) < hx and abs(fy) < hy
+        assert math.hypot(fx, fy) < math.hypot(x, y)
+
+
+@pytest.mark.parametrize("n", [1, 2, 4, 8])
+def test_tags_do_not_overlap_the_dock(n):
+    cfg = _tag_config(n)
+    dx, dy, _ = cfg.env.dock_pose
+    for tid, (x, y, _) in cfg.tag_table().items():
+        if tid != cfg.camera.marker_id:
+            assert math.hypot(x - dx, y - dy) > 0.3
+
+
+def test_too_many_tags_raise_value_error():
+    with pytest.raises(ValueError):
+        _tag_config(50).tag_table()
+
+
+def test_default_tag_table_is_a_copy():
+    table = CONFIG.tag_table()
+    table.clear()
+    assert len(CONFIG.tag_table()) == CONFIG.tags.n_tags + 1
+
+
+def test_tags_are_on_the_wall_opposite_to_the_dock():
+    cfg = _tag_config(1)
+    dx, dy, _ = cfg.env.dock_pose
+    tx, ty, _ = cfg.tag_table()[CONFIG.camera.marker_id + 1]
+    assert tx * dx < 0                       # opposite side of the room in x
+    assert ty * dy < 0                       # staggered: other half in y
+    assert tx == pytest.approx(-(dx - math.copysign(cfg.tags.inset, dx) * 0) , abs=0.2)
+
+
+def test_first_tag_is_staggered_on_the_opposite_wall():
+    cfg = _tag_config(1)
+    dx, dy, _ = cfg.env.dock_pose
+    tx, ty, _ = cfg.tag_table()[CONFIG.camera.marker_id + 1]
+    assert tx * dx < 0 and ty * dy < 0
+
+
+def test_four_tags_use_four_different_walls():
+    cfg = _tag_config(4)
+    yaws = {round(yaw, 3) for tid, (_, _, yaw) in cfg.tag_table().items()
+            if tid != CONFIG.camera.marker_id}
+    assert len(yaws) == 4
+
+
+@pytest.mark.parametrize("n", [1, 2, 4, 8])
+def test_tags_keep_clear_of_the_dock(n):
+    cfg = _tag_config(n)
+    dx, dy, _ = cfg.env.dock_pose
+    for tid, (x, y, _) in cfg.tag_table().items():
+        if tid != cfg.camera.marker_id:
+            assert math.hypot(x - dx, y - dy) >= 0.55

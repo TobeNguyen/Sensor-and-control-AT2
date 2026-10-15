@@ -1,288 +1,511 @@
-=====================================================================
-TRACK A REVIEW SHEET - TurtleBot3 visual waypoint navigation + docking
-Course: 41014 Sensors and Control in Mechatronics Systems
-Last verified run: [date/time]  |  Command: pytest -v  /  python main.py
-pytest result: [__ passed, 0 failed]
-main.py result: [SUCCESS, time __ s, dock range __ m, lateral __ m,
-                 heading/axis __ rad, collision: none]
-Consistency (same run): mean NEES [__] (target ~3), mean NIS [__] (~2),
-                 EKF RMSE [__] m vs dead-reckoning [__] m (--compare)
+TRACK A - VISUAL WAYPOINT NAVIGATION AND ARUCO DOCKING (TurtleBot3, MuJoCo)
+PROJECT REVIEW: PRINCIPLE, METHOD, DATA FLOW, FILE ROLES AND FUNCTIONS
 =====================================================================
 
-STATUS LEGEND
-  [T]  Implemented and tested (code + passing test/run confirm it)
-  [B]  Implemented, basic validation only
-  [A]  Assumption / nominal configuration
-  [P]  Pending
-  [F]  Future enhancement (planned for teammates)
+1. GOAL AND HARD CONSTRAINT
+---------------------------------------------------------------------
+Goal: a differential-drive TurtleBot3 with a 2D LiDAR and a camera drives
+through a room with 3 circular obstacles, passes a list of waypoints and
+docks visually in front of an ArUco-marked charging station.
 
-=====================================================================
-01 - PROJECT OVERVIEW
-=====================================================================
-Goal
-  A TurtleBot3 (differential drive, 2D LiDAR + camera) in MuJoCo drives
-  through a room with 3 circular obstacles, follows 4 waypoints, then
-  docks visually to an ArUco marker (ID 0, DICT_4X4_50, 0.15 m) at the
-  charging station. The hardware demo reuses the same pipeline.
+Required parts and where they live:
+  - State-space model of the platform ........ robot_model.py
+  - EKF fusing wheel odometry with camera
+    range / bearing / view-angle measurements .. estimator.py
+  - State-feedback / LQR trajectory tracker .. controller.py
+  - Hard constraint: the controller uses the ESTIMATED state only, never
+    ground truth. Ground truth is read only for EVALUATION: in main.py
+    (TrialLog.record for NEES and logging, compute_report, metrics).
+    The test test_control_does_not_depend_on_ground_truth replaces
+    Simulation.ground_truth() by garbage and checks that the estimate and
+    the run are unchanged.
 
-Hard constraint
-  The controller uses the ESTIMATED pose only. Ground truth is logged
-  for evaluation only.
+2. MODELS AND CONVENTIONS
+---------------------------------------------------------------------
+State x = [x, y, theta] (world frame, theta counter-clockwise from +x).
+Input u = [v, w] (linear and angular velocity).
+Odometry: from the cumulative wheel angles, odometry_increment() gives
+  ds = r (dl + dr) / 2,  dtheta = r (dr - dl) / b.
+Motion model (mid-point): motion_model(x, ds, dtheta).
+Camera measurement of a marker with known world position and yaw:
+  range, bearing (measurement_model) and view angle (view_angle_model,
+  0 when the robot looks straight at the marker face).
+LiDAR measurement: expected range of one beam in the known room map
+  (4 walls + circular obstacles): lidar_range_model().
+Tracking error model for LQR: pose_error() (error in the robot frame) and
+  tracking_error_model() (discrete linear model around v_ref, w_ref).
+Model analysis printed at start-up: analyse_model() (controllability and
+  observability ranks, with and without the view angle).
+Camera frames: camera (X right, Y down, Z forward) -> robot ground plane
+  (x forward, y left) with camera_to_robot(); the camera sits
+  body_radius + 0.01 m ahead of the robot centre
+  (camera_forward_offset).
 
-Data flow (per 0.02 s control step, 50 Hz; camera at 10 Hz)
-  simulation -> sensing.py + calibration.py (odometry, LiDAR, marker
-  range/bearing/view angle) -> estimator.py (EKF predict + update)
-  -> navigation.py (TRACK/AVOID) -> docking.py (visual servoing)
-  -> controller.py (LQR, limits) -> robot moves -> sensors measure again.
-  main.py is the state machine (NAVIGATE -> DOCK -> DONE/FAILED).
+3. WHAT HAPPENS IN ONE CONTROL STEP (50 Hz, main.run_pipeline)
+---------------------------------------------------------------------
+  1) frame = Sensing.read()
+        encoders -> odometry increment, LiDAR scan, camera (every 0.1 s)
+  2) EKF:  predict(ds, dtheta)
+           update(marker) for every marker in frame.markers
+           update_lidar(scan)
+  3) Phase logic (all from the ESTIMATED pose x_est):
+        NAVIGATE -> Navigator.update() -> LQR -> (v, w)
+        RECOVER  -> TagRecovery.update() -> (v, w)
+        DOCK     -> DockingController.update() -> (v, w)
+  4) Logging / evaluation (ground truth appears here only)
+  5) Simulation.step(v, w)
 
-Demo success criteria
-  1. Pipeline runs end to end without crashing.
-  2. No collision, finishes before the 120 s limit.
-  3. Docked per the code's own rule: range <= 0.45 m (target 0.40 +/-
-     0.05), |bearing| <= 0.05 rad, |axis| <= 0.10 rad.
-  4. Controller input is the EKF estimate (a test confirms this).
-  5. Every number shown comes from a logged run of the submitted code.
+4. NORMAL OPERATION (PRINCIPLE)
+---------------------------------------------------------------------
+Phase NAVIGATE
+  - The robot starts at a known pose (prior with covariance P0).
+  - Navigator follows the waypoint list. In TRACK mode it builds a
+    reference along the segment anchor -> waypoint (segment_reference)
+    and LQRTracker.compute() returns (v, w):
+        (v, w) = (v_ref, w_ref) - K * pose_error(x_est, ref)
+    then limit_command() (velocity limits, no reverse) and
+    safe_command() (slows down when something is close in front).
+    K is the discrete LQR gain computed once at start-up by lqr_gain()
+    (solve_discrete_are) for the design point v = 0.15 m/s, w = 0.
+  - Odometry drifts, so the EKF corrects it continuously:
+      * LiDAR beams (every 30th beam = 12 beams) are compared against the
+        known room map (walls and obstacles);
+      * every ArUco marker seen by the camera (dock or extra tag) gives
+        range + bearing + view angle, which makes the full pose observable
+        from one frame.
+  - When the last waypoint is reached, Navigator.finished becomes True
+    and the pipeline switches to DOCK.
 
-=====================================================================
-02 - THEORY CHEAT SHEET
-=====================================================================
+Phase DOCK (visual servoing)
+  - DockingController.update() is driven by the EKF estimate
+    (marker_from_pose gives range, bearing, view angle predicted from
+    x_est), while real detections reset the blind timer and are required
+    to confirm docking.
+  - docking_command(): speed proportional to range error (clipped to
+    DOCK_MIN_SPEED..DOCK_MAX_SPEED), reduced when the marker is off-centre
+    (bearing) or the robot is off the marker axis (axis = bearing - view
+    angle); turn rate = (K_BEARING + K_AXIS) * bearing - K_AXIS * view.
+  - Phases: SEARCH -> APPROACH -> ALIGN -> DOCKED.
+    is_docked(): range <= 0.40 + 0.05 m, |bearing| <= 0.05 rad,
+    |axis| <= 0.10 rad.
 
-2.1 Differential-drive kinematics  (robot_model.py)
-  Meaning : how the pose [x y theta] changes with inputs [v w].
-  Core    : ds = r*(dphiR + dphiL)/2,  dtheta = r*(dphiR - dphiL)/L
-            x' = x + ds*cos(theta + dtheta/2)
-            y' = y + ds*sin(theta + dtheta/2)
-            theta' = theta + dtheta
-  Why     : prediction model of the EKF and plant of the LQR.
-            r = 0.033 m, L = 0.287 m.
+5. EXTRA CHECKPOINT TAGS (RECOVERY WHEN THE DOCK CANNOT BE USED)
+---------------------------------------------------------------------
+Idea: if the camera cannot use the dock marker to localise, extra ArUco
+tags with known world poses act as checkpoints. Their number is the
+parameter TagConfig.n_tags (config.py). Because dock and tags have exact
+coordinates, any tag detection gives the robot pose in the world, and the
+dock position relative to it is already known.
 
-2.2 State-space, controllability, observability  (robot_model.py)
-  Meaning : which states can be steered and which can be inferred.
-  Core    : e[k+1] = A e[k] + B du[k];  controllable if rank[B AB A^2B]=n
-            observable if rank[H; HF; HF^2]=n  (H = marker Jacobian)
-  Result  : rank 3/3 while moving (v = 0.15-0.2 m/s), 2/3 when stopped
-            (both). Checked numerically.
-  Why     : at standstill the controllability matrix loses the lateral
-            direction (a unicycle cannot move sideways). For observability,
-            one range+bearing measurement of a known point leaves one
-            direction unobservable: rotating the robot around the marker
-            (tangential position and heading change together). Motion
-            over time makes all 3 states observable. Note: the EKF uses
-            only range and bearing, not the marker view angle.
-  Caveat  : while moving slowly the smallest singular value is small
-            (~1e-3 over one step), so observability builds up over time.
+Layout (config._tag_table, cached with lru_cache):
+  tag 1: wall opposite to the dock, staggered (dock top-right -> tag
+         bottom-left, point reflection through the room centre)
+  tag 2: side wall, middle
+  tag 3: the dock wall itself, mirrored along the wall, at least 0.6 m
+         from the dock panel
+  tag 4: other side wall, middle
+  tag 5+: go round the walls again, shifted along the wall.
+Ids are marker_id+1 ... marker_id+n_tags (DICT_4X4_50 allows 0..49;
+more raises ValueError). n_tags = 0 gives exactly the old dock-only system.
+Each tag has its own ArUco pattern (own texture file) and its own scene
+panel (simulation.build_scene_xml).
 
-2.3 Camera model, calibration, coordinate frames  (calibration.py)
-  Meaning : how pixels relate to metric rays; how camera, robot and
-            world frames connect.
-  Core    : u = fx*X/Z + cx, v = fy*Y/Z + cy; K = [[fx 0 cx],[0 fy cy],
-            [0 0 1]]; fx = (H/2)/tan(fovy/2) = 415.7 px (640x480, 60 deg)
-            PnP (IPPE + iterative) gives the marker pose in metres
-            (marker size 0.15 m gives the scale)
-            p_robot = R*p_cam + t (camera 0.23 m forward of robot centre)
-  Why     : marker range/bearing must be expressed in the robot frame
-            before the EKF uses them.
+6. FAULT CASES AND REMEDIES
+---------------------------------------------------------------------
+A. Odometry drift
+   Cause: wheel noise, integration error.
+   Remedy: EKF.update() (marker) and EKF.update_lidar() (map); P is
+   propagated in predict() with F, G and the odometry covariance, so the
+   filter knows how uncertain it is.
 
-2.4 LiDAR processing and measurement models  (sensing.py)
-  Meaning : turn raw data into usable measurements.
-  Core    : 360 beams, 0.12-3.5 m, sigma 0.01 m; point = r*[cos a, sin a];
-            marker: z = [range, bearing, view_angle] from the ArUco pose
-  Why     : LiDAR gives free space for avoidance; the marker gives the
-            absolute correction for the EKF and the error for docking.
+B. Marker not visible, too oblique or badly detected
+   Remedy (calibration.py / sensing.py): solve_marker_pose() tries
+   several PnP solutions and keeps the one with the smallest
+   reprojection error that is in front of the camera and faces it;
+   it rejects everything above MAX_REPROJ_PX. detect_markers() also
+   rejects |view angle| > 70 deg (grazing view). Rejected markers never
+   reach the EKF.
+   Remedy (docking.py): in estimate mode the controller keeps working
+   through short losses; in raw mode propagate_marker() moves the last
+   measurement with odometry for up to MEASUREMENT_TIMEOUT = 0.5 s.
 
-2.5 EKF, covariance, innovation  (estimator.py)
-  Meaning : fuse odometry (prediction) with marker range/bearing (update).
-  Core    : x- = f(x, ds, dtheta)
-            P- = F P F^T + G Su G^T (+ q_extra)
-            Su from encoder noise (0.002 rad): sigma_ds ~ 4.7e-5 m,
-            sigma_dtheta ~ 3.3e-4 rad per step
-            nu = z - h(x-);  S = H P- H^T + R;  K = P- H^T S^-1
-            x = x- + K nu
-            P = (I-KH) P- (I-KH)^T + K R K^T   (Joseph form)
-            h(x) = [ sqrt(dx^2+dy^2),  atan2(dy,dx) - theta ]
-            (bearing innovation wrapped to [-pi, pi])
-  Why     : odometry drifts; a single known landmark bounds the drift.
-  Config  : P0 std 0.05; R std (0.02 m, 0.01 rad); gate off by default.
-  Honest  : process noise comes from the encoder noise setting, and R from
-            the camera config. Neither is measured from data.
+C. Outlier measurement
+   Remedy: innovation gating in EKF.update() with NIS = y^T S^-1 y
+   against a chi-square threshold (gate = 9.21 for 2 dof;
+   _gate_for() keeps the same confidence for 3 dof). Rejected
+   measurements increment n_rejected.
 
-2.6 LQR feedback control  (controller.py)
-  Meaning : optimal state feedback on the tracking error.
-  Core    : minimise sum(e^T Q e + du^T R du);  du = -K e
-            Q = diag(10,10,1), R = diag(1,1); K from the discrete Riccati
-            equation at v = 0.15 m/s; commands clipped to v <= 0.26 m/s,
-            |w| <= 1.82 rad/s; forward speed scaled down near obstacles
-  Why     : stable, tunable tracking; closed-loop max |pole| = 0.988 (<1).
+D. Gate lock-out (estimate confidently wrong, every measurement rejected)
+   Remedy: after max_rejects (10) consecutive rejections, EKF.update()
+   inflates P until the measurement fits the gate and accepts it
+   (counted in n_recovered). Printed in the report as "forced
+   recoveries" and raised as a WARNING.
 
-2.7 Obstacle avoidance and goal tracking  (navigation.py)
-  Meaning : reach waypoints without collision using only LiDAR.
-  Core    : free-corridor test of half-width (body_radius + margin) and
-            length 0.6 m; pick the free heading nearest the goal with a
-            hysteresis cost; TRACK <-> AVOID, leave AVOID after 25 clear
-            steps (0.5 s); hand over to docking if stuck near the last
-            waypoint.
-  Why     : reactive and cheap; known weakness is local minima.
+E. LiDAR beam hits something that is not in the map (dock panel, tag
+   panel, wrongly associated edge)
+   Remedy: scalar chi-square gate per beam (lidar_gate = 6.63, 1 dof) in
+   update_lidar(); noise sigma inflated by lidar_noise_scale = 2 to
+   cover map errors; beams with predicted range = range_max are skipped.
 
-2.8 Visual servoing  (docking.py)
-  Meaning : steer from the marker observation until aligned with it.
-  Core    : v = clip(K_range*(range - 0.40), 0.03, 0.12), scaled down for
-            large bearing and axis error
-            w = (K_bearing + K_axis)*bearing - K_axis*view_angle
-            (K_bearing = 1.5, K_axis = 4.0)
-            inside range <= 0.45: v = 0, only centre the marker
-            docked if range <= 0.45, |bearing| <= 0.05, |axis| <= 0.10
-            axis = bearing - view_angle
-  Why     : the camera error is the most direct signal for alignment.
+F. Robot is LOST (position uncertainty grows)
+   Detection: EKF.is_lost() = sqrt(trace(P_xy)) > TagConfig.lost_std
+   (0.15 m). Checked in main.run_pipeline while in NAVIGATE.
+   Remedy: TagRecovery (recovery.py)
+     SPIN : rotate in place at spin_omega, accumulating |dtheta| from
+            odometry until a full turn (2*pi). If any marker corrects the
+            EKF, is_lost() becomes False and the phase becomes DONE.
+     GOTO : no tag seen after a full turn -> choose the unvisited tag
+            whose stand-off point (tag position + standoff along the tag
+            normal, standoff_point()) is nearest, and drive there with a
+            Navigator (LiDAR obstacle avoidance included). On arrival,
+            SPIN again.
+     DONE : localised -> main.resume_navigator() rebuilds a Navigator
+            with the remaining waypoints.
+     FAILED: all tags visited without localising -> run ends with
+            reason "recovery failed".
+   Limit: at most MAX_RECOVERIES = 3 recoveries per run.
 
-2.9 FSM, integration, safety  (main.py, navigation.py)
-  Meaning : phases and failure handling.
-  Core    : NAVIGATE -> DOCK -> DONE | FAILED; docking sub-states
-            SEARCH, APPROACH, ALIGN, DOCKED, FAILED; collision and
-            timeout checks; invalid estimate -> stop.
-  Why     : predictable behaviour, easy to diagnose failures.
+G. Docking fails (marker never found, off-axis, time out)
+   Remedy: DockingController returns FAILED -> main calls
+   EKF.inflate() (widens P so tag detections are accepted rather than
+   gated out), starts TagRecovery with recovery_after_dock = True, and
+   resume_navigator(after_dock=True) drives back to the last waypoint
+   (hand-over point in front of the dock) before docking again.
+   Docking's own protections: SEARCH rotation towards the last seen side,
+   max_search_time, BLIND_TIMEOUT (stop trusting the estimate after 4 s
+   without a real detection), ALIGN_TIMEOUT, MAX_DOCK_TIME, and a real
+   detection within CONFIRM_WINDOW is needed before DOCKED.
 
-2.10 RMSE, NEES, NIS, robustness  (main.py, estimator.py)
-  Meaning : evidence that the estimator is accurate AND honest.
-  Core    : RMSE = sqrt(mean(|e|^2)); NEES = e^T P^-1 e (expect ~3 for
-            3 states); NIS = nu^T S^-1 nu (expect ~2); chi-square gate
-            9.21 (99%, 2 DoF)
-  Why     : a small error with an over-confident P is still a bad filter.
+H. Obstacle on the path
+   Remedy: Navigator.update() tests the corridor to the goal with
+   free_distance() on the LiDAR points. If blocked it enters AVOID:
+   choose_heading() picks the free heading (15 deg grid plus the exact
+   goal direction) closest to the goal, with hysteresis (HYSTERESIS) so
+   it does not flip sides; it returns to TRACK after EXIT_CLEAR_STEPS
+   clear steps. Safety net: near the last waypoint, AVOID longer than
+   HANDOFF_AVOID_TIME hands over to docking.
 
-=====================================================================
-03 - CURRENT IMPLEMENTATION STATUS
-=====================================================================
-Component              Status  Notes / evidence
----------------------  ------  ----------------------------------------
-Robot model, ranks     [T]     test_robot_model.py pass (Jacobians checked
-                               against numerical ones)
-Sensing (LiDAR, ArUco, [T]     test_sensing.py pass, incl. real MuJoCo
-odometry)                      tests
-Camera intrinsics      [A]     NOMINAL values from the MuJoCo camera, not
-                               a calibration result. Do not call them
-                               "calibrated".
-Calibration procedure  [B]     Chessboard routine implemented; check that
-                               a synthetic-view test exists before
-                               claiming it. Not run on real images; no
-                               reprojection error reported.
-EKF predict/update     [T]     test_estimator.py pass; marker updates
-                               occur in the full run
-EKF tuning (noise)     [A]     Process noise from encoder noise setting,
-                               R from camera config; not measured. Earlier
-                               run: mean NEES 29.96 (target ~3). Current
-                               value: [__] - fill from the latest run.
-EKF gating             [B]     Implemented and unit-tested; off in the
-                               default run (gate = None)
-Dead-reckoning         [B]     Test passes; --compare gives the full-run
-comparison                     RMSE: [fill in]
-LQR controller         [T]     Stable (max |pole| 0.988); tests pass.
-                               Weights not yet justified or swept.
-No ground truth in     [T]     test_control_does_not_depend_on_ground_truth
-control                        passes
-Navigation / avoidance [T]     Tests pass; full run finishes without a
-                               limit cycle: AVOID share [__ %], nav time
-                               [__ s]. Heuristic, not proven.
-Docking                [T]     Tests pass; full run docked: range [__],
-                               lateral [__], axis [__]. Nominal case only.
-Integration (main.py)  [T]     Runs end to end, logs, table, report, plot.
-                               Seed [__], date [__].
-Monte Carlo evaluation [P]     Not present in the submitted code
-Hardware port          [P]     Not started
-Marker loss / slip /   [F]     Planned for teammates
-disturbance studies
+I. Something very close in front
+   Remedy: controller.safe_command(): forward speed is scaled linearly
+   from 1 to 0 between (lidar.safe_distance + SLOW_BAND) and
+   (body_radius + STOP_MARGIN) using sector_min_range() as front_range;
+   rotation is kept so the robot can turn away.
 
-Rule: change a status to [T] only when a logged run or passing test
-confirms it. Attach every number (RMSE, NEES, success rate) to the run
-and conditions that produced it (seed, config, date).
+J. Invalid estimate (NaN) or invalid reference
+   Remedy: LQRTracker.compute() and Navigator.update() return a stop
+   command (0, 0).
 
-=====================================================================
-04 - REMAINING TASKS
-=====================================================================
-Pri  Task                                   Owner       Acceptance
----  -------------------------------------  ----------  --------------
-DONE Nominal docking succeeds, navigation   Thien       pytest 0 failed;
-     finishes without limit cycle                       main.py SUCCESS
-P0   Prepare hardware demo setup            [name]      Pipeline runs on
-     (same pipeline, real sensors)                      robot, estimate
-                                                        only in control
-P1   Measure sensor noise; set noise and R  [teammate]  Mean NEES in 2-5;
-     deliberately; enable gating                        method explained
-P1   Dead-reckoning vs EKF comparison       [teammate]  --compare RMSE
-                                                        table in report
-P1   Monte Carlo evaluation (20-50 trials,  [teammate]  Success rate,
-     random start/noise seeds)                          RMSE, time, with
-                                                        failure causes
-P2   Real camera calibration + reprojection [teammate]  Reprojection
-     error + sensitivity to K errors                    error reported
-P2   Robustness: marker loss, wheel slip,   [teammate]  Trade-off plots
-     camera delay, back-off-and-retry                   and diagnosis
-P2   LQR weight justification and sweep     [teammate]  Effort vs error
-                                                        table
-P2   Use marker view angle in the EKF       [teammate]  Full observability
-     (optional)                                         from one frame
-P3   Clean repo/README for reproducibility  Team        Fresh clone runs
+K. Collision / timeout
+   Remedy: Simulation.collided is checked every step; with
+   stop_on_collision the run ends as FAILED "collision". The simulation
+   time limit gives "timeout".
 
-=====================================================================
-05 - DEMO AND VIVA Q&A (short answers)
-=====================================================================
-Q1. What is the state and what are the inputs?
-  A: State [x, y, theta]; inputs [v, w]. Differential drive with
-     midpoint-integrated odometry.
+L. Random obstacles placed on the paths the robot needs
+   Remedy: simulation.random_obstacles() uses rejection sampling and
+   keeps free: start pose, dock area, the start -> waypoints -> dock path,
+   the stand-off points of the tags, robot-wide gaps between obstacles
+   and walls. The EKF LiDAR map is built from the obstacles really in the
+   scene (run_cfg in run_pipeline).
 
-Q2. Is the system controllable and observable?
-  A: Yes while moving (rank 3/3). When stopped, both ranks drop to 2/3:
-     a unicycle cannot move sideways, and range+bearing to one marker
-     cannot tell apart a rotation of the robot around the marker.
+M. Camera model errors
+   Remedy: calibration.check_frame_conventions() /
+   assert_frame_conventions() run inside get_calibration() and stop the
+   program when units (metres, degrees), image axes, left/right sign or
+   the head-on marker convention are wrong. Intrinsics are checked by
+   validate_intrinsics().
 
-Q3. Why an EKF and not a linear KF?
-  A: The motion model (sin/cos of theta) and the range-bearing model
-     (sqrt, atan2) are nonlinear; the EKF linearises them with Jacobians.
+7. FILE BY FILE (ROLE + FUNCTIONS IN PLAIN WORDS)
+---------------------------------------------------------------------
 
-Q4. What does the EKF fuse?
-  A: Wheel odometry in the prediction step; marker range and bearing
-     from the camera in the update step. Without the marker, P grows.
+config.py - single source of truth (frozen dataclasses)
+  Role: every parameter lives here; nothing is changed at run time.
+  Classes: SimConfig (time steps, time limit, seed), RobotConfig (wheel,
+  limits, encoder noise), LidarConfig, CameraConfig (image, marker id and
+  size, noise), EKFConfig, ControllerConfig (LQR weights), DockingConfig,
+  EnvConfig (room, start, obstacles, waypoints, dock), TagConfig (extra
+  tags), Config (groups all of them).
+  Functions:
+    EKFConfig.P0()        initial covariance matrix from init_pose_std.
+    EKFConfig.Q()         process noise matrix.
+    ControllerConfig.Q()/R()  LQR weight matrices.
+    _tag_table()          computes where every extra tag stands (position
+                          and yaw) from the dock pose, room size, n_tags
+                          and inset; result is cached.
+    Config.R_camera()     camera noise matrix for [range, bearing].
+    Config.tag_table()    returns a fresh copy {id: (x, y, yaw)} of the
+                          dock + extra tags.
 
-Q5. How did you choose the noise parameters?
-  A: Process noise comes from the encoder noise setting propagated through
-     the motion Jacobian; R from the camera noise setting. Neither was
-     measured. An earlier NEES of ~30 showed over-confidence, so
-     re-tuning from measured noise is the planned next step.
+robot_model.py - mathematics of the platform
+  Role: state-space and measurement models, no hardware.
+  Functions:
+    wrap_angle            wraps an angle to [-pi, pi].
+    default_landmark      world (x, y) of the dock marker.
+    landmark_table        {id: (position, yaw)} for dock and tags.
+    odometry_increment    wheel angle changes -> distance ds and turn
+                          dtheta.
+    motion_model          predicts the next pose from ds, dtheta.
+    jacobian_F / _G       how pose error and odometry noise propagate
+                          (needed by the EKF prediction).
+    measurement_model     expected range and bearing to a landmark.
+    measurement_jacobian  derivative of that measurement w.r.t. the pose.
+    innovation            measurement minus prediction, angles wrapped.
+    view_angle_model      expected view angle of a marker from a pose.
+    measurement_model_pose / measurement_jacobian_pose
+                          same as above with the third value (view angle).
+    lidar_range_model     expected range of one LiDAR beam in the known
+                          map (ray vs walls and circles).
+    lidar_jacobian        derivative of that range w.r.t. the pose
+                          (finite differences).
+    pose_error            reference minus estimate, in the robot frame.
+    tracking_error_model  discrete linear error model (Ad, Bd) for LQR.
+    controllability_matrix / observability_matrix / is_controllable /
+    is_observable         rank tests of the model.
+    analyse_model         ranks at one operating point, for the report.
 
-Q6. How do you know the filter is consistent?
-  A: NEES (expected ~3) and NIS (expected ~2). Our logged NEES is
-     [value from run], so [consistent / over-confident].
+simulation.py - the world (MuJoCo)
+  Role: builds the scene, simulates the robot, produces raw sensor data.
+  The only file that touches the simulator.
+  Functions:
+    wrap_angle            same as above.
+    _aruco_modules        number of data modules of the ArUco dictionary.
+    generate_marker_image makes the marker picture (with white margin).
+    marker_filename       texture file name of a marker id.
+    point_segment_distance distance from a point to a line segment.
+    random_obstacles      places the obstacles randomly but keeps start,
+                          dock, path and tag stand-off points free.
+    _scene_directory, meshes_available, _waffle_visual_geoms
+                          helpers for the output folder and the optional
+                          TurtleBot3 visual meshes.
+    build_scene_xml       builds the MuJoCo XML text: room, obstacles,
+                          dock panel, tag panels, robot, camera.
+    write_scene_files     writes the XML and all marker textures.
+  Class Simulation:
+    __init__              builds and loads the model.
+    reset                 puts the robot at a pose, clears time/encoders.
+    time, time_exceeded   simulated time and time-limit flag.
+    collided              True if the robot touches anything.
+    ground_truth          true pose (EVALUATION ONLY).
+    step(v, w)            applies a velocity command for one control
+                          period, accumulates noisy wheel angles.
+    read_encoders         cumulative wheel angles.
+    read_lidar            360 ray casts with noise.
+    read_camera           RGB image of the front camera.
+    close, __enter__, __exit__  resource handling.
 
-Q7. Does the controller use ground truth?
-  A: No. It uses the EKF estimate only. A test replaces ground truth
-     with garbage and the run is unchanged.
+sensing.py - from raw data to measurements
+  Role: odometry increment, LiDAR scan and ArUco measurements, packaged
+  in a SensorFrame (time, lidar, odometry, marker = dock only,
+  markers = dock + tags).
+  Data classes: LidarScan, MarkerMeasurement (range, bearing, view angle,
+  id, covariance, reprojection error), OdometryIncrement, SensorFrame.
+  Functions:
+    _detector             cached OpenCV ArUco detector.
+    detect_markers        finds all known markers in an image, solves the
+                          pose of each, applies quality gates, returns
+                          measurements with covariance.
+    detect_marker         same, but returns only the dock marker.
+    make_lidar_scan       builds a LidarScan and marks usable beams.
+    lidar_points          valid beams as (x, y) points in the robot frame.
+    sector_min_range      closest valid hit inside an angular sector
+                          (used for front obstacle distance).
+  Class Sensing:
+    reset                 resynchronises encoders and counters.
+    _camera_due           true when 0.1 s passed since the last frame.
+    read                  produces one SensorFrame (camera only when due;
+                          counts n_camera, n_detect, n_detect_any).
 
-Q8. Are the camera parameters calibrated?
-  A: No. They are nominal MuJoCo intrinsics. The calibration routine
-     exists; real-image calibration and reprojection error are pending.
+calibration.py - camera geometry and noise model
+  Role: turns pixels into metric measurements and checks that conventions
+  are consistent.
+  Functions:
+    CameraIntrinsics      holds K, distortion, image size, source.
+    camera_matrix         K from image size and field of view.
+    camera_forward_offset camera distance ahead of the robot centre.
+    nominal_intrinsics    ideal intrinsics of the simulated camera.
+    validate_intrinsics / assert_valid_intrinsics
+                          sanity checks of K and distortion.
+    camera_to_robot / robot_to_camera / camera_dir_to_robot
+                          coordinate conversions camera <-> robot.
+    range_bearing / xy_from_range_bearing
+                          (x, y) <-> (range, bearing).
+    marker_object_points  3D corners of a square marker.
+    marker_pose_from_pnp  PnP result -> (range, bearing, view angle).
+    solve_marker_pose     PnP with several candidates, picks the best
+                          valid one, rejects large reprojection error.
+    validate_estimated_pose  RMS reprojection error of a pose.
+    project_robot_point   robot point -> pixel (for the checks).
+    pose_matrix / robot_to_world / world_to_robot  2D pose transforms.
+    marker_world_position world position of a marker seen from a pose.
+    marker_measurement_covariance  noise of [range, bearing] that grows
+                          with distance (sigma_r ~ Z^2 sigma_px/(f size),
+                          sigma_b ~ sigma_px/(2 f)). The EKF uses it only
+                          with --marker-cov; otherwise it uses the fixed
+                          R from config.
+    lidar_to_robot        LiDAR ranges/angles -> valid points.
+    check_units / check_frame_conventions / assert_frame_conventions
+                          detect wrong units and wrong axis/sign
+                          conventions.
+    chessboard_object_points, find_chessboard_corners,
+    calibrate_intrinsics, calibrate_from_images
+                          optional chessboard calibration of the camera.
+    save_intrinsics / load_intrinsics  store/load intrinsics as JSON.
+    Calibration, get_calibration  bundle of intrinsics, offset and marker
+                          size, with all checks (nominal MuJoCo values by
+                          default).
+    validate_calibration_image_effect  checks that undistortion changes
+                          an image (calibrated cameras only).
 
-Q9. Why LQR, and how were the weights chosen?
-  A: LQR gives stable optimal feedback on the linearised tracking error.
-     Q = diag(10,10,1) favours position over heading; R = I. Max |pole|
-     0.988. A weight sweep is still to do.
+estimator.py - state estimation
+  Role: EKF over [x, y, theta].
+  Functions:
+    nees                  normalised estimation error squared (needs
+                          ground truth, evaluation only).
+    chi2_bounds           acceptance interval for averaged NEES/NIS.
+  Class EKFEstimator:
+    __init__              loads the landmark table, noise models, gates.
+    reset                 sets the initial belief and clears counters.
+    predict(ds, dtheta)   moves the mean with the motion model and grows
+                          P with F, G, odometry noise.
+    _is_valid             checks a marker (finite, known id).
+    _gate_for             gate threshold for 2 or 3 dof.
+    mean_nis_per_dof      average NIS / dof (consistency, ~1).
+    update(marker)        camera correction (range, bearing, view angle),
+                          gating, lock-out recovery, Joseph-form P.
+    update_lidar(scan)    corrections from a few LiDAR beams vs the map.
+    position_std          sqrt(trace of the xy block of P).
+    is_lost               position_std above TagConfig.lost_std.
+    inflate               widens P (used after failed docking).
 
-Q10. How does navigation avoid obstacles, and what are its limits?
-  A: It checks free corridors from LiDAR and picks the free heading
-     nearest the goal, with hysteresis. It is reactive, so it can get
-     trapped in local minima; we saw this and fixed it with new waypoints,
-     an AVOID exit delay and a hand-over rule.
+controller.py - trajectory tracking
+  Role: LQR state feedback using the ESTIMATED pose only.
+  Functions:
+    Reference             target pose (x, y, theta) plus feed-forward
+                          v, w.
+    lqr_gain              solves the discrete Riccati equation and returns
+                          the gain K.
+    limit_command         clips v, w to the robot limits (no reverse by
+                          default).
+    safe_command          scales forward speed down to zero when an
+                          obstacle is close in front, keeps the turn.
+    segment_reference     closest point on the segment as reference,
+                          heading along the segment, speed reduced near
+                          the end.
+  Class LQRTracker:
+    __init__              builds the error model at the design point,
+                          checks controllability, computes K.
+    closed_loop_poles     eigenvalues of Ad - Bd K (stability, < 1).
+    compute               pose error -> du = -K e -> add feed-forward ->
+                          limit -> optional safety slowdown; returns
+                          (0, 0) for invalid input.
 
-Q11. How does docking work?
-  A: Visual servoing: speed from range error, steering from bearing and
-     the marker view angle. Docked when range, bearing and axis error are
-     inside tolerance.
+navigation.py - waypoint following and obstacle avoidance
+  Role: decides the reference for the controller from the estimated pose
+  and the LiDAR scan.
+  Functions:
+    _wrap                 angle wrap.
+    free_distance         distance to the first LiDAR point inside a
+                          corridor in a given direction.
+    heading_candidates    list of test headings (15 deg grid + goal).
+    choose_heading        picks the free heading closest to the goal with
+                          hysteresis.
+  Class Navigator:
+    __init__, reset       waypoints, tracker, state.
+    target                current waypoint (None when finished).
+    _stop                 builds a zero command.
+    update                skips reached waypoints, tests the path, chooses
+                          TRACK or AVOID, gets (v, w) from the tracker,
+                          hands over to docking at the end.
 
-Q12. What happens if the marker is lost?
-  A: Docking propagates the last measurement with odometry for 0.5 s,
-     then searches by rotating; it fails after the search timeout.
-     Robust recovery is a future enhancement.
+docking.py - visual docking
+  Role: final approach to the dock marker.
+  Functions:
+    min_visible_range     smallest distance at which the marker still fits
+                          in the image.
+    propagate_marker      moves a measured marker with odometry.
+    marker_from_pose      range, bearing, view angle predicted from the
+                          estimated pose.
+    is_docked             range / bearing / axis tolerance test.
+    docking_command       the visual-servoing law (v, w).
+    _is_valid             checks a marker measurement.
+  Class DockingController:
+    reset, begin          initial state, search direction.
+    finished              True when DOCKED or FAILED.
+    _command, _fail       build a command / fail the docking.
+    update                one docking step (raw or estimate mode),
+                          timeouts and phases.
+    _update_estimated     the estimate-driven version with blind timeout
+                          and confirmation window.
 
-Q13. What are the known limitations?
-  A: Nominal calibration, unmeasured noise parameters, ideal simulated
-     sensors (no wheel slip), no Monte Carlo statistics, heuristic
-     avoidance, single landmark, no back-off-and-retry in docking,
-     hardware not yet validated.
+recovery.py - getting un-lost with the extra tags
+  Role: TagRecovery state machine IDLE -> SPIN -> GOTO -> DONE / FAILED.
+  Functions: __init__ (loads the extra tags), reset, active, finished,
+  start (begin with a spin), standoff_point (point in front of a tag),
+  _start_goto (choose the nearest unvisited tag and build a Navigator),
+  update (one step; returns v, w).
+
+main.py - integration, monitor and evaluation
+  Role: the control loop, phase machine (NAVIGATE, RECOVER, DOCK, DONE,
+  FAILED), live table, final report.
+  Functions:
+    dock_errors           range, lateral and heading error to the dock.
+    TrialLog.record/arrays  stores and returns the run data.
+    _border, _line, table_header, table_footer, table_row
+                          draw the real-time table.
+    mode_label            text of the current mode.
+    resume_navigator      new Navigator after a recovery.
+    theory_block          static theory printed before the run.
+    result_obstacles, obstacles_text  obstacle layout of the run.
+    compute_report        metrics (RMSE, NEES, clearance, ...).
+    print_report          final report with recovery section and
+                          automatic warnings.
+    RunResult.metrics/summary  final errors and summary text.
+    _viewer               optional live MuJoCo window.
+    run_pipeline          the whole control loop.
+    plot_run              trajectory and error plot.
+    _ensure_mjpython      relaunch under mjpython on macOS.
+    run_trials            repeated runs with statistics.
+    build_parser, main    command-line options and entry point.
+
+visualization.py - passive record
+  Role: never commands the robot. Saves images, path, LiDAR points
+  projected with the ESTIMATED pose, CSV and a summary picture.
+  Functions: get_rgb (camera image copy), _camera_window_worker and
+  LiveCameraView.update/close (live camera window in another process),
+  RouteVisualizer.reset/start (store the starting image),
+  capture_target (store the target image), record (path, LiDAR points,
+  target snapshot, live view), _save_rgb, finish (write all outputs),
+  _make_figure (summary figure).
+
+tests/ - verification
+  Unit and integration tests per file; key ones: ground-truth
+  independence, recovery from a lost start, camera detects each tag from
+  its stand-off point, random-obstacle constraints, tag layout rules.
+
+8. HOW TO READ THE TERMINAL OUTPUT
+---------------------------------------------------------------------
+  Blocks A-F : static theory (model, sensing, estimation, control,
+               integration, tags and recovery parameters)
+  Table      : time, estimated pose, sigma xy, valid LiDAR beams,
+               EKF updates (from tags), tags seen, v and w, mode
+  ">>" lines : events when they happen (LOST, driving to a tag,
+               RELOCALIZED, navigation finished, DOCKED, docking failed)
+  FINAL REPORT: B sensing, C estimation (RMSE, NEES, NIS), D control,
+               E integration, F recovery, WARNINGS, Result.
+Consistency targets: mean NEES about 3, mean NIS/dof about 1.
+
+9. KNOWN LIMITS
+---------------------------------------------------------------------
+  - Lost detection is based on the covariance P. A filter that is
+    confidently wrong (small P, large real error) is not detected by
+    is_lost(); it is handled by gate lock-out recovery, the docking blind
+    timeout and the NEES warning in the report.
+  - LiDAR updates keep P small, so a lost state is rare unless LiDAR is
+    off or q_extra is large; tests force it with use_lidar=False.
+  - The LiDAR map is assumed known (walls and obstacles); it is not SLAM.
+  - Tag panels stick out 5 cm from the wall; the beams that hit them are
+    handled by the LiDAR gate.
+  - The LQR gain is designed once at v = 0.15 m/s, w = 0; other operating
+    points rely on the feedback margin and on the velocity limits.
+  - Camera intrinsics are nominal (derived from the simulator), not
+    measured; the chessboard calibration code exists but is not used in
+    the main run.

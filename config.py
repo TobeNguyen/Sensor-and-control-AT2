@@ -2,7 +2,7 @@
 from dataclasses import dataclass, field
 from pathlib import Path
 import math
-
+from functools import lru_cache
 import numpy as np
 
 ROOT_DIR = Path(__file__).resolve().parent
@@ -98,6 +98,71 @@ class EnvConfig:
     dock_pose: tuple = (1.9, 1.0, math.pi)
 
 @dataclass(frozen=True)
+class TagConfig:
+    n_tags: int = 4          # number of extra checkpoint tags (ids marker_id+1 ... marker_id+n_tags); 0 = dock only
+    inset: float = 0.05      # [m] distance of each tag panel from the wall
+    standoff: float = 0.9    # [m] recovery waypoint distance in front of a tag
+    lost_std: float = 0.15   # [m] sqrt(trace(P_xy)) above this = robot is lost
+    spin_omega: float = 0.7  # [rad/s] in-place rotation while looking for a tag
+
+# {marker_id: (x, y, yaw)}, yaw = direction of the marker normal (pointing into the room).
+# The dock keeps marker_id. Extra tags are spread over the four walls, one per wall first:
+#   tag 1: wall opposite to the dock, staggered (dock top right -> tag bottom left)
+#   tag 2: side wall (middle)
+#   tag 3: the dock wall itself, mirrored along the wall so it never overlaps the dock
+#   tag 4: other side wall (middle)
+# Tags beyond 4 go round the walls again, shifted along the wall.
+@lru_cache(maxsize=None)
+def _tag_table(marker_id: int, dock_pose: tuple, room_half: tuple, n_tags: int, inset: float) -> dict:
+    table = {marker_id: dock_pose}
+    if n_tags <= 0:
+        return table
+    if marker_id + n_tags > 49:                                  # DICT_4X4_50 has ids 0..49
+        raise ValueError("n_tags too large for the ArUco dictionary (ids 0..49)")
+    ax, ay = room_half[0] - inset, room_half[1] - inset
+    corners = [(ax, -ay), (ax, ay), (-ax, ay), (-ax, -ay)]       # counter-clockwise
+    yaws = (math.pi, -math.pi / 2.0, 0.0, math.pi / 2.0)         # east, north, west, south wall
+    sides = []                                                   # (start, unit direction, length, yaw)
+    for i in range(4):
+        (x0, y0), (x1, y1) = corners[i], corners[(i + 1) % 4]
+        length = math.hypot(x1 - x0, y1 - y0)
+        sides.append(((x0, y0), ((x1 - x0) / length, (y1 - y0) / length), length, yaws[i]))
+
+    # Wall that holds the dock (nearest side) and the dock position along it
+    dock_side, best, t_dock = 0, float("inf"), 0.0
+    for i, ((x0, y0), (ux, uy), length, _) in enumerate(sides):
+        t = min(max((dock_pose[0] - x0) * ux + (dock_pose[1] - y0) * uy, 0.0), length)
+        dist = math.hypot(x0 + t * ux - dock_pose[0], y0 + t * uy - dock_pose[1])
+        if dist < best:
+            best, dock_side, t_dock = dist, i, t
+
+    corner_margin = 0.3                                          # [m] keep tags away from corners
+    dock_gap = 0.6                                               # [m] min distance to the dock panel
+    wall_order = [(dock_side + 2) % 4, (dock_side + 1) % 4, dock_side, (dock_side + 3) % 4]
+    rounds = (n_tags + 3) // 4                                   # tags per wall (at most)
+
+    for k in range(n_tags):
+        wall, r = wall_order[k % 4], k // 4
+        (x0, y0), (ux, uy), length, yaw = sides[wall]
+        lo, hi = corner_margin, length - corner_margin
+        usable = hi - lo
+
+        # Base position of the first tag on this wall
+        if k % 4 == 0:                                           # opposite wall: dock mirrored through the centre
+            t = (-dock_pose[0] - x0) * ux + (-dock_pose[1] - y0) * uy
+        elif k % 4 == 2:                                         # dock wall: dock mirrored along the wall
+            t = length - t_dock
+        else:                                                    # side walls: middle
+            t = length / 2.0
+        t = min(max(t, lo), hi)
+        if r > 0:                                                # later rounds: shift along the wall
+            t = lo + (t - lo + r * usable / rounds) % usable
+        if wall == dock_side and abs(t - t_dock) < dock_gap:     # never overlap the dock panel
+            t = t_dock + dock_gap if t_dock + dock_gap <= hi else t_dock - dock_gap
+        table[marker_id + 1 + k] = (x0 + t * ux, y0 + t * uy, yaw)
+    return table
+
+@dataclass(frozen=True)
 class Config:
     sim: SimConfig = field(default_factory=SimConfig)
     robot: RobotConfig = field(default_factory=RobotConfig)
@@ -107,10 +172,18 @@ class Config:
     controller: ControllerConfig = field(default_factory=ControllerConfig)
     docking: DockingConfig = field(default_factory=DockingConfig)
     env: EnvConfig = field(default_factory=EnvConfig)
+    tags: TagConfig = field(default_factory=TagConfig)
 
     # EKF measurement noise for [range, bearing] from the camera
     def R_camera(self) -> np.ndarray:
         return np.diag([self.camera.range_noise_std ** 2,
                         self.camera.bearing_noise_std ** 2])
+    
+    # Known markers {marker_id: (x, y, yaw)}: dock (marker_id) + extra tags
+    def tag_table(self) -> dict:
+        return dict(_tag_table(int(self.camera.marker_id),
+                            tuple(float(v) for v in self.env.dock_pose),
+                            tuple(float(v) for v in self.env.room_half_size),
+                            int(self.tags.n_tags), float(self.tags.inset)))
     
 CONFIG = Config()

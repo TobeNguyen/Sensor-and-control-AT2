@@ -40,14 +40,81 @@ def _aruco_modules(dict_name: str) -> int:
         raise ValueError(f"Unsupported ArUco dictionary: {dict_name}")
     return int(match.group(1))
 
-# Marker image with a 1-module white margin
-def generate_marker_image(cfg: Config = CONFIG, px_per_module: int = 20) -> np.ndarray:
+# Marker image with a 1-module white margin (marker_id=None -> the dock marker)
+def generate_marker_image(cfg: Config = CONFIG, px_per_module: int = 20,
+                        marker_id: int | None = None) -> np.ndarray:
     n = _aruco_modules(cfg.camera.aruco_dict)
+    marker_id = cfg.camera.marker_id if marker_id is None else marker_id
     dictionary = cv2.aruco.getPredefinedDictionary(getattr(cv2.aruco, cfg.camera.aruco_dict))
-    marker = cv2.aruco.generateImageMarker(
-        dictionary, cfg.camera.marker_id, (n + 2) * px_per_module)
+    marker = cv2.aruco.generateImageMarker(dictionary, marker_id, (n + 2) * px_per_module)
     pad = px_per_module
     return cv2.copyMakeBorder(marker, pad, pad, pad, pad, cv2.BORDER_CONSTANT, value=255)
+
+# Texture file of a marker: the dock keeps MARKER_FILE, extra tags get one file per id
+def marker_filename(marker_id: int, cfg: Config = CONFIG) -> str:
+    return MARKER_FILE if marker_id == cfg.camera.marker_id else f"aruco_marker_{marker_id}.png"
+
+# Distance from point (px, py) to the segment A-B
+def point_segment_distance(px: float, py: float, ax: float, ay: float,
+                        bx: float, by: float) -> float:
+    abx, aby = bx - ax, by - ay
+    length2 = abx * abx + aby * aby
+    t = 0.0 if length2 == 0.0 else max(0.0, min(1.0, ((px - ax) * abx + (py - ay) * aby) / length2))
+    return math.hypot(px - (ax + t * abx), py - (ay + t * aby))
+
+# Randomly place obstacles (same count and radii as cfg.env.obstacles) using rejection sampling.
+# The planned path (start -> waypoints -> dock) and the recovery stand-off points of the extra
+# tags are kept free, like the fixed config layout.
+def random_obstacles(cfg: Config, rng: np.random.Generator,
+                    margin: float = 0.15, path_margin: float = 0.10,
+                    max_tries: int = 2000) -> list[tuple]:
+    hx, hy = cfg.env.room_half_size
+    sx, sy, _ = cfg.env.start_pose
+    dx, dy, _ = cfg.env.dock_pose
+    robot_r = cfg.robot.body_radius
+    robot_d = 2.0 * robot_r                    # robot diameter
+    path = ([(sx, sy)]
+            + [(float(w[0]), float(w[1])) for w in getattr(cfg.env, "waypoints", ())]
+            + [(dx, dy)])
+    # Stand-off points in front of the extra tags (the robot drives there during recovery)
+    # Configs without a tag table (e.g. minimal test stubs) simply have no stand-off points.
+    standoff_pts = []
+    if hasattr(cfg, "tag_table") and hasattr(cfg, "tags") and hasattr(cfg, "camera"):
+        standoff_pts = [(tx + cfg.tags.standoff * math.cos(tyaw),
+                         ty + cfg.tags.standoff * math.sin(tyaw))
+                        for tid, (tx, ty, tyaw) in cfg.tag_table().items()
+                        if tid != cfg.camera.marker_id]
+    placed: list[tuple] = []
+
+    for _, _, r in cfg.env.obstacles:
+        for _ in range(max_tries):
+            # keep a robot-wide gap to the walls so the robot can pass behind the obstacle
+            x = rng.uniform(-hx + r + robot_d, hx - r - robot_d)
+            y = rng.uniform(-hy + r + robot_d, hy - r - robot_d)
+
+            # keep the start pose and the dock area free
+            if math.hypot(x - sx, y - sy) < r + robot_d + margin:
+                continue
+            if math.hypot(x - dx, y - dy) < r + robot_d + margin:
+                continue
+            # keep the waypoint path free (the robot must fit between path and obstacle)
+            if any(point_segment_distance(x, y, *a, *b) < r + robot_r + path_margin
+                for a, b in zip(path[:-1], path[1:])):
+                continue
+            # keep the recovery stand-off points free
+            if any(math.hypot(x - px, y - py) < r + robot_r + path_margin
+                for px, py in standoff_pts):
+                continue
+            # keep a robot-wide gap between obstacles
+            if any(math.hypot(x - ox, y - oy) < r + orad + robot_d
+                for ox, oy, orad in placed):
+                continue
+
+            placed.append((float(x), float(y), r))
+            break
+        else:
+            raise RuntimeError("Could not place all obstacles; reduce their number or radius.")
+    return placed
 
 def _scene_directory(cfg: Config, directory: Path | None) -> Path:
     return Path(directory) if directory is not None else cfg.sim.model_path.parent
@@ -84,7 +151,8 @@ def _waffle_visual_geoms(cfg: Config) -> str:
     ])
 
 # Build the MJCF scene string from the configuration
-def build_scene_xml(cfg: Config = CONFIG, use_meshes: bool = False) -> str:
+def build_scene_xml(cfg: Config = CONFIG, use_meshes: bool = False,
+                    obstacles: list[tuple] | None = None) -> str:
     env, rob, cam, sim = cfg.env, cfg.robot, cfg.camera, cfg.sim
     hx, hy = env.room_half_size
     t, h = WALL_THICKNESS, WALL_HEIGHT
@@ -94,10 +162,26 @@ def build_scene_xml(cfg: Config = CONFIG, use_meshes: bool = False) -> str:
     panel_half = cam.marker_size * (n + 2) / (n + 2) * (n + 4) / (n + 2) / 2.0
     dx, dy, dyaw = env.dock_pose
 
-    obstacles = "\n".join(
+    obstacle_list = cfg.env.obstacles if obstacles is None else obstacles
+    obstacles_xml = "\n".join(
         f'    <geom name="obstacle_{i}" type="cylinder" size="{r} {h / 2}" '
         f'pos="{ox} {oy} {h / 2}" rgba="0.8 0.3 0.2 1"/>'
-        for i, (ox, oy, r) in enumerate(env.obstacles))
+        for i, (ox, oy, r) in enumerate(obstacle_list))
+
+    # Extra checkpoint tags (every id in the tag table except the dock): one texture, one material
+    # and one thin panel each, placed like the dock panel (box normal = tag yaw).
+    tag_assets, tag_geoms = [], []
+    for tid, (tx, ty, tyaw) in sorted(cfg.tag_table().items()):
+        if tid == cam.marker_id:
+            continue
+        tag_assets.append(
+            f'    <texture name="tag_tex_{tid}" type="2d" file="{marker_filename(tid, cfg)}"/>\n'
+            f'    <material name="tag_mat_{tid}" texture="tag_tex_{tid}" specular="0" shininess="0"/>')
+        tag_geoms.append(
+            f'    <geom name="tag_marker_{tid}" type="box" size="0.005 {panel_half} {panel_half}"\n'
+            f'        pos="{tx} {ty} {CAMERA_HEIGHT}" euler="0 0 {tyaw}" material="tag_mat_{tid}"/>')
+    tag_assets_xml = "\n".join(tag_assets)
+    tag_geoms_xml = "\n".join(tag_geoms)
 
     if use_meshes:
         compiler = f'<compiler angle="radian" texturedir="." meshdir="{MESH_SUBDIR}"/>'
@@ -123,6 +207,7 @@ def build_scene_xml(cfg: Config = CONFIG, use_meshes: bool = False) -> str:
     <asset>
     <texture name="marker_tex" type="2d" file="{MARKER_FILE}"/>
     <material name="marker_mat" texture="marker_tex" specular="0" shininess="0"/>
+{tag_assets_xml}
 {mesh_assets}
     </asset>
     <worldbody>
@@ -131,9 +216,10 @@ def build_scene_xml(cfg: Config = CONFIG, use_meshes: bool = False) -> str:
     <geom name="wall_west" type="box" size="{t} {hy + 2 * t} {h / 2}" pos="{-(hx + t)} 0 {h / 2}" rgba="0.5 0.5 0.6 1"/>
     <geom name="wall_north" type="box" size="{hx} {t} {h / 2}" pos="0 {hy + t} {h / 2}" rgba="0.5 0.5 0.6 1"/>
     <geom name="wall_south" type="box" size="{hx} {t} {h / 2}" pos="0 {-(hy + t)} {h / 2}" rgba="0.5 0.5 0.6 1"/>
-{obstacles}
+{obstacles_xml}
     <geom name="dock_marker" type="box" size="0.005 {panel_half} {panel_half}"
         pos="{dx} {dy} {CAMERA_HEIGHT}" euler="0 0 {dyaw}" material="marker_mat"/>
+{tag_geoms_xml}
     <body name="base" pos="0 0 0">
         {body_inertial}
         <joint name="x" type="slide" axis="1 0 0"/>
@@ -149,24 +235,34 @@ def build_scene_xml(cfg: Config = CONFIG, use_meshes: bool = False) -> str:
 </mujoco>
 """
 
-# Write the scene XML and marker texture
+# Write the scene XML and the marker textures (dock + extra tags)
 def write_scene_files(cfg: Config = CONFIG, directory: Path | None = None,
-                    use_meshes: bool = False) -> Path:
+                    use_meshes: bool = False,
+                    obstacles: list[tuple] | None = None) -> Path:
     directory = _scene_directory(cfg, directory)
     directory.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(directory / MARKER_FILE), generate_marker_image(cfg))
+    for tid in cfg.tag_table():
+        if tid != cfg.camera.marker_id:
+            cv2.imwrite(str(directory / marker_filename(tid, cfg)),
+                        generate_marker_image(cfg, marker_id=tid))
     xml_path = directory / cfg.sim.model_path.name
-    xml_path.write_text(build_scene_xml(cfg, use_meshes))
+    xml_path.write_text(build_scene_xml(cfg, use_meshes, obstacles))
     return xml_path
 
 class Simulation:
     def __init__(self, cfg: Config = CONFIG, seed: int | None = None,
-                scene_dir: Path | None = None):
+                scene_dir: Path | None = None, randomize_obstacles: bool = False):
         self.cfg = cfg
+        self.rng = np.random.default_rng(cfg.sim.seed if seed is None else seed)
+
+        # Obstacles: random layout (reproducible with the same seed) or the fixed config layout
+        self.obstacles = (random_obstacles(cfg, self.rng) if randomize_obstacles
+                        else list(cfg.env.obstacles))
 
         # Use the TurtleBot3 meshes (visual only) when available; fall back to the cylinder.
         use_meshes = meshes_available(_scene_directory(cfg, scene_dir))
-        self.model_path = write_scene_files(cfg, scene_dir, use_meshes)
+        self.model_path = write_scene_files(cfg, scene_dir, use_meshes, self.obstacles)
         try:
             self.model = mujoco.MjModel.from_xml_path(str(self.model_path))
         except ValueError as exc:
@@ -174,12 +270,11 @@ class Simulation:
                 raise
             print(f"Warning: TurtleBot3 meshes could not be loaded ({exc}); using the cylinder.")
             use_meshes = False
-            self.model_path = write_scene_files(cfg, scene_dir, use_meshes=False)
+            self.model_path = write_scene_files(cfg, scene_dir, False, self.obstacles)
             self.model = mujoco.MjModel.from_xml_path(str(self.model_path))
         self.uses_meshes = use_meshes
 
         self.data = mujoco.MjData(self.model)
-        self.rng = np.random.default_rng(cfg.sim.seed if seed is None else seed)
 
         self._base_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "base")
         self._substeps = int(round(cfg.sim.control_dt / cfg.sim.dt))
