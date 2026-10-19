@@ -8,16 +8,17 @@ import pytest
 
 pytest.importorskip("mujoco")
 
-from config import CONFIG
+from config import CONFIG, RealismConfig
 from simulation import (
     MESH_FILES, MESH_SUBDIR, MARKER_FILE, Simulation, build_scene_xml, generate_marker_image,
     marker_filename, meshes_available, point_segment_distance, random_obstacles,
     write_scene_files, wrap_angle,
 )
+IDEAL = replace(CONFIG, realism=RealismConfig(enabled=False))
 
 @pytest.fixture
 def sim(tmp_path):
-    s = Simulation(scene_dir=tmp_path, seed=0)
+    s = Simulation(IDEAL, scene_dir=tmp_path, seed=0)
     yield s
     s.close()
 
@@ -214,7 +215,7 @@ def test_meshes_are_visual_only(tmp_path):
 
 def test_physics_is_unchanged_with_meshes(tmp_path):
     write_fake_meshes(tmp_path)
-    with Simulation(scene_dir=tmp_path, seed=0) as sim:
+    with Simulation(IDEAL, scene_dir=tmp_path, seed=0) as sim:
         x0 = sim.ground_truth()[0]
         run(sim, 0.2, 0.0, 1.0)
         assert sim.ground_truth()[0] - x0 == pytest.approx(0.2, abs=1e-3)

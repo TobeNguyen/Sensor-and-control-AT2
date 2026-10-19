@@ -4,7 +4,8 @@ from __future__ import annotations
 import math
 import re
 from pathlib import Path
-
+from collections import deque
+from dataclasses import replace
 import mujoco
 import numpy as np
 import cv2
@@ -152,8 +153,10 @@ def _waffle_visual_geoms(cfg: Config) -> str:
 
 # Build the MJCF scene string from the configuration
 def build_scene_xml(cfg: Config = CONFIG, use_meshes: bool = False,
-                    obstacles: list[tuple] | None = None) -> str:
+                    obstacles: list[tuple] | None = None,
+                    cam_offset: float | None = None) -> str:
     env, rob, cam, sim = cfg.env, cfg.robot, cfg.camera, cfg.sim
+    cam_x = rob.body_radius + 0.01 if cam_offset is None else cam_offset
     hx, hy = env.room_half_size
     t, h = WALL_THICKNESS, WALL_HEIGHT
 
@@ -228,7 +231,7 @@ def build_scene_xml(cfg: Config = CONFIG, use_meshes: bool = False,
         <geom name="chassis" type="cylinder" size="{rob.body_radius} 0.08" pos="0 0 0.1"
             mass="1" rgba="{chassis_rgba}"/>
 {visual_geoms}
-        <camera name="front_cam" pos="{rob.body_radius + 0.01} 0 {CAMERA_HEIGHT}"
+        <camera name="front_cam" pos="{cam_x} 0 {CAMERA_HEIGHT}"
             xyaxes="0 -1 0 0 0 1" fovy="{cam.fovy_deg}"/>
     </body>
     </worldbody>
@@ -238,7 +241,8 @@ def build_scene_xml(cfg: Config = CONFIG, use_meshes: bool = False,
 # Write the scene XML and the marker textures (dock + extra tags)
 def write_scene_files(cfg: Config = CONFIG, directory: Path | None = None,
                     use_meshes: bool = False,
-                    obstacles: list[tuple] | None = None) -> Path:
+                    obstacles: list[tuple] | None = None,
+                    cam_offset: float | None = None) -> Path:
     directory = _scene_directory(cfg, directory)
     directory.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(directory / MARKER_FILE), generate_marker_image(cfg))
@@ -247,22 +251,29 @@ def write_scene_files(cfg: Config = CONFIG, directory: Path | None = None,
             cv2.imwrite(str(directory / marker_filename(tid, cfg)),
                         generate_marker_image(cfg, marker_id=tid))
     xml_path = directory / cfg.sim.model_path.name
-    xml_path.write_text(build_scene_xml(cfg, use_meshes, obstacles))
+    xml_path.write_text(build_scene_xml(cfg, use_meshes, obstacles, cam_offset))
     return xml_path
 
 class Simulation:
     def __init__(self, cfg: Config = CONFIG, seed: int | None = None,
                 scene_dir: Path | None = None, randomize_obstacles: bool = False):
         self.cfg = cfg
-        self.rng = np.random.default_rng(cfg.sim.seed if seed is None else seed)
+        rl = cfg.realism
+        self.real = rl.enabled
+        base_seed = cfg.sim.seed if seed is None else int(seed)
+        self.rng = np.random.default_rng(base_seed)
+
+        # Hidden world (what is REALLY there) vs the config (what the robot believes)
+        self.world_cfg, self.cam_offset = self._sample_world(np.random.default_rng(base_seed + 7919))
 
         # Obstacles: random layout (reproducible with the same seed) or the fixed config layout
-        self.obstacles = (random_obstacles(cfg, self.rng) if randomize_obstacles
+        self.obstacles = (random_obstacles(self.world_cfg, self.rng) if randomize_obstacles
                         else list(cfg.env.obstacles))
 
         # Use the TurtleBot3 meshes (visual only) when available; fall back to the cylinder.
         use_meshes = meshes_available(_scene_directory(cfg, scene_dir))
-        self.model_path = write_scene_files(cfg, scene_dir, use_meshes, self.obstacles)
+        self.model_path = write_scene_files(self.world_cfg, scene_dir, use_meshes,
+                                            self.obstacles, self.cam_offset)
         try:
             self.model = mujoco.MjModel.from_xml_path(str(self.model_path))
         except ValueError as exc:
@@ -270,7 +281,8 @@ class Simulation:
                 raise
             print(f"Warning: TurtleBot3 meshes could not be loaded ({exc}); using the cylinder.")
             use_meshes = False
-            self.model_path = write_scene_files(cfg, scene_dir, False, self.obstacles)
+            self.model_path = write_scene_files(self.world_cfg, scene_dir, False,
+                                                self.obstacles, self.cam_offset)
             self.model = mujoco.MjModel.from_xml_path(str(self.model_path))
         self.uses_meshes = use_meshes
 
@@ -280,9 +292,35 @@ class Simulation:
         self._substeps = int(round(cfg.sim.control_dt / cfg.sim.dt))
         self._renderer = None
         self._encoders = np.zeros(2)  # cumulative [left, right] wheel angle [rad]
+        self._v = self._w = 0.0       # wheel speeds actually reached (acceleration limit)
+        self._cam_buf: deque = deque(maxlen=8)                          # (time, image)
+        self._lidar_buf: deque = deque(maxlen=max(1, rl.lidar_delay_steps + 1))
         self.lidar_angles = np.linspace(
             0.0, 2.0 * math.pi, cfg.lidar.num_beams, endpoint=False)
         self.reset()
+
+    # Sample the hidden differences between the real world and the config (per seed)
+    def _sample_world(self, wr: np.random.Generator):
+        cfg, rl = self.cfg, self.cfg.realism
+        self.r_true, self.b_true = cfg.robot.wheel_radius, cfg.robot.wheel_base
+        self.slip_v = self.slip_w = 0.0
+        self.gain = 1.0
+        if not rl.enabled:
+            return cfg, None
+        u = lambda a: float(wr.uniform(-a, a))
+        dx, dy, dyaw = cfg.env.dock_pose
+        hy = cfg.env.room_half_size[1]
+        dock = (dx + u(rl.dock_shift_xy[0]),
+                float(np.clip(dy + u(rl.dock_shift_xy[1]), -hy + 0.6, hy - 0.6)),
+                dyaw + u(rl.dock_yaw_err))
+        cam = replace(cfg.camera, fovy_deg=cfg.camera.fovy_deg * (1.0 + u(rl.cam_fovy_err)))
+        world = replace(cfg, camera=cam, env=replace(cfg.env, dock_pose=dock))
+        self.r_true = cfg.robot.wheel_radius * (1.0 + u(rl.wheel_radius_err))
+        self.b_true = cfg.robot.wheel_base * (1.0 + u(rl.wheel_base_err))
+        self.slip_v = float(wr.uniform(0.0, rl.slip_v))
+        self.slip_w = float(wr.uniform(0.0, rl.slip_w))
+        self.gain = float(wr.uniform(*rl.brightness))
+        return world, cfg.robot.body_radius + 0.01 + u(rl.cam_offset_err)
 
     # Reset time, encoders and robot pose
     def reset(self, pose: tuple | None = None) -> None:
@@ -291,6 +329,9 @@ class Simulation:
         self.data.qpos[:3] = [x, y, theta]
         self.data.qvel[:] = 0.0
         self._encoders[:] = 0.0
+        self._v = self._w = 0.0
+        self._cam_buf.clear()
+        self._lidar_buf.clear()
         mujoco.mj_forward(self.model, self.data)
 
     @property
@@ -309,44 +350,58 @@ class Simulation:
                                 self.model.geom_bodyid[c.geom2]):
                 return True
         return False
-    # True pose
+
+    # True pose (EVALUATION ONLY)
     def ground_truth(self) -> np.ndarray:
         x, y, theta = self.data.qpos[:3]
         return np.array([x, y, wrap_angle(theta)])
-    
+
+    # Cumulative wheel angles [left, right] in rad
+    def read_encoders(self) -> np.ndarray:
+        return self._encoders.copy()
+
+    @staticmethod
+    def _ramp(cur: float, target: float, max_step: float) -> float:
+        return cur + float(np.clip(target - cur, -max_step, max_step))
+
     # Apply v (m/s) and w (rad/s) for one control period
     def step(self, v: float, w: float) -> None:
         rob = self.cfg.robot
+        rl = self.cfg.realism
         v = float(np.clip(v, -rob.max_linear_vel, rob.max_linear_vel))
         w = float(np.clip(w, -rob.max_angular_vel, rob.max_angular_vel))
+        r, b = rob.wheel_radius, rob.wheel_base
+        v_body, w_body = v, w
+        if self.real:
+            dtc = self.cfg.sim.control_dt
+            v = 0.0 if abs(v) < rl.deadband_v else v           # motor deadband
+            w = 0.0 if abs(w) < rl.deadband_w else w
+            v = self._ramp(self._v, v, rl.max_lin_acc * dtc)   # acceleration limit
+            w = self._ramp(self._w, w, rl.max_ang_acc * dtc)
+            self._v, self._w = v, w
+            v_body, w_body = v * (1.0 - self.slip_v), w * (1.0 - self.slip_w)   # wheel slip
+            r, b = self.r_true, self.b_true                    # true wheel geometry
         dt = self.cfg.sim.dt
         dphi = np.zeros(2)
 
         for _ in range(self._substeps):
             theta = self.data.qpos[2]
-            self.data.qvel[0] = v * math.cos(theta)
-            self.data.qvel[1] = v * math.sin(theta)
-            self.data.qvel[2] = w
+            self.data.qvel[0] = v_body * math.cos(theta)
+            self.data.qvel[1] = v_body * math.sin(theta)
+            self.data.qvel[2] = w_body
             mujoco.mj_step(self.model, self.data)
-
-            # Wheel increments from the actual body velocity after the step
-            theta = self.data.qpos[2]
-            v_act = self.data.qvel[0] * math.cos(theta) + self.data.qvel[1] * math.sin(theta)
-            w_act = self.data.qvel[2]
-            dphi[0] += (v_act - w_act * rob.wheel_base / 2.0) / rob.wheel_radius * dt
-            dphi[1] += (v_act + w_act * rob.wheel_base / 2.0) / rob.wheel_radius * dt
+            # Encoders measure the WHEELS (true geometry), not the body: slip is invisible to them
+            dphi[0] += (v - w * b / 2.0) / r * dt
+            dphi[1] += (v + w * b / 2.0) / r * dt
 
         dphi += self.rng.normal(0.0, rob.encoder_noise_std, 2)
         self._encoders += dphi
         mujoco.mj_forward(self.model, self.data)
 
-    # Cumulative wheal angles
-    def read_encoders(self) -> np.ndarray:
-        return self._encoders.copy()
-    
     # Ranges for each beam
     def read_lidar(self) -> np.ndarray:
         lid = self.cfg.lidar
+        rl = self.cfg.realism
         x, y, theta = self.data.qpos[:3]
         origin = np.array([x, y, LIDAR_HEIGHT])
         ranges = np.full(lid.num_beams, lid.range_max)
@@ -360,16 +415,43 @@ class Simulation:
                 ranges[i] = d
 
         hit = ranges < lid.range_max
-        ranges[hit] += self.rng.normal(0.0, lid.noise_std, int(hit.sum()))
-        return np.clip(ranges, lid.range_min, lid.range_max)
-    
+        gain = rl.lidar_noise_range_gain if self.real else 0.0
+        ranges[hit] += (self.rng.normal(0.0, 1.0, int(hit.sum()))
+                        * lid.noise_std * (1.0 + gain * ranges[hit]))
+        if self.real:
+            ranges[self.rng.random(lid.num_beams) < rl.lidar_dropout] = lid.range_max
+        out = np.clip(ranges, lid.range_min, lid.range_max)
+        if not self.real:
+            return out
+        self._lidar_buf.append(out)               # the scan arrives a few steps late
+        return self._lidar_buf[0].copy()
+
+    # Motion blur + brightness + sensor noise
+    def _degrade(self, img: np.ndarray) -> np.ndarray:
+        rl, cam = self.cfg.realism, self.cfg.camera
+        out = img.astype(np.float32) * self.gain
+        f = (cam.height / 2.0) / math.tan(math.radians(cam.fovy_deg) / 2.0)
+        n = int(round(abs(self._w) * f * rl.exposure))          # blur length [px] while rotating
+        if n >= 2:
+            out = cv2.filter2D(out, -1, np.ones((1, n), np.float32) / n)
+        out += self.rng.normal(0.0, rl.image_noise, out.shape).astype(np.float32)
+        return np.clip(out, 0, 255).astype(np.uint8)
+
     # RGB image from the front camera
     def read_camera(self) -> np.ndarray:
         if self._renderer is None:
             cam = self.cfg.camera
             self._renderer = mujoco.Renderer(self.model, height=cam.height, width=cam.width)
         self._renderer.update_scene(self.data, camera="front_cam")
-        return self._renderer.render().copy()
+        img = self._renderer.render().copy()
+        if not self.real:
+            return img
+        rl = self.cfg.realism
+        self._cam_buf.append((self.time, self._degrade(img)))
+        if self.rng.random() < rl.frame_drop:                   # lost frame -> nothing detected
+            return np.zeros_like(img)
+        ready = [im for t, im in self._cam_buf if t <= self.time - rl.camera_delay + 1e-9]
+        return (ready[-1] if ready else self._cam_buf[0][1]).copy()   # latency
     
     def close(self) -> None:
         if self._renderer is not None:

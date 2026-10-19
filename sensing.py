@@ -76,7 +76,7 @@ def detect_markers(image_rgb: np.ndarray,
         return []
 
     # Keep the largest detection of every known id.
-    known = cfg.tag_table()
+    known = set(range(int(cfg.camera.marker_id), int(cfg.camera.marker_id) + int(cfg.tags.n_tags) + 1))
     best: dict = {}
     for c, i in zip(corners, ids.flatten()):
         i = int(i)

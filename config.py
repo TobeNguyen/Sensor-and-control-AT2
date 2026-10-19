@@ -73,7 +73,7 @@ class ControllerConfig:
     
 @dataclass(frozen=True)
 class DockingConfig:
-    target_distance: float = 0.40   # stop this far from marker [m]
+    target_distance: float = 0.55   # stop this far from marker [m]
     distance_tolerance: float = 0.05  # [m]
     bearing_tolerance: float = 0.05   # [rad]
     max_search_time: float = 10.0     # give up if marker not seen [s]
@@ -99,19 +99,20 @@ class EnvConfig:
 
 @dataclass(frozen=True)
 class TagConfig:
-    n_tags: int = 4          # number of extra checkpoint tags (ids marker_id+1 ... marker_id+n_tags); 0 = dock only
+    n_tags: int = 3          # number of extra checkpoint tags (ids marker_id+1 ... marker_id+n_tags); 0 = dock only
     inset: float = 0.05      # [m] distance of each tag panel from the wall
     standoff: float = 0.9    # [m] recovery waypoint distance in front of a tag
     lost_std: float = 0.15   # [m] sqrt(trace(P_xy)) above this = robot is lost
     spin_omega: float = 0.7  # [rad/s] in-place rotation while looking for a tag
-
-# {marker_id: (x, y, yaw)}, yaw = direction of the marker normal (pointing into the room).
-# The dock keeps marker_id. Extra tags are spread over the four walls, one per wall first:
-#   tag 1: wall opposite to the dock, staggered (dock top right -> tag bottom left)
-#   tag 2: side wall (middle)
-#   tag 3: the dock wall itself, mirrored along the wall so it never overlaps the dock
-#   tag 4: other side wall (middle)
-# Tags beyond 4 go round the walls again, shifted along the wall.
+    use_survey: bool = True       # learn the tag poses at the start pose instead of reading them from the config
+    survey_omega: float = 0.4     # [rad/s] in-place rotation while scanning
+    survey_angle: float = math.pi # [rad] total rotation of the survey (half a turn from the start heading)
+    survey_min_obs: int = 5       # observations needed before a tag is added to the learned map
+    survey_max_range: float = 2.5 # [m] ignore tag observations farther than this (too noisy for the map)
+    survey_max_time: float = 30.0 # [s] stop scanning after this
+    approach_dist: float = 1.0    # [m] map-follow target in front of the dock
+    dock_first: bool = False      # True: goal = learned dock approach point (no fixed waypoints)
+    dock_max_range: float = 4.5   # [m] max range accepted for the dock observation during the scan
 @lru_cache(maxsize=None)
 def _tag_table(marker_id: int, dock_pose: tuple, room_half: tuple, n_tags: int, inset: float) -> dict:
     table = {marker_id: dock_pose}
@@ -163,6 +164,33 @@ def _tag_table(marker_id: int, dock_pose: tuple, room_half: tuple, n_tags: int, 
     return table
 
 @dataclass(frozen=True)
+class RealismConfig:
+    enabled: bool = True
+    # World differs from what the robot believes (sampled per seed, uniform +-)
+    dock_shift_xy: tuple = (0.03, 0.25)     # [m] dock moved along x / along the wall (y)
+    dock_yaw_err: float = math.radians(5.0) # [rad]
+    cam_fovy_err: float = 0.03              # relative error of the true field of view
+    cam_offset_err: float = 0.015           # [m] true camera position vs believed
+    wheel_radius_err: float = 0.02          # relative odometry scale error
+    wheel_base_err: float = 0.02            # relative
+    slip_v: float = 0.02                    # max fraction the body moves less than the wheels
+    slip_w: float = 0.05                    # rotation slips more
+    # Actuators
+    max_lin_acc: float = 0.5                # [m/s^2]
+    max_ang_acc: float = 3.0                # [rad/s^2]
+    deadband_v: float = 0.01                # [m/s] smaller commands do not move the robot
+    deadband_w: float = 0.03                # [rad/s]
+    # Sensors
+    camera_delay: float = 0.15              # [s] (quantised to the 0.1 s camera period)
+    lidar_delay_steps: int = 2              # control steps
+    frame_drop: float = 0.05                # fraction of camera frames lost
+    exposure: float = 0.02                  # [s] motion blur when rotating
+    image_noise: float = 3.0                # gray levels
+    brightness: tuple = (0.7, 1.2)          # image gain per run
+    lidar_dropout: float = 0.03             # fraction of beams lost
+    lidar_noise_range_gain: float = 0.5     # sigma = noise_std * (1 + gain * range)
+
+@dataclass(frozen=True)
 class Config:
     sim: SimConfig = field(default_factory=SimConfig)
     robot: RobotConfig = field(default_factory=RobotConfig)
@@ -173,6 +201,7 @@ class Config:
     docking: DockingConfig = field(default_factory=DockingConfig)
     env: EnvConfig = field(default_factory=EnvConfig)
     tags: TagConfig = field(default_factory=TagConfig)
+    realism: RealismConfig = field(default_factory=RealismConfig)
 
     # EKF measurement noise for [range, bearing] from the camera
     def R_camera(self) -> np.ndarray:

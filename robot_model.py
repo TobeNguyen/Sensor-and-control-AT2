@@ -1,6 +1,6 @@
 # Including libraries
 from __future__ import annotations
-
+from typing import Optional
 import math
 
 import numpy as np
@@ -17,8 +17,45 @@ def wrap_angle(angle: float) -> float:
 def default_landmark(cfg: Config = CONFIG) -> np.ndarray:
     return np.array(cfg.env.dock_pose[:2], dtype=float)
 
-# {marker_id: (landmark position (2,), marker yaw)} for the dock and every extra tag
-def landmark_table(cfg: Config = CONFIG) -> dict:
+# Tag poses learned during SURVEY: {id: (position (2,), yaw)} in the world frame of the start pose.
+class TagMap:
+    def __init__(self, min_obs: int = 1):
+        self.min_obs = int(min_obs)
+        self._obs: dict = {}                     # id -> list of (x, y, yaw, weight)
+
+    # Add one observation made from a known robot pose (the EKF estimate).
+    # Observations farther than max_range are ignored: their error grows with range^2.
+    def add(self, robot_pose, marker, max_range: Optional[float] = None) -> None:
+        if max_range is not None and marker.range > max_range:
+            return
+        px, py, th = (float(v) for v in robot_pose)
+        a = th + marker.bearing
+        self._obs.setdefault(int(marker.marker_id), []).append((
+            px + marker.range * math.cos(a),
+            py + marker.range * math.sin(a),
+            wrap_angle(th + marker.view_angle + math.pi),       # inverse of view_angle_model
+            1.0 / max(marker.range, 0.1) ** 2))                 # close observations weigh more
+
+    def count(self, marker_id: int) -> int:
+        return len(self._obs.get(int(marker_id), []))
+
+    # Weighted mean pose of every tag with at least min_obs observations (yaw averaged on the circle)
+    def table(self) -> dict:
+        out = {}
+        for i, obs in self._obs.items():
+            if len(obs) < self.min_obs:
+                continue
+            o = np.array(obs, dtype=float)
+            w = o[:, 3] / o[:, 3].sum()
+            yaw = math.atan2(float((w * np.sin(o[:, 2])).sum()), float((w * np.cos(o[:, 2])).sum()))
+            out[int(i)] = ((o[:, :2] * w[:, None]).sum(axis=0), yaw)
+        return out
+
+# {marker_id: (landmark position (2,), marker yaw)}.
+# tag_map = learned TagMap; None = the poses written in the config (used by old code and tests).
+def landmark_table(cfg: Config = CONFIG, tag_map=None) -> dict:
+    if tag_map is not None:
+        return {int(i): (np.array(p, dtype=float), float(yaw)) for i, (p, yaw) in tag_map.table().items()}
     return {int(i): (np.array(p[:2], dtype=float), float(p[2])) for i, p in cfg.tag_table().items()}
 
 # Convert two cumulative encoder readings

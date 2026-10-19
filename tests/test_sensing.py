@@ -5,8 +5,9 @@ import numpy as np
 import pytest
 
 cv2 = pytest.importorskip("cv2")
-
-from config import CONFIG
+from dataclasses import replace
+from config import CONFIG, RealismConfig
+IDEAL = replace(CONFIG, realism=RealismConfig(enabled=False))
 from robot_model import measurement_model
 from sensing import (
     MAX_REPROJ_PX, MarkerMeasurement, Sensing, camera_forward_offset, camera_matrix,
@@ -284,7 +285,7 @@ def test_sensing_quality_gates_can_reject_everything():
 def real_sim(tmp_path):
     pytest.importorskip("mujoco")
     from simulation import Simulation
-    sim = Simulation(scene_dir=tmp_path, seed=0)
+    sim = Simulation(IDEAL, scene_dir=tmp_path, seed=0)
     yield sim
     sim.close()
 

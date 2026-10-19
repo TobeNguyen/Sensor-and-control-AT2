@@ -8,11 +8,14 @@ import pytest
 pytest.importorskip("cv2")
 
 import docking
-from config import CONFIG
+from dataclasses import replace
+from config import CONFIG, RealismConfig
+IDEAL = replace(CONFIG, realism=RealismConfig(enabled=False))
 from docking import (
-    ALIGN_TIMEOUT, BETA_MAX, BLIND_TIMEOUT, DOCK_MAX_SPEED, DOCK_MIN_SPEED, K_AXIS, K_BEARING,
-    K_CENTER, K_RANGE, MAX_DOCK_TIME, SEARCH_OMEGA, DockCommand, DockPhase, DockingController,
-    docking_command, is_docked, marker_from_pose, min_visible_range, propagate_marker,
+    ALIGN_TIMEOUT, BETA_MAX, BLIND_TIMEOUT, DOCK_CONFIRM_FRAMES, DOCK_MAX_SPEED, DOCK_MIN_SPEED,
+    K_AXIS, K_BEARING, K_CENTER, K_RANGE, MAX_DOCK_TIME, SEARCH_OMEGA, DockCommand, DockPhase,
+    DockingController, docking_command, is_docked, marker_from_pose, min_visible_range,
+    propagate_marker,
 )
 from estimator import EKFEstimator
 from robot_model import measurement_model, motion_model, view_angle_model, wrap_angle
@@ -22,6 +25,7 @@ from sensing import (
 
 D = CONFIG.docking
 DOCK_X, DOCK_Y, DOCK_YAW = CONFIG.env.dock_pose
+HANDOFF = (1.05, 1.0)
 LANDMARK = np.array([DOCK_X, DOCK_Y])
 HEAD_ON = wrap_angle(DOCK_YAW - math.pi)      # world heading that looks straight at the marker
 DT = CONFIG.sim.control_dt
@@ -304,7 +308,7 @@ def check_final_pose(x, lateral_tol, heading_tol):
 
 
 def test_closed_loop_docks_from_the_navigation_handoff_pose():
-    wx, wy = CONFIG.env.waypoints[-1]
+    wx, wy = HANDOFF
     x, cmd, t = run_dock((wx, wy, math.pi / 2))             # marker starts out of view
     assert cmd.phase is DockPhase.DOCKED
     assert t < 40.0
@@ -312,14 +316,14 @@ def test_closed_loop_docks_from_the_navigation_handoff_pose():
 
 
 def test_closed_loop_docks_from_a_small_lateral_offset():
-    wx, wy = CONFIG.env.waypoints[-1]
+    wx, wy = HANDOFF
     x, cmd, _ = run_dock((wx, wy - 0.08, HEAD_ON))
     assert cmd.phase is DockPhase.DOCKED
     check_final_pose(x, lateral_tol=0.05, heading_tol=0.2)
 
 
 def test_closed_loop_docks_with_measurement_noise():
-    wx, wy = CONFIG.env.waypoints[-1]
+    wx, wy = HANDOFF
     x, cmd, _ = run_dock((wx, wy, math.pi / 2), noise_seed=1)
     assert cmd.phase is DockPhase.DOCKED
     check_final_pose(x, lateral_tol=0.08, heading_tol=0.25)
@@ -401,7 +405,8 @@ def test_estimate_mode_needs_a_real_detection_to_declare_docked():
     dock = DockingController()
     cmd = dock.update(None, odom(0.0), pose)
     assert cmd.phase is DockPhase.ALIGN and not cmd.docked
-    cmd = dock.update(marker(D.target_distance, 0.0, 0.0, DT), odom(DT), pose)
+    for k in range(1, DOCK_CONFIRM_FRAMES + 1):              # several consecutive real detections
+        cmd = dock.update(marker(D.target_distance, 0.0, 0.0, k * DT), odom(k * DT), pose)
     assert cmd.docked and cmd.finished
 
 
@@ -455,14 +460,14 @@ def final_pose_ok(x, lateral_tol=0.08, heading_tol=0.25):
 
 
 def test_closed_loop_with_ekf_docks_from_the_handoff_pose():
-    wx, wy = CONFIG.env.waypoints[-1]
+    wx, wy = HANDOFF
     x, cmd, t = run_dock_ekf((wx, wy, math.pi / 2), seed=1)
     assert cmd.phase is DockPhase.DOCKED and t < 40.0
     assert final_pose_ok(x)
 
 
 def test_closed_loop_with_ekf_survives_odometry_bias_and_a_marker_blackout():
-    wx, wy = CONFIG.env.waypoints[-1]
+    wx, wy = HANDOFF
     x, cmd, _ = run_dock_ekf((wx, wy, math.pi / 2), seed=2, bias=0.0004, blackout=(2.0, 4.0))
     assert cmd.phase is DockPhase.DOCKED
     assert final_pose_ok(x, lateral_tol=0.10, heading_tol=0.30)
@@ -471,7 +476,7 @@ def test_closed_loop_with_ekf_survives_odometry_bias_and_a_marker_blackout():
 def test_estimate_mode_docks_faster_than_raw_mode_through_a_marker_blackout():
     # The marker disappears for 2 s during the approach. Raw mode has to stop and search,
     # estimate mode keeps driving on the EKF prediction.
-    wx, wy = CONFIG.env.waypoints[-1]
+    wx, wy = HANDOFF
     times = {True: [], False: []}
     ok = {True: 0, False: 0}
     for seed in range(10):
@@ -488,7 +493,7 @@ def test_estimate_mode_docks_faster_than_raw_mode_through_a_marker_blackout():
 
 def success_rate(pos_span, heading_span, n_trials, use_estimate):
     """Fraction of random handoff poses that end DOCKED AND pass the ground-truth pose check."""
-    wx, wy = CONFIG.env.waypoints[-1]
+    wx, wy = HANDOFF
     ok = 0
     for seed in range(n_trials):
         r = np.random.default_rng(100 + seed)
@@ -519,7 +524,7 @@ def test_repeated_trials_stress_envelope():
 def real_sim(tmp_path):
     pytest.importorskip("mujoco")
     from simulation import Simulation
-    sim = Simulation(scene_dir=tmp_path, seed=0)
+    sim = Simulation(IDEAL, scene_dir=tmp_path, seed=0)
     yield sim
     sim.close()
 
@@ -548,7 +553,7 @@ def test_real_view_angle_matches_geometry(real_sim, theta):
 
 
 def test_real_docking_end_to_end(real_sim):
-    wx, wy = CONFIG.env.waypoints[-1]
+    wx, wy = HANDOFF
     start = (wx, wy, math.pi / 2)
     real_sim.reset(start)
     sensing = Sensing(real_sim)                             # camera at 10 Hz

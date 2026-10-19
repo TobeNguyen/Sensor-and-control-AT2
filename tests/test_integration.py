@@ -7,11 +7,12 @@ import pytest
 
 pytest.importorskip("cv2")
 
-from config import CONFIG
+from config import CONFIG, RealismConfig
 from estimator import EKFEstimator
+import main as main_module
 from main import (
     MAX_RECOVERIES, Phase, RunResult, TrialLog, build_parser, compute_report, dock_errors,
-    mode_label, plot_run, print_report, resume_navigator, run_pipeline, run_trials, theory_block,
+    mode_label, plot_run, print_report, resume_navigator, run_trials, theory_block,
 )
 from navigation import Navigator
 from recovery import RecoveryPhase
@@ -20,6 +21,20 @@ from robot_model import wrap_angle
 DOCK_X, DOCK_Y, DOCK_YAW = CONFIG.env.dock_pose
 HEAD_ON = wrap_angle(DOCK_YAW - math.pi)
 D = CONFIG.docking
+# The start-pose SURVEY is a separate feature with its own tests at the end of this file.
+# The older tests check the rest of the pipeline with the tag poses from the config,
+# so they run with the survey off (explicit use_survey=True still wins).
+NO_SURVEY_CFG = replace(CONFIG, tags=replace(CONFIG.tags, use_survey=False),
+                        realism=RealismConfig(enabled=False))
+
+def run_pipeline(*args, **kwargs):
+    kwargs.setdefault("use_survey", False)
+    realistic = kwargs.pop("realistic", False)
+    cfg = args[0] if args else kwargs.pop("cfg", CONFIG)
+    rest = args[1:]
+    if not realistic:
+        cfg = replace(cfg, realism=RealismConfig(enabled=False))
+    return main_module.run_pipeline(cfg, *rest, **kwargs)
 
 # ------------------------------------------------------- evaluation helpers (no sim)
 def test_dock_errors_perfect_pose():
@@ -230,7 +245,7 @@ def test_pipeline_with_per_measurement_covariance(scene_dir):
 
 
 def test_run_trials_prints_statistics(scene_dir, capsys):
-    code = run_trials(2, seed0=0, scene_dir=scene_dir)
+    code = run_trials(2, seed0=0, cfg=NO_SURVEY_CFG, scene_dir=scene_dir)
     out = capsys.readouterr().out
     assert code in (0, 1)
     assert "Success rate" in out and "Mean NEES" in out
@@ -279,7 +294,7 @@ def test_pipeline_navigates_and_docks_with_random_obstacles(scene_dir, seed):
 
 
 def test_run_trials_with_random_obstacles(scene_dir, capsys):
-    code = run_trials(2, seed0=0, scene_dir=scene_dir, randomize_obstacles=True)
+    code = run_trials(2, seed0=0, cfg=NO_SURVEY_CFG, scene_dir=scene_dir, randomize_obstacles=True)
     out = capsys.readouterr().out
     assert code in (0, 1)
     assert "Success rate" in out
@@ -386,3 +401,63 @@ def test_recovery_does_not_depend_on_ground_truth(scene_dir, lost_result, monkey
     poisoned = run_lost(scene_dir)
     assert poisoned.log.phase == lost_result.log.phase
     np.testing.assert_allclose(poisoned.log.arrays()["est"], lost_result.log.arrays()["est"])
+
+# ------------------------------------------------------------ start-pose SURVEY
+def test_parser_no_survey_flag():
+    assert build_parser().parse_args(["--no-survey"]).no_survey is True
+    assert build_parser().parse_args([]).no_survey is False
+
+
+def test_mode_label_shows_the_survey_and_map_follow_phases():
+    assert mode_label(Phase.SURVEY) == "SURVEY"
+    assert mode_label(Phase.RECOVER, rphase=RecoveryPhase.MAP_GOTO) == "RECOVER-MAP"
+
+
+def test_print_report_shows_the_learned_tag_map_error(capsys):
+    r = make_fake_result()
+    r.diag = {"n_updates": 8, "n_rejected": 0, "n_recovered": 0, "n_lidar_updates": 40,
+            "n_lidar_rejected": 0, "nis_per_dof": 1.0, "tag_map_errors": {1: 0.012, 2: 0.034}}
+    print_report(r, CONFIG)
+    out = capsys.readouterr().out
+    assert "learned tag map error" in out and "id 1: 0.012" in out and "id 2: 0.034" in out
+
+
+def test_older_tests_run_without_the_survey(result):
+    assert result.log.phase[0] == "navigate"
+
+
+def test_survey_is_the_first_phase_and_fails_when_no_tag_is_learned(scene_dir):
+    cfg = replace(CONFIG, tags=replace(CONFIG.tags, survey_min_obs=10_000))   # nothing reaches the map
+    res = run_pipeline(cfg, seed=0, scene_dir=scene_dir, use_survey=True)
+    assert res.log.phase[0] == "survey"
+    assert not res.success and res.reason == "survey failed"
+    assert any("SURVEY FAILED" in e for e in res.events)
+
+
+def test_survey_learns_the_nearest_tag_accurately(scene_dir):
+    cfg = replace(CONFIG, sim=replace(CONFIG.sim, max_time=20.0))
+    res = run_pipeline(cfg, seed=0, scene_dir=scene_dir, use_survey=True)
+    errs = res.diag["tag_map_errors"]
+    assert errs and min(errs.values()) < 0.05          # tag 1 is 0.7 m from the start pose
+
+
+def test_survey_learns_the_dock_when_it_is_in_range(scene_dir):
+    # Start pose with a clear view of the dock (1.6 m away, no obstacle in between)
+    cfg = replace(CONFIG, sim=replace(CONFIG.sim, max_time=18.0),
+                env=replace(CONFIG.env, start_pose=(0.3, 0.9, 0.0)))
+    res = run_pipeline(cfg, seed=0, scene_dir=scene_dir, use_survey=True)
+    dock_id = int(CONFIG.camera.marker_id)
+    assert any("SURVEY done" in e for e in res.events)
+    assert dock_id in res.diag["tag_map_errors"]
+    assert res.diag["tag_map_errors"][dock_id] < 0.06
+
+
+def test_survey_does_not_depend_on_ground_truth(scene_dir, monkeypatch):
+    cfg = replace(CONFIG, sim=replace(CONFIG.sim, max_time=17.0))
+    base = run_pipeline(cfg, seed=0, scene_dir=scene_dir, use_survey=True)
+    import simulation
+    monkeypatch.setattr(simulation.Simulation, "ground_truth",
+                        lambda self: np.array([99.0, -99.0, 2.0]))
+    poisoned = run_pipeline(cfg, seed=0, scene_dir=scene_dir, use_survey=True)
+    assert poisoned.diag["tag_map_errors"] == base.diag["tag_map_errors"]
+    np.testing.assert_allclose(poisoned.log.arrays()["est"], base.log.arrays()["est"])

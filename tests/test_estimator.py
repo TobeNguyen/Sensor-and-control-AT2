@@ -7,7 +7,7 @@ import numpy as np
 
 from config import CONFIG
 from estimator import EKFEstimator, chi2_bounds, nees
-from robot_model import (default_landmark, landmark_table, lidar_jacobian, lidar_range_model,
+from robot_model import (TagMap, default_landmark, landmark_table, lidar_jacobian, lidar_range_model,
                         measurement_jacobian, measurement_jacobian_pose, measurement_model,
                         measurement_model_pose, motion_model, observability_matrix,
                         view_angle_model, wrap_angle)
@@ -551,6 +551,55 @@ class TestTagMarkers(unittest.TestCase):
         ekf.inflate()
         self.assertTrue(ekf.update(marker))                  # uncertain: accepted
         self.assertLess(np.linalg.norm(ekf.x[:2] - self.truth[:2]), 0.3)
+
+
+class TestLearnedTagMap(unittest.TestCase):
+    def setUp(self):
+        self.pose = np.array(CONFIG.env.start_pose, dtype=float)
+        self.dock_xy = np.array(CONFIG.env.dock_pose[:2], dtype=float)
+        self.dock_id = int(CONFIG.camera.marker_id)
+
+    def learned_map(self, shift=(0.0, 0.0)):
+        """TagMap holding the dock, optionally shifted away from its true position."""
+        tm = TagMap()
+        r, b, v = measurement_model_pose(self.pose, self.dock_xy + np.asarray(shift), DOCK_YAW)
+        tm.add(self.pose, ViewMarker(r, b, v, self.dock_id))
+        return tm
+
+    def test_empty_map_ignores_every_marker(self):
+        ekf = EKFEstimator(CONFIG)
+        ekf.reset(self.pose)
+        ekf.set_tag_map(TagMap())
+        self.assertEqual(ekf.landmarks, {})
+        self.assertFalse(ekf.update(Marker(2.0, 0.1)))
+        self.assertEqual(ekf.n_updates, 0)
+
+    def test_learned_pose_replaces_the_config_pose(self):
+        ekf = EKFEstimator(CONFIG)
+        ekf.set_tag_map(self.learned_map())
+        self.assertEqual(sorted(ekf.landmarks), [self.dock_id])
+        np.testing.assert_allclose(ekf.landmarks[self.dock_id][0], self.dock_xy, atol=1e-9)
+        np.testing.assert_allclose(ekf.landmark, self.dock_xy, atol=1e-9)
+
+    def test_none_restores_the_poses_from_the_config(self):
+        ekf = EKFEstimator(CONFIG)
+        ekf.set_tag_map(TagMap())
+        ekf.set_tag_map(None)
+        self.assertEqual(sorted(ekf.landmarks), sorted(landmark_table(CONFIG)))
+
+    def test_update_follows_the_learned_map_not_the_config(self):
+        # Same real measurement: matches the config dock exactly, but not a wrongly learned dock.
+        good, bad = EKFEstimator(CONFIG), EKFEstimator(CONFIG)
+        for ekf in (good, bad):
+            ekf.reset(self.pose, np.diag([0.05, 0.05, 0.05]) ** 2)
+        good.set_tag_map(self.learned_map())
+        bad.set_tag_map(self.learned_map(shift=(0.0, 0.3)))
+        marker = exact_view_marker(self.pose)
+        self.assertTrue(good.update(marker))
+        self.assertTrue(bad.update(marker))
+        self.assertAlmostEqual(good.last_nis, 0.0)
+        self.assertGreater(bad.last_nis, 1.0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -7,6 +7,7 @@ Records:
     centred, or a clearly labelled final-view image if it was never confirmed
   - the EKF-estimated trajectory (NOT MuJoCo ground truth)
   - decimated LiDAR hits projected into the world frame with the EKF pose
+  - the tag poses learned during the start-pose SURVEY (estimated, not ground truth)
   - a live camera window while the simulation runs (display only, nothing stored)
 
 It never records video and never keeps a history of camera frames, so memory
@@ -18,7 +19,9 @@ Typical use in main.py:
     sim.reset(start); viz.start(sim)
     loop:
         ... sensing, EKF update ...
-        viz.record(frame.time, ekf.x, frame.lidar, mode, frame.marker, sim)
+        viz.record(frame.time, ekf.x, frame.lidar, mode, frame.marker, sim,
+                   markers=frame.markers)
+    viz.set_tag_map(learned)    # once, after the SURVEY
     viz.finish(sim, success=ok, reason=why, sim_time=sim.time)
 """
 from __future__ import annotations
@@ -82,7 +85,9 @@ class LiveCameraView:
                                 args=(self._q, self.window), daemon=True)
         self._proc.start()
 
-    def update(self, t: float, sim: Any, mode: str = "", marker: Any = None) -> None:
+    # NEW: `markers` = every marker accepted in the latest frame (dock + extra tags)
+    def update(self, t: float, sim: Any, mode: str = "", marker: Any = None,
+               markers: Any = ()) -> None:
         if not self.enabled or t - self._last_t < self.period - 1e-9:
             return
         self._last_t = t
@@ -91,9 +96,15 @@ class LiveCameraView:
         bgr = cv2.cvtColor(get_rgb(sim), cv2.COLOR_RGB2BGR)
         if self.scale != 1.0:
             bgr = cv2.resize(bgr, None, fx=self.scale, fy=self.scale)
+        # NEW: show the ids of every visible marker, not only the dock
+        ids = ",".join(str(m.marker_id) for m in markers) if markers else "-"
         if marker is not None:
-            text = f"{mode} | marker r={marker.range:.2f} m  b={math.degrees(marker.bearing):+.0f} deg"
+            text = (f"{mode} | dock r={marker.range:.2f} m  b={math.degrees(marker.bearing):+.0f} deg"
+                    f" | ids {ids}")
             color = (0, 220, 0)
+        elif markers:
+            text = f"{mode} | tag ids {ids} (dock not seen)"
+            color = (0, 200, 255)
         else:
             text = f"{mode} | no marker"
             color = (0, 0, 255)
@@ -155,6 +166,7 @@ class RouteVisualizer:
         self._target_image: np.ndarray | None = None
         self._target_confirmed = False
         self._target_caption = ""
+        self._learned_tags: dict = {}           # NEW: {id: (x, y)} learned during SURVEY (estimated)
         self.outputs: dict[str, Path] = {}
 
     # ------------------------------------------------------------------ capture
@@ -169,12 +181,18 @@ class RouteVisualizer:
         self._target_confirmed = True
         self._target_caption = label
 
+    # NEW
+    def set_tag_map(self, table: dict) -> None:
+        """Tag poses learned by the SURVEY: {id: (position (2,), yaw)} (estimated, not ground truth)."""
+        self._learned_tags = {int(i): (float(p[0]), float(p[1])) for i, (p, _) in table.items()}
+
     def record(self, t: float, pose_est: Any, lidar: Any,
-               mode: str, marker: Any = None, sim: Any = None) -> None:
+               mode: str, marker: Any = None, sim: Any = None, markers: Any = ()) -> None:
         """Call once per control step, after the EKF update.
 
         pose_est is [x, y, theta] from the EKF, NOT ground truth.
-        lidar is a sensing.LidarScan; marker is a MarkerMeasurement or None.
+        lidar is a sensing.LidarScan; marker is the dock MarkerMeasurement or None;
+        markers = every accepted marker of the frame (dock + extra tags), display only.
         """
         t = float(t)
         pose = np.asarray(pose_est, dtype=float)
@@ -215,7 +233,7 @@ class RouteVisualizer:
 
         # Live camera window (display only)
         if sim is not None:
-            self.live.update(t, sim, mode, marker)
+            self.live.update(t, sim, mode, marker, markers)
 
     # ------------------------------------------------------------------- output
     @staticmethod
@@ -268,6 +286,7 @@ class RouteVisualizer:
             "camera_target_label": self._target_caption,
             "estimated_path_samples": len(self._routes),
             "lidar_map_points": self._point_count,
+            "learned_tag_ids": sorted(self._learned_tags),      # NEW
             "method": "EKF trajectory + LiDAR projected with estimated pose; not SLAM",
             "ground_truth_used": False,
             "video_recorded": False,
@@ -313,6 +332,21 @@ class RouteVisualizer:
         dock_x, dock_y, _ = self.cfg.env.dock_pose
         ax_map.scatter([dock_x], [dock_y], marker="*", s=200, c="#ba559b",
                        label="Configured ArUco target", zorder=6)
+
+        # NEW: extra tags from the config (context) and the tags learned by the SURVEY (estimated)
+        dock_id = int(self.cfg.camera.marker_id)
+        tags_cfg = {i: p for i, p in self.cfg.tag_table().items() if i != dock_id}
+        if tags_cfg:
+            ax_map.scatter([p[0] for p in tags_cfg.values()], [p[1] for p in tags_cfg.values()],
+                           s=45, marker="s", facecolors="none", edgecolors="#ba559b",
+                           label="Configured tags")
+        if self._learned_tags:
+            ax_map.scatter([p[0] for p in self._learned_tags.values()],
+                           [p[1] for p in self._learned_tags.values()],
+                           s=30, marker="x", c="#d04040", zorder=6, label="Learned tags (SURVEY)")
+            for i, (px, py) in self._learned_tags.items():
+                ax_map.annotate(str(i), (px, py), textcoords="offset points", xytext=(4, 4), fontsize=7)
+
         ax_map.set_xlim(-hx - 0.35, hx + 0.35)
         ax_map.set_ylim(-hy - 0.35, hy + 0.35)
         ax_map.set_aspect("equal", adjustable="box")

@@ -9,35 +9,45 @@ import numpy as np
 
 from config import CONFIG, Config
 from navigation import Navigator
+from robot_model import landmark_table
 from sensing import LidarScan
 
 class RecoveryPhase(Enum):
     IDLE = "idle"
     SPIN = "spin"        # rotate in place looking for any known tag
     GOTO = "goto"        # drive to the stand-off point in front of the nearest tag
-    DONE = "done"        # position uncertainty is small again
-    FAILED = "failed"    # every tag was tried without getting localised
+    MAP_GOTO = "map"     # no tag could be seen: follow the learned map to the dock approach point
+    DONE = "done"        # position uncertainty is small again, or the approach point was reached
+    FAILED = "failed"    # nothing left to try (no tags and no dock in the map)
 
 class TagRecovery:
-    def __init__(self, cfg: Config = CONFIG, tracker=None):
+    def __init__(self, cfg: Config = CONFIG, tracker=None, tag_map=None):
         self.cfg = cfg
         self.tracker = tracker
         dock_id = int(cfg.camera.marker_id)
+        table = landmark_table(cfg, tag_map)             # learned map (SURVEY) or the config poses
         # Extra tags only: the dock is the place we are trying to get back to.
-        self.tags = {int(i): (np.array(p[:2], dtype=float), float(p[2]))
-                    for i, p in cfg.tag_table().items() if int(i) != dock_id}
+        self.tags = {i: p for i, p in table.items() if i != dock_id}
+        self.dock = table.get(dock_id)                   # (position, yaw) of the dock
+        if self.dock is None:                            # not learned yet: rough place to go and look for it
+            self.dock = (np.array(cfg.env.dock_pose[:2], dtype=float), float(cfg.env.dock_pose[2]))
         self.reset()
 
     def reset(self) -> None:
         self.phase = RecoveryPhase.IDLE
         self.target_id: Optional[int] = None
+        self.arrived_by_map = False           # True: finished by reaching the map approach point (not relocalised)
         self._visited: set = set()
         self._nav: Optional[Navigator] = None
         self._spun = 0.0                      # accumulated rotation during SPIN [rad]
 
     @property
+    def available(self) -> bool:
+        return bool(self.tags) or self.dock is not None
+
+    @property
     def active(self) -> bool:
-        return self.phase in (RecoveryPhase.SPIN, RecoveryPhase.GOTO)
+        return self.phase in (RecoveryPhase.SPIN, RecoveryPhase.GOTO, RecoveryPhase.MAP_GOTO)
 
     @property
     def finished(self) -> bool:
@@ -46,17 +56,22 @@ class TagRecovery:
     # Begin recovery: first look around from the current spot, then visit the tags one by one.
     def start(self) -> None:
         self.reset()
-        self.phase = RecoveryPhase.SPIN if self.tags else RecoveryPhase.FAILED
+        self.phase = RecoveryPhase.SPIN if self.available else RecoveryPhase.FAILED
 
     # Point in front of the tag (along its normal) from where the camera can see it
     def standoff_point(self, tag_id: int) -> np.ndarray:
         pos, yaw = self.tags[tag_id]
         return pos + self.cfg.tags.standoff * np.array([math.cos(yaw), math.sin(yaw)])
 
+    # Point in front of the dock (from the learned map) where docking can take over
+    def approach_point(self) -> np.ndarray:
+        pos, yaw = self.dock
+        return pos + self.cfg.tags.approach_dist * np.array([math.cos(yaw), math.sin(yaw)])
+
     def _start_goto(self, x_est: np.ndarray) -> None:
         todo = [i for i in self.tags if i not in self._visited]
         if not todo:
-            self.phase = RecoveryPhase.FAILED
+            self._start_map_follow()
             return
         self.target_id = min(todo, key=lambda i: float(np.hypot(*(self.standoff_point(i) - x_est[:2]))))
         self._visited.add(self.target_id)
@@ -64,8 +79,18 @@ class TagRecovery:
                             waypoints=[self.standoff_point(self.target_id)])
         self.phase = RecoveryPhase.GOTO
 
+    # Every tag was tried without localising: drive to the dock approach point using the saved map
+    def _start_map_follow(self) -> None:
+        if self.dock is None:
+            self.phase = RecoveryPhase.FAILED
+            return
+        self.target_id = int(self.cfg.camera.marker_id)
+        self._nav = Navigator(self.cfg, tracker=self.tracker, waypoints=[self.approach_point()])
+        self.phase = RecoveryPhase.MAP_GOTO
+
     # One control step. `localized` = not estimator.is_lost(); `dtheta` = odometry heading change.
-    # Returns (v, w). Check `phase` afterwards: DONE or FAILED means the main loop takes over.
+    # Returns (v, w). Check `phase` afterwards: DONE or FAILED means the main loop takes over
+    # (DONE with arrived_by_map = True means: go straight to docking).
     def update(self, x_est, scan: LidarScan, localized: bool, dtheta: float) -> tuple[float, float]:
         if self.phase in (RecoveryPhase.IDLE, RecoveryPhase.DONE, RecoveryPhase.FAILED):
             return 0.0, 0.0
@@ -79,13 +104,17 @@ class TagRecovery:
             self._spun += abs(dtheta)
             if self._spun < 2.0 * math.pi:
                 return 0.0, omega
-            self._start_goto(x)                        # full turn without a tag: go to the next one
+            self._start_goto(x)                  # full turn without a tag: go where the dock can be seen
             if self.phase is RecoveryPhase.FAILED:
                 return 0.0, 0.0
 
         cmd = self._nav.update(x, scan)                # LiDAR obstacle avoidance included
-        if cmd.finished:                               # arrived at the stand-off point: look around
-            self.phase = RecoveryPhase.SPIN
+        if cmd.finished:
+            if self.phase is RecoveryPhase.MAP_GOTO:   # reached the approach point from the saved map
+                self.arrived_by_map = True
+                self.phase = RecoveryPhase.DONE
+                return 0.0, 0.0
+            self.phase = RecoveryPhase.SPIN            # arrived at the stand-off point: look around
             self._spun = 0.0
             return 0.0, omega
         return cmd.v, cmd.w

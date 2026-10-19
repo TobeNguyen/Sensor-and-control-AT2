@@ -15,20 +15,22 @@ from typing import Optional
 import numpy as np
 
 from calibration import get_calibration, marker_measurement_covariance
-from config import CONFIG, RESULTS_DIR, Config
+from config import CONFIG, RESULTS_DIR, Config, RealismConfig
 from controller import LQRTracker
 from docking import DockingController
 from estimator import EKFEstimator, chi2_bounds, nees
 from navigation import Navigator
 from recovery import RecoveryPhase, TagRecovery
-from robot_model import analyse_model, wrap_angle
-from sensing import Sensing
+from robot_model import TagMap, analyse_model, wrap_angle
+from sensing import Sensing, sector_min_range
 from simulation import Simulation
 from visualization import RouteVisualizer
 
 MAX_RECOVERIES = 3   # maximum number of tag recoveries per run (avoid endless retry loops)
 
 class Phase(Enum):
+    SURVEY = "survey"
+    EXPLORE = "explore"
     NAVIGATE = "navigate"
     RECOVER = "recover"
     DOCK = "dock"
@@ -143,12 +145,24 @@ def mode_label(phase: Phase, ncmd=None, dcmd=None, rphase=None) -> str:
     return phase.value.upper()
 
 # New navigator after a recovery. Lost while navigating: continue with the remaining waypoints.
-# Docking failed: drive back to the last waypoint (the hand-over point in front of the dock).
-def resume_navigator(nav: Navigator, cfg: Config, after_dock: bool) -> Navigator:
-    remaining = [nav.waypoints[-1]] if after_dock else nav.waypoints[nav.index:]
+# Docking failed: drive to the approach point in front of the dock (not the wall-side last waypoint).
+def resume_navigator(nav: Navigator, cfg: Config, after_dock: bool, approach=None) -> Navigator:
+    if after_dock and approach is not None:
+        remaining = [approach]
+    elif after_dock:
+        remaining = [nav.waypoints[-1]]
+    else:
+        remaining = nav.waypoints[nav.index:]
     if not remaining:
         remaining = [nav.waypoints[-1]]
     return Navigator(cfg, tracker=nav.tracker, waypoints=remaining)
+
+# Point in front of the dock (learned pose, or the config pose as a rough fallback)
+def dock_approach_point(cfg: Config, lm=None, yaw=None) -> np.ndarray:
+    if lm is None:
+        lm, yaw = np.array(cfg.env.dock_pose[:2], dtype=float), float(cfg.env.dock_pose[2])
+    return np.array([lm[0] + cfg.tags.approach_dist * math.cos(yaw),
+                    lm[1] + cfg.tags.approach_dist * math.sin(yaw)])
 
 # Static theory block printed once before the run: quantities that do not change in time
 def theory_block(cfg: Config = CONFIG, estimator=None) -> str:
@@ -303,6 +317,10 @@ def print_report(result: RunResult, cfg: Config = CONFIG, dr_rmse: Optional[floa
     n_tags = len(cfg.tag_table()) - 1
     print(f"F. Recovery   : {n_tags} extra tags | recoveries started {d.get('n_tag_recoveries', 0)}/{MAX_RECOVERIES} | "
         f"tag updates {d.get('n_tag_updates', 0)} | time in recovery {r['recover_time']:.1f} s")
+    errs = d.get("tag_map_errors")
+    if errs:
+        print("                learned tag map error [m]: "
+            + ", ".join(f"id {i}: {e:.3f}" for i, e in sorted(errs.items())))
     for event in result.events:
         print(f"                {event}")
 
@@ -342,6 +360,7 @@ class RunResult:
     diag: dict = field(default_factory=dict)    # EKF counters + NIS (evaluation/diagnostics)
     obstacles: Optional[list] = None            # obstacle layout used in the run (None = config layout)
     events: list = field(default_factory=list)  # timeline of LOST / RELOCALIZED / docking events
+    world_cfg: Optional[Config] = None          # the REAL world (dock moved, ...): EVALUATION ONLY
 
     def metrics(self, cfg: Config = CONFIG) -> dict:
         err = self.estimate - self.truth
@@ -383,7 +402,9 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
                 use_marker_cov: bool = False,
                 visualizer: Optional[RouteVisualizer] = None,
                 randomize_obstacles: bool = False,
-                use_recovery: bool = True) -> RunResult:
+                use_recovery: bool = True,
+                use_survey: Optional[bool] = None,
+                use_lidar_map: bool = True) -> RunResult:
     log = TrialLog()
     phase, reason = Phase.NAVIGATE, "timeout"
     nav_time: Optional[float] = None
@@ -397,7 +418,14 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
     last_target: Optional[int] = None    # tag the recovery is currently driving to
     last_tags: tuple = ()                # ids seen in the latest processed camera frame
     last_n_cam = -1
+    tag_map: Optional[TagMap] = None     # tag poses learned during SURVEY
+    dock_id = int(cfg.camera.marker_id)
+    dock_lm = dock_yaw = None            # dock pose from the learned map (None = config pose)
+    survey_t0: Optional[float] = None
+    explore_t0: Optional[float] = None   # start time of the EXPLORE phase
+    spun = 0.0                           # rotation accumulated during SURVEY [rad]
     obstacles = list(cfg.env.obstacles)
+    world_cfg = cfg
     start = np.array(cfg.env.start_pose, dtype=float)
     dt = cfg.sim.control_dt
     report_every = max(1, int(round(1.0 / dt)))      # one table row per simulated second
@@ -412,13 +440,16 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
                     randomize_obstacles=randomize_obstacles) as sim:
         # Effective config: the obstacles that are really in the scene (random or fixed)
         obstacles = list(sim.obstacles)
+        world_cfg = sim.world_cfg
         run_cfg = replace(cfg, env=replace(cfg.env, obstacles=tuple(obstacles)))
         nav, dock = Navigator(run_cfg), DockingController(run_cfg)
         recovery = TagRecovery(run_cfg, tracker=nav.tracker)
 
         # The EKF LiDAR map must contain the obstacles that are really in the scene
         if estimator is None:
-            estimator = EKFEstimator(run_cfg, gate=9.21, use_marker_cov=use_marker_cov)
+            ekf_env = replace(run_cfg.env, obstacles=()) if cfg.realism.enabled else run_cfg.env
+            estimator = EKFEstimator(replace(run_cfg, env=ekf_env), gate=9.21,
+                                    use_marker_cov=use_marker_cov, use_lidar=use_lidar_map)
         if verbose:
             print(obstacles_text(obstacles))
             print(theory_block(run_cfg, estimator))
@@ -427,6 +458,10 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
         sim.reset(tuple(start))
         sensing = Sensing(sim, cfg, marker_sigma_px=marker_sigma_px)
         estimator.reset(start)               # known start pose (a prior, not ground truth)
+        if (cfg.tags.use_survey if use_survey is None else use_survey):
+            tag_map = TagMap(min_obs=run_cfg.tags.survey_min_obs)
+            estimator.set_tag_map(tag_map)       # empty map: markers are ignored until SURVEY is done
+            phase = Phase.SURVEY
         if visualizer is not None:
             visualizer.start(sim)
 
@@ -454,8 +489,93 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
                 v = w = 0.0
                 ncmd = dcmd = None
 
+                # 2-pre) SURVEY: spin at the known start pose and learn the tag poses (no ground truth).
+                # dock_first: scan a full turn (or until the dock is seen) and use the learned dock as the goal.
+                if phase is Phase.SURVEY:
+                    if survey_t0 is None:
+                        survey_t0 = frame.time
+                        note(frame.time, "SURVEY: spinning at the start pose to learn the tag map")
+                    first = run_cfg.tags.dock_first
+                    for marker in frame.markers:
+                        is_dock = int(marker.marker_id) == dock_id
+                        limit = run_cfg.tags.dock_max_range if (first and is_dock) else run_cfg.tags.survey_max_range
+                        tag_map.add(x_est, marker, max_range=limit)
+                    spun += abs(frame.odometry.dtheta)
+                    dock_seen = first and tag_map.count(dock_id) >= run_cfg.tags.survey_min_obs
+                    angle_limit = 2.0 * math.pi if first else run_cfg.tags.survey_angle
+                    if dock_seen or spun >= angle_limit or frame.time - survey_t0 > run_cfg.tags.survey_max_time:
+                        learned = tag_map.table()
+                        estimator.set_tag_map(tag_map)
+                        recovery = TagRecovery(run_cfg, tracker=nav.tracker, tag_map=tag_map)
+                        if dock_id in learned:
+                            dock_lm, dock_yaw = learned[dock_id]
+                        elif not first:
+                            note(frame.time, "SURVEY: dock too far to learn from the start pose "
+                                            "-> navigate and scan for it on the way")
+                        if visualizer is not None:
+                            visualizer.set_tag_map(learned)
+                        if first and dock_id not in learned:
+                            note(frame.time, "SURVEY: dock not seen -> EXPLORE (drive until the dock is seen)")
+                            phase, explore_t0 = Phase.EXPLORE, frame.time
+                        elif not learned:
+                            note(frame.time, "SURVEY FAILED: no tag could be learned from the start pose")
+                            phase, reason = Phase.FAILED, "survey failed"
+                        else:
+                            note(frame.time, f"SURVEY done: learned ids {sorted(learned)}")
+                            if first:      # goal comes from the scan, not from the config waypoints
+                                nav = Navigator(run_cfg, tracker=nav.tracker,
+                                                waypoints=[dock_approach_point(run_cfg, dock_lm, dock_yaw)])
+                            phase = Phase.NAVIGATE
+                    else:
+                        v, w = 0.0, run_cfg.tags.survey_omega
+
+                # 2-pre-a) EXPLORE (dock_first only): drive straight, turn left near obstacles/walls,
+                # until the dock has been seen enough times to learn its pose
+                if phase is Phase.EXPLORE:
+                    for marker in frame.markers:
+                        is_dock = int(marker.marker_id) == dock_id
+                        limit = run_cfg.tags.dock_max_range if is_dock else run_cfg.tags.survey_max_range
+                        tag_map.add(x_est, marker, max_range=limit)
+                    if tag_map.count(dock_id) >= run_cfg.tags.survey_min_obs:
+                        learned = tag_map.table()
+                        estimator.set_tag_map(tag_map)
+                        recovery = TagRecovery(run_cfg, tracker=nav.tracker, tag_map=tag_map)
+                        dock_lm, dock_yaw = learned[dock_id]
+                        nav = Navigator(run_cfg, tracker=nav.tracker,
+                                        waypoints=[dock_approach_point(run_cfg, dock_lm, dock_yaw)])
+                        if visualizer is not None:
+                            visualizer.set_tag_map(learned)
+                        note(frame.time, f"EXPLORE done: dock learned, ids {sorted(learned)}")
+                        phase = Phase.NAVIGATE
+                    elif frame.time - explore_t0 > 60.0:
+                        note(frame.time, "EXPLORE FAILED: dock not seen within 60 s")
+                        phase, reason = Phase.FAILED, "explore failed"
+                    else:
+                        front = sector_min_range(frame.lidar, 0.0, 0.5)
+                        v, w = (0.0, 0.6) if front < 0.6 else (0.12, 0.0)
+
+                # 2-pre-b) learn the tags / dock that were too far during SURVEY.
+                # Only close observations while the filter is confident.
+                if tag_map is not None and phase in (Phase.NAVIGATE, Phase.DOCK) and not estimator.is_lost():
+                    grew = False
+                    for marker in frame.markers:
+                        mid = int(marker.marker_id)
+                        if tag_map.count(mid) < run_cfg.tags.survey_min_obs:
+                            tag_map.add(x_est, marker, max_range=run_cfg.tags.survey_max_range)
+                            grew = grew or tag_map.count(mid) >= run_cfg.tags.survey_min_obs
+                    if grew:
+                        learned = tag_map.table()
+                        estimator.set_tag_map(tag_map)
+                        recovery = TagRecovery(run_cfg, tracker=nav.tracker, tag_map=tag_map)
+                        if dock_id in learned and dock_lm is None:
+                            dock_lm, dock_yaw = learned[dock_id]
+                            dock.set_landmark(dock_lm, dock_yaw)
+                        if visualizer is not None:
+                            visualizer.set_tag_map(learned)
+                        note(frame.time, f"map updated while navigating: learned ids {sorted(learned)}")
+
                 # 2a) position uncertainty too large while navigating: start the tag recovery
-                if (use_recovery and phase is Phase.NAVIGATE and recovery.tags
+                if (use_recovery and phase is Phase.NAVIGATE and recovery.available
                         and n_tag_recoveries < MAX_RECOVERIES and estimator.is_lost()):
                     recovery.start()
                     n_tag_recoveries += 1
@@ -474,14 +594,25 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
                         sx, sy = recovery.standoff_point(last_target)
                         note(frame.time, f"recovery: no tag seen, driving to tag {last_target} "
                                         f"stand-off ({sx:+.2f}, {sy:+.2f})")
+                    if recovery.phase is RecoveryPhase.MAP_GOTO and last_target != -1:
+                        last_target = -1
+                        ax_, ay_ = recovery.approach_point()
+                        note(frame.time, f"recovery: no tag found -> following the learned map to the "
+                                        f"dock approach point ({ax_:+.2f}, {ay_:+.2f})")
                     if recovery.phase is RecoveryPhase.DONE:
-                        note(frame.time, f"RELOCALIZED (sigma {sigma_xy:.3f} m, tag updates "
-                                        f"{int(getattr(estimator, 'n_tag_updates', 0))}) -> resume navigation")
-                        nav = resume_navigator(nav, run_cfg, recovery_after_dock)
-                        phase = Phase.NAVIGATE
+                        if recovery.arrived_by_map:
+                            note(frame.time, "map-follow finished (not relocalized) -> docking")
+                            nav_time = frame.time if nav_time is None else nav_time
+                            phase = Phase.DOCK
+                            dock.begin(x_est, dock_lm, dock_yaw)
+                        else:
+                            note(frame.time, f"RELOCALIZED (sigma {sigma_xy:.3f} m, tag updates "
+                                            f"{int(getattr(estimator, 'n_tag_updates', 0))}) -> resume navigation")
+                            nav = resume_navigator(nav, run_cfg, recovery_after_dock, dock_approach_point(run_cfg, dock_lm, dock_yaw))
+                            phase = Phase.NAVIGATE
                         v = w = 0.0
                     elif recovery.phase is RecoveryPhase.FAILED:
-                        note(frame.time, "recovery FAILED: every tag was tried without relocalizing")
+                        note(frame.time, "recovery FAILED: nothing left to try")
                         phase, reason = Phase.FAILED, "recovery failed"
                         v = w = 0.0
 
@@ -490,7 +621,7 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
                     ncmd = nav.update(x_est, frame.lidar)
                     if ncmd.finished:
                         phase, nav_time = Phase.DOCK, frame.time
-                        dock.begin(x_est)
+                        dock.begin(x_est, dock_lm, dock_yaw)
                         note(frame.time, "navigation finished -> docking")
                     else:
                         v, w = ncmd.v, ncmd.w
@@ -503,7 +634,7 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
                         if dcmd.docked:
                             phase, reason = Phase.DONE, "docked"
                             note(frame.time, "DOCKED")
-                        elif use_recovery and recovery.tags and n_tag_recoveries < MAX_RECOVERIES:
+                        elif use_recovery and recovery.available and n_tag_recoveries < MAX_RECOVERIES:
                             estimator.inflate()              # accept the next tag detections
                             recovery.start()
                             n_tag_recoveries += 1
@@ -529,7 +660,8 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
                 log.record(frame.time, sim.ground_truth(), x_est, estimator.P,
                         phase.value, v, w, n_valid, n_updates, mode, n_tag_upd)
                 if visualizer is not None:
-                    visualizer.record(frame.time, x_est, frame.lidar, mode, frame.marker, sim)
+                    visualizer.record(frame.time, x_est, frame.lidar, mode, frame.marker, sim,
+                                    markers=frame.markers)
                     if phase is Phase.DONE:
                         visualizer.capture_target(sim, label="Docked at charging station")
                 if verbose and step % report_every == 0:
@@ -573,10 +705,15 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
     diag["n_detect_any"] = int(n_detect_any)
     diag["nis_per_dof"] = (estimator.mean_nis_per_dof()
                         if hasattr(estimator, "mean_nis_per_dof") else float("nan"))
+    if tag_map is not None:                  # EVALUATION ONLY: compare the learned map with the config poses
+        truth_tags = world_cfg.tag_table()
+        diag["tag_map_errors"] = {i: float(np.hypot(*(p - np.array(truth_tags[i][:2], dtype=float))))
+                                for i, (p, _) in tag_map.table().items() if i in truth_tags}
 
     return RunResult(phase is Phase.DONE, reason, sim_time, nav_time, collided_any, phase,
                     np.array(estimator.x, dtype=float), truth, log,
-                    camera_stats=cam_stats, diag=diag, obstacles=obstacles, events=events)
+                    camera_stats=cam_stats, diag=diag, obstacles=obstacles, events=events,
+                    world_cfg=world_cfg)
 
 # Save trajectory and estimation error with its uncertainty
 def plot_run(result: RunResult, cfg: Config = CONFIG, path: Optional[Path] = None) -> Path:
@@ -653,7 +790,7 @@ def run_trials(n: int, seed0: int = 0, cfg: Config = CONFIG, use_marker_cov: boo
                "det": 100.0 * n_det / max(1, n_cam),
             "rej": res.diag.get("n_rejected", 0),
             "rec": res.diag.get("n_tag_recoveries", 0),
-            "lat": res.metrics(cfg)["dock_lateral"]}
+            "lat": res.metrics(res.world_cfg or cfg)["dock_lateral"]}
         rows.append(row)
         print(f"{seed0 + i:>5} {'OK' if res.success else 'FAIL':>7} {res.reason:>15} {row['time']:>6.1f} "
             f"{row['rmse']:>9.3f} {row['nees']:>6.2f} {row['nis']:>8.2f} {row['det']:>6.0f} "
@@ -697,10 +834,17 @@ def build_parser() -> argparse.ArgumentParser:
                         help="do not open the live camera window")
     parser.add_argument("--fixed-obstacles", action="store_true",
                         help="use the fixed obstacle layout from config instead of a random one")
+    parser.add_argument("--no-survey", action="store_true",
+                        help="skip the start-pose survey and use the tag poses written in the config")
+    parser.add_argument("--ideal", action="store_true",
+                        help="ideal simulation (no hidden errors, delays or sensor degradation)")
+    parser.add_argument("--no-lidar-map", action="store_true",
+                        help="EKF does not use LiDAR against the room map (only odometry + tags)")
     return parser
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
+    cfg = replace(CONFIG, realism=RealismConfig(enabled=False)) if args.ideal else CONFIG
     randomize = not args.fixed_obstacles
 
     # A random obstacle layout needs a random seed; it is printed so the run can be reproduced
@@ -711,33 +855,36 @@ def main(argv=None) -> int:
         print(f"Random obstacles | seed {seed} (reproduce with --seed {seed})")
 
     if args.trials > 0:
-        return run_trials(args.trials, seed or 0, CONFIG,
+        return run_trials(args.trials, seed or 0, cfg,
                         use_marker_cov=args.marker_cov, marker_sigma_px=args.sigma_px,
-                        randomize_obstacles=randomize)
+                        randomize_obstacles=randomize, use_lidar_map=not args.no_lidar_map)
     use_viewer = not args.no_viewer
     if use_viewer:
         _ensure_mjpython()
     viz = None if args.no_viz else RouteVisualizer(
-        CONFIG, live_view=use_viewer and not args.no_live_camera)
-    result = run_pipeline(CONFIG, seed=seed, viewer=use_viewer, verbose=True,
+        cfg, live_view=use_viewer and not args.no_live_camera)
+    result = run_pipeline(cfg, seed=seed, viewer=use_viewer, verbose=True,
                         dock_use_estimate=not args.dock_raw,
                         marker_sigma_px=args.sigma_px, use_marker_cov=args.marker_cov,
-                        visualizer=viz, randomize_obstacles=randomize)
+                        visualizer=viz, randomize_obstacles=randomize,
+                        use_survey=False if args.no_survey else None,
+                        use_lidar_map=not args.no_lidar_map)
+    ecfg = result.world_cfg or cfg          # the real world, for evaluation only
 
     dr_rmse = None
     if args.compare:
         # Same seed -> same obstacle layout as the main run
-        baseline = run_pipeline(CONFIG, seed=seed,
-                                estimator=EKFEstimator(CONFIG, use_marker=False, use_lidar=False),
-                                randomize_obstacles=randomize)
-        dr_rmse = compute_report(baseline, CONFIG).get("position_rmse")
+        baseline = run_pipeline(cfg, seed=seed,
+                                estimator=EKFEstimator(cfg, use_marker=False, use_lidar=False),
+                                randomize_obstacles=randomize, use_survey=False)
+        dr_rmse = compute_report(baseline, ecfg).get("position_rmse")
 
     print()
-    print(result.summary(CONFIG))
+    print(result.summary(ecfg))
     print()
-    print_report(result, CONFIG, dr_rmse)
+    print_report(result, ecfg, dr_rmse)
     if args.plot:
-        print("Plot saved to:", plot_run(result, CONFIG))
+        print("Plot saved to:", plot_run(result, ecfg))
     return 0 if result.success else 1
 
 if __name__ == "__main__":

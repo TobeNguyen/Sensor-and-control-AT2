@@ -6,11 +6,12 @@ import pytest
 
 from config import CONFIG
 from robot_model import (
-    analyse_model, controllability_matrix, default_landmark, innovation,
-    is_controllable, is_observable, jacobian_F, jacobian_G, measurement_jacobian,
-    measurement_model, motion_model, observability_matrix, odometry_increment,
-    pose_error, tracking_error_model, wrap_angle,
+    TagMap, analyse_model, controllability_matrix, default_landmark, innovation,
+    is_controllable, is_observable, jacobian_F, jacobian_G, landmark_table,
+    measurement_jacobian, measurement_model, measurement_model_pose, motion_model,
+    observability_matrix, odometry_increment, pose_error, tracking_error_model, wrap_angle,
 )
+from sensing import MarkerMeasurement
 
 LANDMARK = np.array([1.9, 1.0])
 POSE = np.array([0.0, 0.0, 0.3])
@@ -211,3 +212,50 @@ def test_analyse_model_moving_and_stopped():
     stopped = analyse_model(POSE, 0.0, 0.0)
     assert stopped["controllability_rank"] < 3
     assert stopped["observability_rank"] < 3
+
+# ------------------------------------------------------------------ learned tag map
+def test_tag_map_recovers_a_tag_pose_from_exact_measurements():
+    pose = np.array([-1.5, -1.5, 0.4])
+    lm, yaw = np.array([0.3, 1.9]), -math.pi / 2
+    r, b, view = measurement_model_pose(pose, lm, yaw)
+    tm = TagMap()
+    tm.add(pose, MarkerMeasurement(r, b, view, 7, 0.0))
+    pos, got_yaw = tm.table()[7]
+    np.testing.assert_allclose(pos, lm, atol=1e-9)
+    assert abs(wrap_angle(got_yaw - yaw)) < 1e-9
+
+
+def test_tag_map_averages_noisy_observations():
+    rng = np.random.default_rng(0)
+    pose = np.array([0.0, 0.0, 0.0])
+    lm, yaw = np.array([1.5, 0.5]), math.pi
+    r, b, view = measurement_model_pose(pose, lm, yaw)
+    tm = TagMap()
+    for _ in range(200):
+        tm.add(pose, MarkerMeasurement(r + rng.normal(0, 0.02), b + rng.normal(0, 0.01),
+                                    view + rng.normal(0, 0.03), 3, 0.0))
+    pos, got_yaw = tm.table()[3]
+    assert np.hypot(*(pos - lm)) < 0.01
+    assert abs(wrap_angle(got_yaw - yaw)) < 0.02
+
+
+def test_tag_map_ignores_tags_with_too_few_observations():
+    tm = TagMap(min_obs=3)
+    m = MarkerMeasurement(1.0, 0.0, 0.0, 5, 0.0)
+    tm.add([0.0, 0.0, 0.0], m)
+    tm.add([0.0, 0.0, 0.0], m)
+    assert tm.table() == {} and tm.count(5) == 2
+    tm.add([0.0, 0.0, 0.0], m)
+    assert 5 in tm.table()
+
+
+def test_tag_map_averages_the_yaw_on_the_circle():
+    tm = TagMap()
+    for view in (0.01, -0.01):                              # yaw = pi +- 0.01 (theta = 0)
+        tm.add([0.0, 0.0, 0.0], MarkerMeasurement(1.0, 0.0, view, 3, 0.0))
+    assert abs(wrap_angle(tm.table()[3][1] - math.pi)) < 1e-6
+
+
+def test_landmark_table_prefers_the_learned_map():
+    assert landmark_table(CONFIG, TagMap()) == {}           # empty learned map: nothing is known
+    assert int(CONFIG.camera.marker_id) in landmark_table(CONFIG)   # no map: poses from the config

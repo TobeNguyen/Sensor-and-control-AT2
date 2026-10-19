@@ -110,12 +110,20 @@ class Navigator:
             self._anchor = x[:2].copy()
 
         # Advance past every waypoint that is already reached.
+        # After an avoidance detour, also skip the current waypoint if the next one is clearly closer.
         tol = self.cfg.controller.waypoint_tolerance
         while self.index < len(self.waypoints):
             wp = self.waypoints[self.index]
-            if float(np.hypot(*(wp - x[:2]))) >= tol:
+            d_cur = float(np.hypot(*(wp - x[:2])))
+            reached = d_cur < tol
+            skipped = False
+            if (not reached and self.phase is NavPhase.AVOID
+                    and self.index < len(self.waypoints) - 1):
+                d_next = float(np.hypot(*(self.waypoints[self.index + 1] - x[:2])))
+                skipped = d_next + 0.2 < d_cur
+            if not (reached or skipped):
                 break
-            self._anchor = wp.copy()
+            self._anchor = wp.copy() if reached else x[:2].copy()
             self.index += 1
             self.phase = NavPhase.TRACK
             self._prev_world = None

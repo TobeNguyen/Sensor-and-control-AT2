@@ -7,7 +7,8 @@ import pytest
 
 from config import CONFIG
 from recovery import RecoveryPhase, TagRecovery
-from sensing import make_lidar_scan
+from robot_model import TagMap, measurement_model_pose
+from sensing import MarkerMeasurement, make_lidar_scan
 
 DOCK_ID = CONFIG.camera.marker_id
 TWO_PI = 2.0 * math.pi
@@ -21,6 +22,16 @@ def free_scan():
 
 def make_recovery(cfg=CONFIG):
     return TagRecovery(cfg)
+
+
+def make_tag_map(poses):
+    """TagMap learned from exact measurements taken at the origin: poses = {id: (x, y, yaw)}."""
+    tm = TagMap()
+    origin = np.zeros(3)
+    for i, (x, y, yaw) in poses.items():
+        r, b, view = measurement_model_pose(origin, np.array([x, y]), yaw)
+        tm.add(origin, MarkerMeasurement(r, b, view, i, 0.0))
+    return tm
 
 
 # ------------------------------------------------------------------ setup
@@ -45,12 +56,19 @@ def test_start_begins_with_a_spin():
     assert rec.active and not rec.finished
 
 
-def test_start_without_tags_fails_immediately():
+def test_start_without_extra_tags_but_with_the_dock_still_spins():
     cfg = replace(CONFIG, tags=replace(CONFIG.tags, n_tags=0))
     rec = make_recovery(cfg)
-    assert rec.tags == {}
+    assert rec.tags == {} and rec.dock is not None and rec.available
     rec.start()
-    assert rec.phase is RecoveryPhase.FAILED and rec.finished
+    assert rec.phase is RecoveryPhase.SPIN
+
+
+def test_start_with_an_empty_map_still_looks_for_the_dock():
+    rec = TagRecovery(CONFIG, tag_map=TagMap())          # nothing learned: dock falls back to the config pose
+    assert rec.tags == {} and rec.dock is not None and rec.available
+    rec.start()
+    assert rec.phase is RecoveryPhase.SPIN
 
 
 def test_standoff_point_is_in_front_of_the_tag():
@@ -137,7 +155,7 @@ def test_localized_during_goto_finishes_recovery():
     assert rec.phase is RecoveryPhase.DONE
 
 
-def test_each_tag_is_visited_once_then_recovery_fails():
+def test_each_tag_is_visited_once_then_the_map_is_followed():
     rec, scan = make_recovery(), free_scan()
     rec.start()
     x = np.zeros(3)
@@ -150,8 +168,10 @@ def test_each_tag_is_visited_once_then_recovery_fails():
         rec.update(x, scan, False, 0.0)                    # arrived -> look around again
         assert rec.phase is RecoveryPhase.SPIN
     assert sorted(targets) == sorted(rec.tags)             # no tag twice
-    assert rec.update(x, scan, False, TWO_PI) == (0.0, 0.0)  # nothing left to try
-    assert rec.phase is RecoveryPhase.FAILED and rec.finished
+    v, w = rec.update(x, scan, False, TWO_PI)              # nothing left: follow the learned map
+    assert rec.phase is RecoveryPhase.MAP_GOTO and rec.target_id == DOCK_ID
+    assert (v, w) != (0.0, 0.0)
+    assert rec.active and not rec.finished
 
 
 # ------------------------------------------------------------------ end states
@@ -180,3 +200,60 @@ def test_start_clears_the_previous_run():
     rec.update(np.zeros(3), free_scan(), False, TWO_PI)
     rec.start()
     assert rec.phase is RecoveryPhase.SPIN and rec._visited == set()
+
+# ------------------------------------------------------------------ learned map + map follow
+def test_recovery_uses_the_learned_map_instead_of_the_config():
+    tm = make_tag_map({DOCK_ID: (1.0, 1.0, math.pi), 1: (-1.0, 1.9, -math.pi / 2)})
+    rec = TagRecovery(CONFIG, tag_map=tm)
+    assert sorted(rec.tags) == [1]
+    np.testing.assert_allclose(rec.tags[1][0], [-1.0, 1.9], atol=1e-9)
+    np.testing.assert_allclose(rec.dock[0], [1.0, 1.0], atol=1e-9)
+
+
+def test_approach_point_is_in_front_of_the_dock():
+    rec = make_recovery()
+    pos, yaw = rec.dock
+    p = rec.approach_point()
+    assert np.hypot(*(p - pos)) == pytest.approx(CONFIG.tags.approach_dist)
+    assert np.dot(p - pos, [math.cos(yaw), math.sin(yaw)]) > 0.0
+
+
+def test_map_follow_ends_at_the_approach_point_without_relocalising():
+    rec, scan = make_recovery(), free_scan()
+    rec.start()
+    rec._visited = set(rec.tags)                           # pretend every tag was tried
+    rec.update(np.zeros(3), scan, False, TWO_PI)           # full turn -> map follow
+    assert rec.phase is RecoveryPhase.MAP_GOTO
+    x = np.append(rec.approach_point(), 0.0)
+    assert rec.update(x, scan, False, 0.0) == (0.0, 0.0)
+    assert rec.phase is RecoveryPhase.DONE and rec.arrived_by_map and rec.finished
+
+
+def test_localised_during_map_follow_is_a_normal_relocalisation():
+    rec, scan = make_recovery(), free_scan()
+    rec.start()
+    rec._visited = set(rec.tags)
+    rec.update(np.zeros(3), scan, False, TWO_PI)
+    assert rec.phase is RecoveryPhase.MAP_GOTO
+    assert rec.update(np.zeros(3), scan, True, 0.0) == (0.0, 0.0)
+    assert rec.phase is RecoveryPhase.DONE and not rec.arrived_by_map
+
+
+def test_map_without_extra_tags_spins_once_then_follows_the_map():
+    tm = make_tag_map({DOCK_ID: (1.0, 1.0, math.pi)})
+    rec, scan = TagRecovery(CONFIG, tag_map=tm), free_scan()
+    rec.start()
+    assert rec.phase is RecoveryPhase.SPIN
+    rec.update(np.zeros(3), scan, False, TWO_PI)
+    assert rec.phase is RecoveryPhase.MAP_GOTO
+
+
+def test_reset_clears_the_map_follow_flag():
+    rec, scan = make_recovery(), free_scan()
+    rec.start()
+    rec._visited = set(rec.tags)
+    rec.update(np.zeros(3), scan, False, TWO_PI)
+    rec.update(np.append(rec.approach_point(), 0.0), scan, False, 0.0)
+    assert rec.arrived_by_map
+    rec.reset()
+    assert not rec.arrived_by_map and rec.phase is RecoveryPhase.IDLE

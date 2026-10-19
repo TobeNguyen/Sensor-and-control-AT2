@@ -229,3 +229,11 @@ class EKFEstimator:
     def inflate(self, pos_std: float = 0.5, yaw_std: float = 0.5) -> None:
         self.P = np.diag([pos_std ** 2, pos_std ** 2, yaw_std ** 2])
         self._reject_run = 0
+
+    # Replace the known marker poses: a learned TagMap, or None for the poses written in the config.
+    # An empty TagMap means "no known markers": every marker is ignored.
+    def set_tag_map(self, tag_map=None) -> None:
+        self.landmarks = landmark_table(self.cfg, tag_map)
+        dock = self.landmarks.get(int(self.cfg.camera.marker_id))
+        if dock is not None:
+            self.landmark, self.dock_yaw = dock
