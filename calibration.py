@@ -17,7 +17,7 @@ SOURCE_NOMINAL = "nominal_mujoco"   # derived from the known simulator model (NO
 SOURCE_CALIBRATED = "calibrated"    # estimated from images of a calibration target
 MIN_CALIBRATION_VIEWS = 5
 VALID_DIST_LENGTHS = (4, 5, 8, 12, 14)
-MAX_REPROJ_PX = 1.5                 # default reprojection-error gate for marker pose [px]
+MAX_REPROJ_PX = 3.0                 # default reprojection-error gate for marker pose [px]
 
 # Intrinsics
 @dataclass(frozen=True, eq=False)
@@ -40,9 +40,10 @@ def camera_matrix(cfg: Config = CONFIG) -> np.ndarray:
                     [0.0, f, cam.height / 2.0],
                     [0.0, 0.0, 1.0]])
 
-# Camera position ahead of the robot centre [m]
+# Camera position ahead of the robot centre [m]: measured value if configured, nominal otherwise
 def camera_forward_offset(cfg: Config = CONFIG) -> float:
-    return cfg.robot.body_radius + 0.01
+    measured = getattr(cfg.camera, "forward_offset", None)
+    return cfg.robot.body_radius + 0.01 if measured is None else float(measured)
 
 # Known (not measured) intrinsics of the simulated camera: ideal pinhole, no distortion
 def nominal_intrinsics(cfg: Config = CONFIG) -> CameraIntrinsics:
@@ -390,8 +391,27 @@ def validate_calibration_image_effect(raw_image: np.ndarray, K: np.ndarray, dist
     }
 
 if __name__ == "__main__":
-    cal = get_calibration()
-    print("Source        :", cal.intrinsics.source)
-    print("K             :\n", np.round(cal.K, 2))
-    print("Forward offset:", round(cal.forward_offset, 3), "m")
-    print("Convention check:", check_frame_conventions() or "OK")
+    import argparse
+    import glob
+
+    parser = argparse.ArgumentParser(description="Camera calibration tools")
+    parser.add_argument("--calibrate", metavar="IMAGE_GLOB", default=None,
+                        help='chessboard images of the REAL camera, e.g. "calib_images/*.jpg"')
+    parser.add_argument("--pattern", type=int, nargs=2, default=(9, 6),
+                        help="inner corners of the chessboard (cols rows)")
+    parser.add_argument("--square", type=float, default=0.025, help="chessboard square size [m]")
+    parser.add_argument("--out", default="results/camera_intrinsics.json")
+    args = parser.parse_args()
+
+    if args.calibrate:
+        paths = sorted(glob.glob(args.calibrate))
+        images = [cv2.cvtColor(cv2.imread(p), cv2.COLOR_BGR2RGB) for p in paths]
+        intr = calibrate_from_images(images, tuple(args.pattern), args.square)
+        save_intrinsics(intr, args.out)
+        print(f"Saved {args.out} | RMS reprojection error: {intr.reprojection_error:.3f} px")
+    else:
+        cal = get_calibration()
+        print("Source        :", cal.intrinsics.source)
+        print("K             :\n", np.round(cal.K, 2))
+        print("Forward offset:", round(cal.forward_offset, 3), "m")
+        print("Convention check:", check_frame_conventions() or "OK")

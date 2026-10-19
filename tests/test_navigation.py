@@ -89,8 +89,8 @@ def test_choose_heading_all_blocked():
 
 
 # ------------------------------------------------------------------- Navigator
-def test_defaults_come_from_config():
-    assert len(Navigator().waypoints) == len(CONFIG.env.waypoints)
+def test_defaults_have_no_fixed_waypoints():
+    assert Navigator().waypoints == []
 
 
 def test_does_not_import_the_simulator():
@@ -170,7 +170,7 @@ def test_reset_restores_initial_state():
 def test_closed_loop_reaches_all_waypoints_without_collision():
     dt = CONFIG.sim.control_dt
     hx, hy = CONFIG.env.room_half_size
-    nav = Navigator()
+    nav = Navigator(waypoints=CONFIG.env.waypoints)
     x = np.array(CONFIG.env.start_pose, dtype=float)
 
     min_obstacle_clearance = np.inf

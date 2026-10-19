@@ -25,12 +25,10 @@ class TagRecovery:
         self.cfg = cfg
         self.tracker = tracker
         dock_id = int(cfg.camera.marker_id)
-        table = landmark_table(cfg, tag_map)             # learned map (SURVEY) or the config poses
+        table = {} if tag_map is None else landmark_table(cfg, tag_map)   # learned map only
         # Extra tags only: the dock is the place we are trying to get back to.
         self.tags = {i: p for i, p in table.items() if i != dock_id}
-        self.dock = table.get(dock_id)                   # (position, yaw) of the dock
-        if self.dock is None:                            # not learned yet: rough place to go and look for it
-            self.dock = (np.array(cfg.env.dock_pose[:2], dtype=float), float(cfg.env.dock_pose[2]))
+        self.dock = table.get(dock_id)                   # None until the dock is learned
         self.reset()
 
     def reset(self) -> None:

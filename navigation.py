@@ -79,7 +79,7 @@ class Navigator:
                 v_cruise: float = DEFAULT_CRUISE_SPEED):
         self.cfg = cfg
         self.tracker = LQRTracker(cfg) if tracker is None else tracker
-        wps = cfg.env.waypoints if waypoints is None else waypoints
+        wps = [] if waypoints is None else waypoints   # no waypoints from the config: they come from the learned dock
         self.waypoints = [np.asarray(p, dtype=float) for p in wps]
         self.v_cruise = v_cruise
         self.reset()

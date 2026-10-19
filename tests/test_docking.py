@@ -33,6 +33,20 @@ K = camera_matrix()
 HALF_FOV = math.atan(K[0, 2] / K[0, 0])       # horizontal half field of view
 MIN_RANGE = min_visible_range(CONFIG, margin=1.0)
 
+class ConfigTagMap:
+    # Test helper: pretends the config poses were "learned" at run time
+    def __init__(self, cfg=CONFIG):
+        self.cfg = cfg
+
+    def table(self):
+        return {int(i): (np.array(p[:2], dtype=float), float(p[2]))
+                for i, p in self.cfg.tag_table().items()}
+    
+def make_dock(x0=None):
+    # Controller that already knows the dock (as if learned during SURVEY)
+    dock = DockingController()
+    dock.begin(x0, landmark=LANDMARK, dock_yaw=DOCK_YAW)
+    return dock
 
 def marker(rng, bearing, view, t):
     return MarkerMeasurement(rng, bearing, view, CONFIG.camera.marker_id, t)
@@ -171,9 +185,9 @@ def test_search_without_marker_rotates_in_place():
 
 def test_begin_chooses_search_direction_towards_the_marker():
     dock = DockingController()
-    dock.begin((DOCK_X - 0.7, DOCK_Y, math.pi / 2))        # marker is on the right
+    dock.begin((DOCK_X - 0.7, DOCK_Y, math.pi / 2), landmark=LANDMARK, dock_yaw=DOCK_YAW)   # marker on the right
     assert dock.update(None, odom(0.0)).w == pytest.approx(-SEARCH_OMEGA)
-    dock.begin((DOCK_X - 0.7, DOCK_Y, -math.pi / 2))       # marker is on the left
+    dock.begin((DOCK_X - 0.7, DOCK_Y, -math.pi / 2), landmark=LANDMARK, dock_yaw=DOCK_YAW)  # marker on the left
     assert dock.update(None, odom(0.0)).w == pytest.approx(+SEARCH_OMEGA)
 
 
@@ -360,21 +374,25 @@ def test_docking_fails_after_the_total_time_limit():
 # ----------------------------------------- docking driven by the EKF estimate (x_est)
 def test_marker_from_pose_matches_the_models():
     pose = np.array([DOCK_X - 0.8, DOCK_Y - 0.1, 0.15])
-    r, b, v = marker_from_pose(pose)
+    r, b, v = marker_from_pose(pose, CONFIG, LANDMARK, DOCK_YAW)
     r_ref, b_ref = measurement_model(pose, LANDMARK)
     assert r == pytest.approx(r_ref) and b == pytest.approx(b_ref)
     assert v == pytest.approx(view_angle_model(pose, DOCK_YAW))
 
 
 def test_marker_from_pose_rejects_unusable_poses():
-    assert marker_from_pose([float("nan"), 0.0, 0.0]) is None
-    assert marker_from_pose([DOCK_X, DOCK_Y, 0.0]) is None   # on top of the marker
-    assert marker_from_pose([1.0, 2.0]) is None              # wrong shape
+    assert marker_from_pose([float("nan"), 0.0, 0.0], CONFIG, LANDMARK, DOCK_YAW) is None
+    assert marker_from_pose([DOCK_X, DOCK_Y, 0.0], CONFIG, LANDMARK, DOCK_YAW) is None   # on top of the marker
+    assert marker_from_pose([1.0, 2.0], CONFIG, LANDMARK, DOCK_YAW) is None              # wrong shape
+
+
+def test_marker_from_pose_needs_a_learned_dock():
+    assert marker_from_pose([DOCK_X - 0.8, DOCK_Y, 0.0]) is None
 
 
 def test_estimate_mode_keeps_approaching_without_a_marker():
     pose = (DOCK_X - 1.0, DOCK_Y, HEAD_ON)
-    dock = DockingController()
+    dock = make_dock()
     dock.update(marker(1.0, 0.0, 0.0, 0.0), odom(0.0), pose)
     cmd = None
     for k in range(1, int(1.5 / DT)):                        # 1.5 s with no detection
@@ -384,13 +402,13 @@ def test_estimate_mode_keeps_approaching_without_a_marker():
 
 
 def test_estimate_mode_turns_towards_the_marker_when_facing_away():
-    cmd = DockingController().update(None, odom(0.0), (DOCK_X - 0.7, DOCK_Y, math.pi / 2))
+    cmd = make_dock().update(None, odom(0.0), (DOCK_X - 0.7, DOCK_Y, math.pi / 2))
     assert cmd.v == 0.0 and cmd.w < 0.0                     # marker is on the right
 
 
 def test_estimate_mode_stops_trusting_the_estimate_when_blind_for_too_long():
     pose = (DOCK_X - 1.0, DOCK_Y, HEAD_ON)
-    dock = DockingController()
+    dock = make_dock()
     cmd = None
     n_blind = int((BLIND_TIMEOUT + 1.0) / DT)
     for k in range(int((BLIND_TIMEOUT + D.max_search_time + 2.0) / DT)):
@@ -402,7 +420,7 @@ def test_estimate_mode_stops_trusting_the_estimate_when_blind_for_too_long():
 
 def test_estimate_mode_needs_a_real_detection_to_declare_docked():
     pose = (DOCK_X - D.target_distance, DOCK_Y, HEAD_ON)    # the estimate says "docked"
-    dock = DockingController()
+    dock = make_dock()
     cmd = dock.update(None, odom(0.0), pose)
     assert cmd.phase is DockPhase.ALIGN and not cmd.docked
     for k in range(1, DOCK_CONFIRM_FRAMES + 1):              # several consecutive real detections
@@ -426,9 +444,10 @@ def run_dock_ekf(x0, seed=0, bias=0.0, blackout=None, use_estimate=True, max_tim
     s_dth = rob.wheel_radius * rob.encoder_noise_std * math.sqrt(2.0) / rob.wheel_base
     x = np.array(x0, dtype=float)
     ekf = EKFEstimator(CONFIG, gate=9.21, use_lidar=False)
+    ekf.set_tag_map(ConfigTagMap())          # dock known, as if learned
     ekf.reset(x + rng.normal(0.0, CONFIG.ekf.init_pose_std))
     dock = DockingController()
-    dock.begin(ekf.x)
+    dock.begin(ekf.x, landmark=LANDMARK, dock_yaw=DOCK_YAW)
     ds = dth = 0.0
     last_cam = -math.inf
     cmd, t = None, 0.0

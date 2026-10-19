@@ -36,12 +36,9 @@ class EKFEstimator:
             lidar_gate: float = 6.63, lidar_stride: int = 30, max_rejects: int = 10,
             use_marker_cov: bool = False):
         self.cfg = cfg
-        # Every known marker: {id: (position, yaw)}. `landmark` (optional) overrides the dock position.
-        self.landmarks = landmark_table(cfg)
-        dock_id = int(cfg.camera.marker_id)
-        if landmark is not None:
-            self.landmarks[dock_id] = (np.asarray(landmark, float), self.landmarks[dock_id][1])
-        self.landmark, self.dock_yaw = self.landmarks[dock_id]   # dock only, kept for old code
+        # Start with NO known markers: poses are learned at run time (TagMap)
+        self.landmarks = {}
+        self.landmark, self.dock_yaw = None, None
         self.q_extra = np.zeros((3, 3)) if q_extra is None else np.asarray(q_extra, float)
         self.R = cfg.R_camera() if R is None else np.asarray(R, dtype=float)
         # Variance of the marker view angle (third camera measurement)
@@ -64,7 +61,7 @@ class EKFEstimator:
         s_ds = rob.wheel_radius * rob.encoder_noise_std / math.sqrt(2.0)
         s_dth = rob.wheel_radius * rob.encoder_noise_std * math.sqrt(2.0) / rob.wheel_base
         self._odom_cov = odom_cov_scale * np.diag([s_ds ** 2, s_dth ** 2])
-        self.reset(cfg.env.start_pose)
+        self.reset((0.0, 0.0, 0.0))   # origin = where the robot starts
 
     # Initialise belief N(x0, P0) and clear the diagnostics
     def reset(self, x0, P0: Optional[np.ndarray] = None) -> None:
@@ -230,10 +227,8 @@ class EKFEstimator:
         self.P = np.diag([pos_std ** 2, pos_std ** 2, yaw_std ** 2])
         self._reject_run = 0
 
-    # Replace the known marker poses: a learned TagMap, or None for the poses written in the config.
-    # An empty TagMap means "no known markers": every marker is ignored.
+    # Replace the known marker poses with a learned TagMap. None = no known markers (never the config poses).
     def set_tag_map(self, tag_map=None) -> None:
-        self.landmarks = landmark_table(self.cfg, tag_map)
+        self.landmarks = {} if tag_map is None else landmark_table(self.cfg, tag_map)
         dock = self.landmarks.get(int(self.cfg.camera.marker_id))
-        if dock is not None:
-            self.landmark, self.dock_yaw = dock
+        self.landmark, self.dock_yaw = dock if dock is not None else (None, None)

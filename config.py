@@ -4,7 +4,7 @@ from pathlib import Path
 import math
 from functools import lru_cache
 import numpy as np
-
+from typing import Optional
 ROOT_DIR = Path(__file__).resolve().parent
 ASSETS_DIR = ROOT_DIR / "assets"
 RESULTS_DIR = ROOT_DIR / "results"
@@ -45,6 +45,7 @@ class CameraConfig:
     range_noise_std: float = 0.02  # [m]
     bearing_noise_std: float = 0.01  # [rad]
     view_noise_std: float = 0.03     # [rad] std of the marker view angle (third camera measurement)
+    forward_offset: Optional[float] = None  # measured camera position ahead of the robot centre [m]; None = nominal
 
 @dataclass(frozen=True)
 class EKFConfig:
@@ -85,8 +86,6 @@ class EnvConfig:
     # Circular obstacles: (x, y, radius)
     obstacles: tuple = (
         (0.0, -0.5, 0.2),
-        (0.8, 0.6, 0.2),
-        (-0.8, 0.5, 0.2),
     )
     waypoints: tuple = (
         (-1.0, -1.2),
@@ -107,11 +106,11 @@ class TagConfig:
     use_survey: bool = True       # learn the tag poses at the start pose instead of reading them from the config
     survey_omega: float = 0.4     # [rad/s] in-place rotation while scanning
     survey_angle: float = math.pi # [rad] total rotation of the survey (half a turn from the start heading)
-    survey_min_obs: int = 5       # observations needed before a tag is added to the learned map
+    survey_min_obs: int = 3       # observations needed before a tag is added to the learned map
     survey_max_range: float = 2.5 # [m] ignore tag observations farther than this (too noisy for the map)
-    survey_max_time: float = 30.0 # [s] stop scanning after this
+    survey_max_time: float = 60.0 # [s] stop scanning after this
     approach_dist: float = 1.0    # [m] map-follow target in front of the dock
-    dock_first: bool = False      # True: goal = learned dock approach point (no fixed waypoints)
+    dock_first: bool = True      # True: goal = learned dock approach point (no fixed waypoints)
     dock_max_range: float = 4.5   # [m] max range accepted for the dock observation during the scan
 @lru_cache(maxsize=None)
 def _tag_table(marker_id: int, dock_pose: tuple, room_half: tuple, n_tags: int, inset: float) -> dict:

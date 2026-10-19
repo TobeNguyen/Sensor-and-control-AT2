@@ -14,6 +14,14 @@ DOCK_ID = CONFIG.camera.marker_id
 TWO_PI = 2.0 * math.pi
 OMEGA = CONFIG.tags.spin_omega
 
+class ConfigTagMap:
+    # Test helper: pretends the config poses were "learned" at run time
+    def __init__(self, cfg=CONFIG):
+        self.cfg = cfg
+
+    def table(self):
+        return {int(i): (np.array(p[:2], dtype=float), float(p[2]))
+                for i, p in self.cfg.tag_table().items()}
 
 def free_scan():
     angles = np.linspace(0.0, TWO_PI, CONFIG.lidar.num_beams, endpoint=False)
@@ -21,7 +29,7 @@ def free_scan():
 
 
 def make_recovery(cfg=CONFIG):
-    return TagRecovery(cfg)
+    return TagRecovery(cfg, tag_map=ConfigTagMap(cfg))
 
 
 def make_tag_map(poses):
@@ -64,11 +72,11 @@ def test_start_without_extra_tags_but_with_the_dock_still_spins():
     assert rec.phase is RecoveryPhase.SPIN
 
 
-def test_start_with_an_empty_map_still_looks_for_the_dock():
-    rec = TagRecovery(CONFIG, tag_map=TagMap())          # nothing learned: dock falls back to the config pose
-    assert rec.tags == {} and rec.dock is not None and rec.available
-    rec.start()
-    assert rec.phase is RecoveryPhase.SPIN
+def test_start_with_an_empty_map_has_nothing_to_recover_to():
+    for rec in (TagRecovery(CONFIG, tag_map=TagMap()), TagRecovery(CONFIG)):
+        assert rec.tags == {} and rec.dock is None and not rec.available
+        rec.start()
+        assert rec.phase is RecoveryPhase.FAILED
 
 
 def test_standoff_point_is_in_front_of_the_tag():

@@ -83,17 +83,15 @@ def propagate_marker(rng: float, bearing: float, view_angle: float,
     return math.hypot(qx, qy), math.atan2(qy, qx), float(wrap_angle(view_angle - dtheta))
 
 # Marker range, bearing and view angle predicted from an ESTIMATED robot pose (None if unusable).
-# landmark / dock_yaw come from the learned tag map; None = pose from the config.
+# landmark / dock_yaw come from the learned tag map; None = dock not learned yet -> no prediction.
 def marker_from_pose(x_est, cfg: Config = CONFIG, landmark=None, dock_yaw=None) -> Optional[tuple[float, float, float]]:
     x = np.asarray(x_est, dtype=float)
-    if x.shape != (3,) or not np.all(np.isfinite(x)):
+    if x.shape != (3,) or not np.all(np.isfinite(x)) or landmark is None or dock_yaw is None:
         return None
-    lm = default_landmark(cfg) if landmark is None else landmark
-    yaw = cfg.env.dock_pose[2] if dock_yaw is None else dock_yaw
-    rng, bearing = measurement_model(x, lm)
+    rng, bearing = measurement_model(x, landmark)
     if rng < 1e-6:
         return None
-    return float(rng), float(bearing), float(view_angle_model(x, yaw))
+    return float(rng), float(bearing), float(view_angle_model(x, dock_yaw))
 
 def is_docked(rng: float, bearing: float, view_angle: float, cfg: Config = CONFIG) -> bool:
     d = cfg.docking
@@ -147,12 +145,11 @@ class DockingController:
     def begin(self, x_est=None, landmark=None, dock_yaw=None) -> None:
         self.reset()
         self._lm, self._yaw = landmark, dock_yaw
-        if x_est is None:
+        if x_est is None or landmark is None:
             return
         x = np.asarray(x_est, dtype=float)
         if x.shape == (3,) and np.all(np.isfinite(x)):
-            lm = default_landmark(self.cfg) if landmark is None else landmark
-            self._search_sign = 1.0 if measurement_model(x, lm)[1] >= 0.0 else -1.0
+            self._search_sign = 1.0 if measurement_model(x, landmark)[1] >= 0.0 else -1.0
 
     # Dock pose learned later (while navigating): replace the fallback pose
     def set_landmark(self, landmark, dock_yaw) -> None:
