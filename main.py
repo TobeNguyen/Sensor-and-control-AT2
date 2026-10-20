@@ -468,7 +468,7 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
                 use_marker_cov: bool = False,
                 visualizer: Optional[RouteVisualizer] = None,
                 randomize_obstacles: bool = False,
-                use_recovery: bool = True,
+                use_recovery: bool = False,
                 use_survey: Optional[bool] = None,
                 use_lidar_map: bool = False) -> RunResult:
     log = TrialLog()
@@ -701,7 +701,7 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
                 # 2a) position uncertainty too large while navigating: start the tag recovery
                 if (use_recovery and phase is Phase.NAVIGATE and not aim_mode and recovery.available
                         and n_tag_recoveries < MAX_RECOVERIES and estimator.is_lost()):
-                    recovery.start()
+                    recovery.start(x_est)
                     n_tag_recoveries += 1
                     recovery_after_dock = False
                     last_target = None
@@ -757,6 +757,16 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
                                 gx = x_est[0] + rng_d * math.cos(a_dock) + run_cfg.tags.approach_dist * math.cos(dock_yaw)
                                 gy = x_est[1] + rng_d * math.sin(a_dock) + run_cfg.tags.approach_dist * math.sin(dock_yaw)
                                 gd = math.hypot(gx - x_est[0], gy - x_est[1])
+                                a_dock = x_est[2] + brg_d
+                                if rng_d > 2.0:
+                                    gx = x_est[0] + (rng_d - 1.8) * math.cos(a_dock)
+                                    gy = x_est[1] + (rng_d - 1.8) * math.sin(a_dock)
+                                else:
+                                    gx = x_est[0] + rng_d * math.cos(a_dock) + run_cfg.tags.approach_dist * math.cos(dock_yaw)
+                                    gy = x_est[1] + rng_d * math.sin(a_dock) + run_cfg.tags.approach_dist * math.sin(dock_yaw)
+                                lim = run_cfg.env.room_half_size[0] - 0.4
+                                gx, gy = max(-lim, min(lim, gx)), max(-lim, min(lim, gy))
+                                gd = math.hypot(gx - x_est[0], gy - x_est[1])
                                 if gd < 0.25:
                                     aim_mode = False
                                     phase, nav_time = Phase.DOCK, frame.time
@@ -771,13 +781,23 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
                                 ap_state = "SEARCH"
                                 scan.reset()
                                 note(frame.time, "AIM: dock not seen -> scanning")
-                    elif ap_state == "SEARCH":               # rotate-stop-rotate until the dock shows up
-                        w, observe = scan.update(frame.time, frame.odometry.dtheta)
-                        if observe and frame.marker is not None:
-                            ap_state = "LOOK"
-                        elif scan.spun >= 2.0 * math.pi:     # nothing in a full turn: move to another spot
-                            ap_target = wrap_angle(x_est[2] + freest_direction(frame.lidar))
-                            ap_goal, ap_state = 0.8, "TURN"
+                    elif ap_state == "SEARCH":
+                        if dock_lm is not None:
+                            gx = dock_lm[0] + run_cfg.tags.approach_dist * math.cos(dock_yaw)
+                            gy = dock_lm[1] + run_cfg.tags.approach_dist * math.sin(dock_yaw)
+                            gd = math.hypot(gx - x_est[0], gy - x_est[1])
+                            if gd < 0.25:
+                                aim_mode = False
+                                phase, nav_time = Phase.DOCK, frame.time
+                                dock.begin(x_est, dock_lm, dock_yaw)
+                                note(frame.time, "AIM done: at the learned approach point -> docking")
+                            else:
+                                ap_target = wrap_angle(math.atan2(gy - x_est[1], gx - x_est[0]))
+                                ap_goal, ap_state = min(1.0, gd), "TURN"
+                        else:
+                            w, observe = scan.update(frame.time, frame.odometry.dtheta)   # chưa học dock: giữ cách cũ
+                            if observe and frame.marker is not None:
+                                ap_state = "LOOK"
                     elif ap_state == "TURN":
                         err = wrap_angle(ap_target - x_est[2])
                         if abs(err) < 0.08:
@@ -820,7 +840,7 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
                             note(frame.time, "DOCKED")
                         elif use_recovery and recovery.available and n_tag_recoveries < MAX_RECOVERIES:
                             estimator.inflate()              # accept the next tag detections
-                            recovery.start()
+                            recovery.start(x_est)
                             n_tag_recoveries += 1
                             recovery_after_dock = True
                             last_target = None
@@ -1050,7 +1070,7 @@ def main(argv=None) -> int:
     viz = None if args.no_viz else RouteVisualizer(
         cfg, live_view=use_viewer and not args.no_live_camera)
     result = run_pipeline(cfg, seed=seed, viewer=use_viewer, verbose=True,
-                        dock_use_estimate=False,
+                        dock_use_estimate=True,
                         marker_sigma_px=args.sigma_px, use_marker_cov=args.marker_cov,
                         visualizer=viz, randomize_obstacles=randomize,
                         use_lidar_map=args.lidar_map)

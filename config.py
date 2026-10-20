@@ -102,7 +102,7 @@ class TagConfig:
     inset: float = 0.05      # [m] distance of each tag panel from the wall
     standoff: float = 0.9    # [m] recovery waypoint distance in front of a tag
     lost_std: float = 0.15   # [m] sqrt(trace(P_xy)) above this = robot is lost
-    spin_omega: float = 0.7  # [rad/s] in-place rotation while looking for a tag
+    spin_omega: float = 0.2  # [rad/s] in-place rotation while looking for a tag
     use_survey: bool = True       # learn the tag poses at the start pose instead of reading them from the config
     survey_omega: float = 0.4     # [rad/s] in-place rotation while scanning
     survey_angle: float = math.pi # [rad] total rotation of the survey (half a turn from the start heading)

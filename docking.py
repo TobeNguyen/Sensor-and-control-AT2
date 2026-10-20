@@ -32,7 +32,7 @@ MAX_DOCK_TIME = 90.0         # [s] total time limit for docking
 MARKER_FACE_OFFSET = 0.005   # [m] half thickness of the marker panel (see simulation.py)
 VISIBILITY_MARGIN = 1.2      # marker must fit in the image with this safety factor
 AXIS_SLOW = 0.6              # [rad] forward speed is reduced as |axis| grows towards this
-BLIND_TIMEOUT = 4.0          # [s] estimate-driven docking: longest time without a real detection
+BLIND_TIMEOUT = 8.0          # [s] estimate-driven docking: longest time without a real detection
 DOCK_CONFIRM_FRAMES = 3      # DOCKED needs this many consecutive REAL detections inside the tolerances
 REAL_HOLD_TIME = 1.0         # [s] a real measurement (propagated with odometry) beats the map estimate this long
 BACKOFF_SPEED = -0.05        # [m/s] too close to see the marker: reverse slowly instead of spinning
@@ -226,12 +226,16 @@ class DockingController:
 
         fresh = self._meas is not None and (t - self._meas.time) <= MEASUREMENT_TIMEOUT + 1e-9
         if not fresh:
+            last = self._meas
             self._meas = None
             self.phase = DockPhase.SEARCH
             self._arrived_time = 0.0
             self._search_time += dt
             if self._search_time > self.cfg.docking.max_search_time:
                 return self._fail()
+            if last is not None and last.range < 1.5:
+                # Đang gần dock: lùi chậm và nghiêng nhẹ về phía marker biến mất, không quay tròn
+                return self._command(BACKOFF_SPEED, self._search_sign * 0.15)
             return self._command(0.0, self._search_sign * SEARCH_OMEGA)
 
         self._search_time = 0.0
