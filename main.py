@@ -719,9 +719,9 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
                         v = w = 0.0
 
                 if (phase is Phase.NAVIGATE and aim_mode and dock_lm is not None
-                        and frame.marker is not None and 1.0 <= frame.marker.range < 1.8
+                        and frame.marker is not None and frame.marker.range < 1.8
                         and abs(frame.marker.bearing) < 0.6
-                        and abs(wrap_angle(frame.marker.bearing - frame.marker.view_angle)) < 0.35
+                        and abs(wrap_angle(frame.marker.bearing - frame.marker.view_angle)) < 0.4
                         and frame.time - last_rot_t >= 0.3 and frame.time - dock_fail_t > 5.0):
                     aim_mode = False
                     phase, nav_time = Phase.DOCK, frame.time
