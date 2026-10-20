@@ -353,6 +353,15 @@ def test_random_obstacles_keep_the_waypoint_path_clear(seed):
         for a, b in zip(pts[:-1], pts[1:]):
             assert point_segment_distance(x, y, *a, *b) >= r + CONFIG.robot.body_radius
 
+@pytest.mark.parametrize("seed", SEEDS)
+def test_random_obstacles_keep_the_dock_visible_and_reachable(seed):
+    sx, sy, _ = CONFIG.env.start_pose
+    dx, dy, dyaw = CONFIG.env.dock_pose
+    front = (dx + 1.8 * math.cos(dyaw), dy + 1.8 * math.sin(dyaw))
+    for x, y, r in _layout(seed):
+        assert point_segment_distance(x, y, sx, sy, dx, dy) >= r + 0.15
+        assert point_segment_distance(x, y, dx, dy, *front) >= r + CONFIG.robot.body_radius
+
 # ------------------------------------------------- extra checkpoint tags
 DOCK_ID = CONFIG.camera.marker_id
 EXTRA_TAG_IDS = sorted(i for i in CONFIG.tag_table() if i != DOCK_ID)

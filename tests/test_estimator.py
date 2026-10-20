@@ -1,7 +1,7 @@
 # Including libraries
 import math
 import unittest
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 
@@ -14,6 +14,7 @@ from robot_model import (TagMap, default_landmark, landmark_table, lidar_jacobia
 
 LM = default_landmark(CONFIG)
 DOCK_YAW = CONFIG.env.dock_pose[2]
+EMPTY_ROOM = replace(CONFIG, env=replace(CONFIG.env, obstacles=()))
 
 class ConfigTagMap:
     # Test helper: pretends the config poses were "learned" at run time
@@ -407,9 +408,10 @@ class TestGateRecovery(unittest.TestCase):
 class TestLidarMap(unittest.TestCase):
     def test_wall_ranges(self):
         hx = CONFIG.env.room_half_size[0]
-        self.assertAlmostEqual(lidar_range_model([0.0, 0.0, 0.0], 0.0), hx)            # east wall
-        self.assertAlmostEqual(lidar_range_model([0.5, 0.0, 0.0], math.pi), hx + 0.5)  # west wall
-        self.assertAlmostEqual(lidar_range_model([0.0, 0.0, math.pi / 2], 0.0), hx)    # north wall
+        self.assertAlmostEqual(lidar_range_model([0.0, 0.0, 0.0], 0.0, EMPTY_ROOM), hx)            # east wall
+        self.assertAlmostEqual(lidar_range_model([0.5, 0.0, 0.0], math.pi, EMPTY_ROOM), hx + 0.5)  # west wall
+        self.assertAlmostEqual(lidar_range_model([0.0, 0.0, math.pi / 2], 0.0, EMPTY_ROOM), hx)    # north wall
+
 
     def test_obstacle_range(self):
         # Obstacle 0 is at (0, -0.5) with radius 0.2: looking down from (0, 0.5) hits it at y = -0.3.
@@ -421,11 +423,9 @@ class TestLidarMap(unittest.TestCase):
         self.assertAlmostEqual(lidar_range_model([0.0, 0.0, 0.0], 0.0, far_room), cfg.lidar.range_max)
 
     def test_jacobian_matches_analytic_wall_case(self):
-        # Facing the east wall: r = (hx - x) / cos(theta + a)
         hx, th = CONFIG.env.room_half_size[0], 0.1
-        H = lidar_jacobian([0.0, 0.0, th], 0.0)
-        np.testing.assert_allclose(
-            H, [-1.0 / math.cos(th), 0.0, hx * math.sin(th) / math.cos(th) ** 2], atol=1e-4)
+        H = lidar_jacobian([0.0, 0.0, th], 0.0, EMPTY_ROOM)
+        np.testing.assert_allclose(H, [-1.0 / math.cos(th), 0.0, hx * math.sin(th) / math.cos(th) ** 2], atol=1e-4)
 
 
 class TestLidarUpdate(unittest.TestCase):

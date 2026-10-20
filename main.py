@@ -14,11 +14,12 @@ from typing import Optional
 
 import numpy as np
 
-from calibration import get_calibration, load_intrinsics, marker_measurement_covariance
 from config import CONFIG, RESULTS_DIR, Config, RealismConfig
 from controller import LQRTracker
 from docking import DockingController
 from estimator import EKFEstimator, chi2_bounds, nees
+from environment import MuJoCoEnvironment
+from safety import SafetyGuard
 from navigation import Navigator
 from recovery import RecoveryPhase, TagRecovery
 from robot_model import TagMap, analyse_model, wrap_angle
@@ -179,6 +180,11 @@ def dock_approach_point(cfg: Config, lm, yaw) -> np.ndarray:
     return np.array([lm[0] + cfg.tags.approach_dist * math.cos(yaw),
                     lm[1] + cfg.tags.approach_dist * math.sin(yaw)])
 
+def go_to(nav: Navigator, cfg: Config, x_est, tx: float, ty: float, max_step: float = 1.5) -> Navigator:
+    d = math.hypot(tx - x_est[0], ty - x_est[1])
+    k = min(d, max_step) / max(d, 1e-6)
+    wp = (x_est[0] + k * (tx - x_est[0]), x_est[1] + k * (ty - x_est[1]))
+    return Navigator(cfg, tracker=nav.tracker, waypoints=[wp])
 
 # Rotate a little, stand still, observe, repeat: the camera image is sharp and not delayed while still
 class StopGoScan:
@@ -218,7 +224,6 @@ def freest_direction(lidar, half_width: float = 0.4) -> float:
             best, best_score = float(a), score
     return best
 
-
 # Map seen by the EKF: the dock stays hidden until it has been re-learned from a close view
 class MapView:
     def __init__(self, tag_map, dock_id: int):
@@ -229,66 +234,6 @@ class MapView:
         if not self.show_dock:
             t.pop(self.dock_id, None)
         return t
-
-# Static theory block printed once before the run: quantities that do not change in time
-def theory_block(cfg: Config = CONFIG, estimator=None) -> str:
-    x0 = np.array(cfg.env.start_pose, dtype=float)
-    moving = analyse_model(x0, 0.15, 0.0, cfg=cfg)
-    stopped = analyse_model(x0, 0.0, 0.0, cfg=cfg)
-    tracker = LQRTracker(cfg)
-    poles = np.abs(tracker.closed_loop_poles())
-    cal = get_calibration(cfg)
-    n = moving["n_states"]
-    ekf_cfg = cfg.ekf
-
-    # Extra checkpoint tags (everything in the tag table except the dock)
-    dock_id = int(cfg.camera.marker_id)
-    tags = {int(i): p for i, p in cfg.tag_table().items() if int(i) != dock_id}
-    tag_lines = []
-    for tid, (tx, ty, tyaw) in sorted(tags.items()):
-        sx = tx + cfg.tags.standoff * math.cos(tyaw)
-        sy = ty + cfg.tags.standoff * math.sin(tyaw)
-        tag_lines.append(f"  tag id {tid}: x = {tx:+.2f}, y = {ty:+.2f}, yaw = {math.degrees(tyaw):+.0f} deg"
-                        f" | stand-off ({sx:+.2f}, {sy:+.2f})")
-
-    return "\n".join([
-        "=== A. MODEL (robot_model.py) ===",
-        f"Differential drive, state [x y theta], input [v w], control dt = {cfg.sim.control_dt} s",
-        f"Controllability rank (moving | stopped): {moving['controllability_rank']}/{n} | "
-        f"{stopped['controllability_rank']}/{n}",
-        f"Observability rank   (moving | stopped): {moving['observability_rank']}/{n} | "
-        f"{stopped['observability_rank']}/{n}",
-        "=== B. SENSING + CALIBRATION (sensing.py, calibration.py) ===",
-        f"Camera intrinsics: {cal.intrinsics.source} | focal {cal.K[0, 0]:.1f} px | "
-        f"frame conventions OK | camera offset {cal.forward_offset:.2f} m",
-        f"LiDAR: {cfg.lidar.num_beams} beams, {cfg.lidar.range_min}-{cfg.lidar.range_max} m, "
-        f"sigma {cfg.lidar.noise_std} m | camera period 0.1 s (Sensing default)",
-                "Marker noise model (sigma_px = 0.5): " + ", ".join(
-        f"{d} m -> ({math.sqrt(marker_measurement_covariance(d, cal.intrinsics, cfg.camera.marker_size)[0, 0]) * 1000:.1f} mm, "
-        f"{math.sqrt(marker_measurement_covariance(d, cal.intrinsics, cfg.camera.marker_size)[1, 1]):.4f} rad)"
-        for d in (0.5, 1.0, 2.0)),
-        "=== C. ESTIMATION (estimator.py) ===",
-        f"{type(estimator).__name__ if estimator is not None else 'EKF'} | "
-        f"R std (range, bearing) = ({cfg.camera.range_noise_std} m, {cfg.camera.bearing_noise_std} rad) | "
-        f"P0 std = {ekf_cfg.init_pose_std} | gate = {getattr(estimator, 'gate', 'n/a')} | "
-        f"marker R: {'per-measurement' if getattr(estimator, 'use_marker_cov', False) else 'fixed (config)'}",
-        "=== D. CONTROL (controller.py, LQR) ===",
-        f"Q = diag{cfg.controller.q_diag}, R = diag{cfg.controller.r_diag}",
-        f"K = {np.round(tracker.K, 3).tolist()}",
-        f"Closed-loop |poles| max = {poles.max():.3f} "
-        f"({'stable' if poles.max() < 1.0 else 'UNSTABLE'})",
-        "=== E. INTEGRATION (navigation.py, docking.py, main.py) ===",
-        f"{len(cfg.env.waypoints)} waypoints, {len(cfg.env.obstacles)} obstacles, "
-        f"dock at {tuple(round(v, 2) for v in cfg.env.dock_pose)}",
-        "Controller input: ESTIMATED pose only (ground truth is logged for evaluation)",
-        "=== F. RECOVERY (recovery.py, tags in config.py) ===",
-        f"{len(tags)} extra tags (ids {', '.join(str(i) for i in sorted(tags)) or '-'}) | "
-        f"lost when sqrt(trace(Pxy)) > {cfg.tags.lost_std} m | stand-off {cfg.tags.standoff} m | "
-        f"spin {cfg.tags.spin_omega} rad/s | max {MAX_RECOVERIES} recoveries",
-        *tag_lines,
-        "",
-    ])
-
 
 # Obstacles that were really in the scene during the run (falls back to the config layout)
 def result_obstacles(result: RunResult, cfg: Config = CONFIG) -> list:
@@ -470,7 +415,7 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
                 randomize_obstacles: bool = False,
                 use_recovery: bool = False,
                 use_survey: Optional[bool] = None,
-                use_lidar_map: bool = False) -> RunResult:
+                use_lidar_map: bool = False, calibration=None, lidar_fault_at: Optional[float] = None) -> RunResult:
     log = TrialLog()
     phase, reason = Phase.NAVIGATE, "timeout"
     nav_time: Optional[float] = None
@@ -494,16 +439,26 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
     ex_state = "PICK"                    # EXPLORE: PICK -> TURN -> MOVE -> SCAN -> PICK ...
     ex_target = 0.0                      # EXPLORE: heading to turn to [rad]
     ex_moved = 0.0                       # EXPLORE: distance driven in the current MOVE [m]
+    ex_step = EXPLORE_STEP               # NEW: EXPLORE: distance of the current MOVE [m]
+    ex_visited: set = set()              # NEW: EXPLORE: tags whose stand-off point was already reached
     dock_near = TagMap(min_obs=3)        # dock observations made from close range only
     dock_refined = False                 # True once the dock pose was re-learned from a close view
     aim_mode = False                     # NAVIGATE driven by "look - turn - move" instead of a fixed waypoint
-    ap_state = "LOOK"                    # LOOK -> TURN -> MOVE -> LOOK ... (SEARCH when the dock is not seen)
+    ap_state = "LOOK"                    # LOOK -> TURN -> MOVE -> LOOK ... (SEARCH / PLAN when the dock is not seen)
     ap_t0 = None                         # time when the current LOOK started
     ap_obs = []                          # (range, bearing) of the dock seen while standing still
     ap_target = 0.0                      # heading to turn to [rad]
     ap_goal = 0.0                        # distance to drive in the current MOVE [m]
     ap_moved = 0.0                       # distance driven so far in the current MOVE [m]
     ap_idle = 0.0
+    ap_tried: set = set()                # NEW: fallback points already reached and scanned (-1 = dock approach point)
+    ap_goal_pt = None                    # NEW: fallback point the robot is driving to
+    ap_goal_id = None                    # NEW: id of that point (-1 = dock approach point, else tag id)
+    ap_goal_t0 = 0.0                     # NEW: time when the current fallback point was chosen
+    ap_goal_timeout = 25.0               # NEW: [s] give up on a fallback point after this long
+    ap_go_t0 = 0.0                       # time when the current GO (Navigator) segment started
+    dock_retries = 0
+    dock_fail_t = -99.0
     obstacles = list(cfg.env.obstacles)
     world_cfg = cfg
     start = np.array(cfg.env.start_pose, dtype=float)
@@ -527,19 +482,19 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
 
         # The EKF LiDAR map must contain the obstacles that are really in the scene
         if estimator is None:
-            ekf_env = replace(run_cfg.env, obstacles=()) if cfg.realism.enabled else run_cfg.env
+            ekf_env = replace(run_cfg.env, obstacles=())
             estimator = EKFEstimator(replace(run_cfg, env=ekf_env), gate=9.21,
-                                    use_marker_cov=use_marker_cov, use_lidar=use_lidar_map)
+                                    use_marker_cov=use_marker_cov, use_lidar=use_lidar_map,
+                                    R=np.diag([0.15 ** 2, 0.05 ** 2]), R_view=0.15 ** 2)
         if verbose:
             print(obstacles_text(obstacles))
-            print(theory_block(run_cfg, estimator))
             print(table_header())
 
         sim.reset(tuple(start))              # `start` places the robot in the hidden world (simulation + evaluation only)
-        intr_file = RESULTS_DIR / "camera_intrinsics.json"
-        cal = get_calibration(cfg, intrinsics=load_intrinsics(intr_file) if intr_file.exists() else None)
-        sensing = Sensing(sim, cfg, camera_matrix_=cal.K, dist_coeffs=cal.dist_coeffs,
-                        marker_sigma_px=marker_sigma_px)
+        env = MuJoCoEnvironment(sim)          # the ONLY handle the robot software uses (no ground truth)
+        sensing = Sensing(env, cfg, calibration=calibration)
+        safety = SafetyGuard(run_cfg)
+        last_guard = ""
         estimator.reset((0.0, 0.0, 0.0))     # the robot's own frame: origin = start pose
         # Always learn the markers at run time: no tag / dock poses from the config
         tag_map = TagMap(min_obs=run_cfg.tags.survey_min_obs)
@@ -547,7 +502,8 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
         estimator.set_tag_map(map_view)       # empty map: markers are ignored until learned
         phase = Phase.SURVEY
         if visualizer is not None:
-            visualizer.start(sim)
+            visualizer.set_world(world_cfg, obstacles)   # evaluation drawing only
+            visualizer.start()
 
         with _viewer(sim, viewer) as view:
             step = 0
@@ -619,8 +575,9 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
                     else:
                         v, w = 0.0, w_scan
 
-                # 2-pre-a) EXPLORE (dock_first only): drive straight, turn left near obstacles/walls,
-                # until the dock has been seen enough times to learn its pose
+                # 2-pre-a) EXPLORE (dock_first only): drive towards the nearest learned tag that has not been
+                # visited yet (otherwise towards the freest direction), stop and scan, until the dock has been
+                # seen enough times to learn its pose
                 if phase is Phase.EXPLORE:
                     observe = False
                     if ex_state == "SCAN":                   # rotate-stop-rotate, observe while still
@@ -629,6 +586,24 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
                             ex_state = "PICK"
                     elif ex_state == "PICK":                 # head for the most open direction (LiDAR only)
                         ex_target = wrap_angle(x_est[2] + freest_direction(frame.lidar))
+                        ex_step = EXPLORE_STEP
+                        # NEW: prefer the stand-off point of the nearest learned tag that was not visited yet
+                        pending = {}
+                        for i, (p_tag, yaw_tag) in tag_map.table().items():
+                            if int(i) != dock_id and int(i) not in ex_visited:
+                                pending[int(i)] = p_tag + run_cfg.tags.standoff * np.array(
+                                    [math.cos(yaw_tag), math.sin(yaw_tag)])
+                        if pending:
+                            tid = min(pending, key=lambda i: float(np.hypot(*(pending[i] - x_est[:2]))))
+                            gvec = pending[tid] - x_est[:2]
+                            gdist = float(np.hypot(*gvec))
+                            if gdist < 0.4:
+                                ex_visited.add(tid)          # already here (and scanned): next tag next time
+                            else:
+                                rel = wrap_angle(math.atan2(gvec[1], gvec[0]) - x_est[2])
+                                if sector_min_range(frame.lidar, rel, 0.4) > min(1.0, gdist) + 0.3:
+                                    ex_target = wrap_angle(x_est[2] + rel)
+                                    ex_step = max(EXPLORE_STEP, min(2.0, gdist))
                         ex_state = "TURN"
                     elif ex_state == "TURN":
                         err = wrap_angle(ex_target - x_est[2])
@@ -636,9 +611,9 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
                             ex_state, ex_moved = "MOVE", 0.0
                         else:
                             w = float(np.clip(2.0 * err, -0.6, 0.6))
-                    elif ex_state == "MOVE":                 # drive ~1 m, then stop and scan again
+                    elif ex_state == "MOVE":                 # drive ex_step, then stop and scan again
                         ex_moved += frame.odometry.ds
-                        if ex_moved >= EXPLORE_STEP or sector_min_range(frame.lidar, 0.0, 0.5) < 0.6:
+                        if ex_moved >= ex_step or sector_min_range(frame.lidar, 0.0, 0.5) < 0.6:
                             ex_state = "SCAN"
                             scan.reset()
                         else:
@@ -659,12 +634,12 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
                             visualizer.set_tag_map(table_to_world(learned, start))
                         note(frame.time, f"EXPLORE done: dock learned, ids {sorted(learned)}")
                         phase = Phase.NAVIGATE
-                    elif frame.time - explore_t0 > 60.0:
-                        note(frame.time, "EXPLORE FAILED: dock not seen within 60 s")
+                    elif frame.time - explore_t0 > 90.0:     # NEW: 60 s -> 90 s
+                        note(frame.time, "EXPLORE FAILED: dock not seen within 90 s")
                         phase, reason = Phase.FAILED, "explore failed"
 
                 # 2-pre-c) re-learn the dock from CLOSE observations (accurate), then let the EKF use it
-                if phase in (Phase.NAVIGATE, Phase.DOCK) and frame.marker is not None:
+                if phase in (Phase.NAVIGATE, Phase.DOCK) and frame.marker is not None and frame.time - last_rot_t >= 0.3:
                     m_near = frame.marker
                     if m_near.range < 1.5 and abs(m_near.view_angle) < 0.6:
                         dock_near.add(x_est, m_near, max_range=1.5)
@@ -680,12 +655,12 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
 
                 # 2-pre-b) learn the tags / dock that were too far during SURVEY.
                 # Only close observations while the filter is confident.
-                if tag_map is not None and phase in (Phase.NAVIGATE, Phase.DOCK) and not estimator.is_lost():
+                if tag_map is not None and phase in (Phase.NAVIGATE, Phase.DOCK) and not estimator.is_lost() and frame.time - last_rot_t >= 0.3:
                     grew = False
                     for marker in frame.markers:
                         mid = int(marker.marker_id)
                         if tag_map.count(mid) < run_cfg.tags.survey_min_obs:
-                            tag_map.add(x_est, marker, max_range=run_cfg.tags.survey_max_range)
+                            tag_map.add(x_est, marker, max_range=2.0)
                             grew = grew or tag_map.count(mid) >= run_cfg.tags.survey_min_obs
                     if grew:
                         learned = tag_map.table()
@@ -741,63 +716,130 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
                         phase, reason = Phase.FAILED, "recovery failed"
                         v = w = 0.0
 
-                # 2c-pre) AIM: look at the dock while standing still, turn towards it, drive a short step, repeat
+                if (phase is Phase.NAVIGATE and aim_mode and dock_lm is not None
+                        and frame.marker is not None and frame.marker.range < 1.8
+                        and abs(frame.marker.bearing) < 0.6
+                        and frame.time - last_rot_t >= 0.3 and frame.time - dock_fail_t > 5.0):
+                    aim_mode = False
+                    phase, nav_time = Phase.DOCK, frame.time
+                    dock.begin(x_est, dock_lm, dock_yaw)
+                    note(frame.time, f"dock seen at {frame.marker.range:.2f} m -> docking")
+                # 2c-pre) AIM: look at the dock while standing still, turn towards it, drive a short step, repeat.
+                # Dock not seen -> fallback chain: dock approach point, then the tags (nearest to the dock first),
+                # each with a limited (180 deg) scan; nothing left -> blind docking / FAILED.
                 if phase is Phase.NAVIGATE and aim_mode:
                     if ap_state == "LOOK":
                         if ap_t0 is None:
                             ap_t0, ap_obs = frame.time, []
                         if frame.time - ap_t0 >= 0.4 and frame.marker is not None:
-                            ap_obs.append((frame.marker.range, frame.marker.bearing))
+                            ap_obs.append((frame.marker.range, frame.marker.bearing, frame.marker.view_angle))
                         if frame.time - ap_t0 >= 1.2:
                             ap_t0 = None
                             if len(ap_obs) >= 2:
+                                ap_goal_pt, ap_goal_id = None, None      # NEW: dock seen, fallback no longer needed
                                 rng_d = float(np.median([o[0] for o in ap_obs]))
                                 brg_d = float(np.median([o[1] for o in ap_obs]))
-                                a_dock = x_est[2] + brg_d
-                                gx = x_est[0] + rng_d * math.cos(a_dock) + run_cfg.tags.approach_dist * math.cos(dock_yaw)
-                                gy = x_est[1] + rng_d * math.sin(a_dock) + run_cfg.tags.approach_dist * math.sin(dock_yaw)
-                                gd = math.hypot(gx - x_est[0], gy - x_est[1])
+                                view_d = float(np.median([o[2] for o in ap_obs]))
+                                yaw_d = wrap_angle(x_est[2] + view_d + math.pi) if rng_d < 2.5 else dock_yaw
                                 a_dock = x_est[2] + brg_d
                                 if rng_d > 2.0:
                                     gx = x_est[0] + (rng_d - 1.8) * math.cos(a_dock)
                                     gy = x_est[1] + (rng_d - 1.8) * math.sin(a_dock)
                                 else:
-                                    gx = x_est[0] + rng_d * math.cos(a_dock) + run_cfg.tags.approach_dist * math.cos(dock_yaw)
-                                    gy = x_est[1] + rng_d * math.sin(a_dock) + run_cfg.tags.approach_dist * math.sin(dock_yaw)
-                                lim = run_cfg.env.room_half_size[0] - 0.4
-                                gx, gy = max(-lim, min(lim, gx)), max(-lim, min(lim, gy))
+                                    gx = x_est[0] + rng_d * math.cos(a_dock) + run_cfg.tags.approach_dist * math.cos(yaw_d)
+                                    gy = x_est[1] + rng_d * math.sin(a_dock) + run_cfg.tags.approach_dist * math.sin(yaw_d)
                                 gd = math.hypot(gx - x_est[0], gy - x_est[1])
-                                if gd < 0.25:
+                                close_enough = rng_d <= run_cfg.tags.approach_dist + 0.4
+                                on_axis = abs(wrap_angle(brg_d - view_d)) < 0.25 and abs(brg_d) < 0.5
+                                if (gd < 0.25 and close_enough and on_axis) or (rng_d <= 1.5 and on_axis):
                                     aim_mode = False
                                     phase, nav_time = Phase.DOCK, frame.time
                                     dock.begin(x_est, dock_lm, dock_yaw)
                                     note(frame.time, f"AIM done: in front of the dock ({rng_d:.2f} m) -> docking")
+                                elif gd < 0.25:
+                                    L = max(0.3, min(1.0, rng_d - run_cfg.tags.approach_dist))
+                                    nav = go_to(nav, run_cfg, x_est, x_est[0] + L * math.cos(a_dock), x_est[1] + L * math.sin(a_dock))
+                                    ap_state, ap_go_t0 = "GO", frame.time
+                                    note(frame.time, f"AIM: dock still {rng_d:.2f} m away -> driving straight at it")
                                 else:
-                                    ap_target = wrap_angle(math.atan2(gy - x_est[1], gx - x_est[0]))
-                                    ap_goal = max(0.3, min(1.0, gd))
-                                    ap_state = "TURN"
+                                    nav = go_to(nav, run_cfg, x_est, gx, gy)
+                                    ap_state, ap_go_t0 = "GO", frame.time
                                     note(frame.time, f"AIM: dock {rng_d:.2f} m -> approach point {gd:.2f} m away")
                             else:
+                                # NEW: dock not seen. Keep driving to the pending fallback point; scan only when
+                                # we are there; plan a new fallback point when there is none.
+                                pending_fb = ap_goal_pt is not None
+                                arrived_fb, gd_fb = False, 0.0
+                                if pending_fb:
+                                    gd_fb = math.hypot(ap_goal_pt[0] - x_est[0], ap_goal_pt[1] - x_est[1])
+                                    arrived_fb = gd_fb <= 0.3 or frame.time - ap_goal_t0 > ap_goal_timeout
+                                if pending_fb and not arrived_fb:
+                                    nav = go_to(nav, run_cfg, x_est, ap_goal_pt[0], ap_goal_pt[1])
+                                    ap_state, ap_go_t0 = "GO", frame.time
+                                elif pending_fb:
+                                    ap_state = "FACE"
+                                    note(frame.time, "AIM: dock not seen at the fallback point -> facing the dock, then scanning (max 180 deg)")
+                                else:
+                                    ap_state = "PLAN"
+                                    note(frame.time, "AIM: dock not seen -> choosing a fallback point")
+                    elif ap_state == "FACE":
+                        if dock_lm is None:
+                            ap_state = "SEARCH"
+                            scan.reset()
+                        else:
+                            err = wrap_angle(math.atan2(dock_lm[1] - x_est[1], dock_lm[0] - x_est[0]) - x_est[2] - 0.6)
+                            if abs(err) < 0.1:
                                 ap_state = "SEARCH"
                                 scan.reset()
-                                note(frame.time, "AIM: dock not seen -> scanning")
-                    elif ap_state == "SEARCH":
-                        if dock_lm is not None:
-                            gx = dock_lm[0] + run_cfg.tags.approach_dist * math.cos(dock_yaw)
-                            gy = dock_lm[1] + run_cfg.tags.approach_dist * math.sin(dock_yaw)
-                            gd = math.hypot(gx - x_est[0], gy - x_est[1])
-                            if gd < 0.25:
+                            else:
+                                w = float(np.clip(2.0 * err, -0.6, 0.6))
+                    elif ap_state == "SEARCH":               # NEW: limited stop-go scan at a fallback point
+                        w, observe = scan.update(frame.time, frame.odometry.dtheta)
+                        if observe and frame.marker is not None:
+                            ap_state = "LOOK"
+                        elif scan.spun >= 2.0 * math.pi:           # half a turn is enough, not 2*pi
+                            if ap_goal_id is not None:
+                                ap_tried.add(ap_goal_id)     # reached and scanned: do not come back here
+                            ap_goal_pt, ap_goal_id = None, None
+                            ap_state = "PLAN"
+                            w = 0.0
+                    elif ap_state == "PLAN":                 # NEW: choose the next fallback point
+                        goal_pt, goal_id = None, None
+                        if dock_lm is not None and -1 not in ap_tried:
+                            goal_pt, goal_id = dock_approach_point(run_cfg, dock_lm, dock_yaw), -1
+                        else:
+                            ref_pt = np.asarray(dock_lm[:2], dtype=float) if dock_lm is not None else x_est[:2]
+                            tags_now = {int(i): pose for i, pose in tag_map.table().items()
+                                        if int(i) != dock_id and int(i) not in ap_tried}
+                            if tags_now:
+                                goal_id = min(tags_now, key=lambda i: float(np.hypot(*(tags_now[i][0] - ref_pt))))
+                                p_tag, yaw_tag = tags_now[goal_id]
+                                goal_pt = p_tag + run_cfg.tags.standoff * np.array([math.cos(yaw_tag),
+                                                                                    math.sin(yaw_tag)])
+                        if goal_pt is None:                  # nothing left to try
+                            if dock_lm is not None:
                                 aim_mode = False
                                 phase, nav_time = Phase.DOCK, frame.time
                                 dock.begin(x_est, dock_lm, dock_yaw)
-                                note(frame.time, "AIM done: at the learned approach point -> docking")
+                                note(frame.time, "AIM: dock not seen anywhere -> blind docking")
                             else:
-                                ap_target = wrap_angle(math.atan2(gy - x_est[1], gx - x_est[0]))
-                                ap_goal, ap_state = min(1.0, gd), "TURN"
+                                phase, reason = Phase.FAILED, "dock not found"
+                                note(frame.time, "AIM FAILED: dock not seen and no fallback point left")
                         else:
-                            w, observe = scan.update(frame.time, frame.odometry.dtheta)   # chưa học dock: giữ cách cũ
-                            if observe and frame.marker is not None:
-                                ap_state = "LOOK"
+                            ap_goal_pt, ap_goal_id, ap_goal_t0 = goal_pt, goal_id, frame.time
+                            gd = math.hypot(goal_pt[0] - x_est[0], goal_pt[1] - x_est[1])
+                            label = "dock approach point" if goal_id == -1 else f"tag {goal_id} stand-off"
+                            note(frame.time, f"AIM: fallback -> {label} ({goal_pt[0]:+.2f}, {goal_pt[1]:+.2f}), {gd:.2f} m away")
+                            if gd < 0.3:                     # already there: scan right here
+                                ap_state = "FACE"
+                            else:
+                                nav = go_to(nav, run_cfg, x_est, goal_pt[0], goal_pt[1])
+                                ap_state, ap_go_t0 = "GO", frame.time
+                    elif ap_state == "GO":                   # LQR + LiDAR avoidance via Navigator
+                        ncmd = nav.update(x_est, frame.lidar)
+                        v, w = ncmd.v, ncmd.w
+                        if ncmd.finished or frame.time - ap_go_t0 > 8.0:
+                            ap_state = "LOOK"
                     elif ap_state == "TURN":
                         err = wrap_angle(ap_target - x_est[2])
                         if abs(err) < 0.08:
@@ -832,8 +874,7 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
 
                 # 2d) docking (a failed docking widens P and starts the tag recovery)
                 if phase is Phase.DOCK:
-                    dcmd = dock.update(frame.marker, frame.odometry,
-                                    x_est if (dock_use_estimate and dock_lm is not None) else None)
+                    dcmd = dock.update(frame.marker, frame.odometry, x_est if (dock_use_estimate and dock_lm is not None and dock_refined) else None)
                     if dcmd.finished:
                         if dcmd.docked:
                             phase, reason = Phase.DONE, "docked"
@@ -847,11 +888,26 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
                             phase = Phase.RECOVER
                             note(frame.time, f"docking failed -> P inflated -> tag recovery "
                                             f"#{n_tag_recoveries} started")
+                        elif dock_retries < 3:
+                            dock_retries += 1
+                            dock_fail_t = frame.time
+                            aim_mode, ap_state, ap_t0 = True, "LOOK", None
+                            phase = Phase.NAVIGATE
+                            note(frame.time, f"docking failed -> back to AIM (retry {dock_retries}/3)")
                         else:
                             phase, reason = Phase.FAILED, "docking failed"
                             note(frame.time, "docking failed (no recovery left)")
                     else:
                         v, w = dcmd.v, dcmd.w
+
+                age = frame.lidar_age + (5.0 if lidar_fault_at is not None and frame.time >= lidar_fault_at else 0.0)
+                v, w, g_reason = safety.filter(v, w, frame.lidar, dt, lidar_age=age, sigma_xy=sigma_xy)
+                if g_reason != last_guard:
+                    last_guard = g_reason
+                    if g_reason:
+                        note(frame.time, f"SAFETY: {g_reason}")
+                if safety.fault:                      # latched E-STOP: end the run, never report success
+                    phase, reason = Phase.FAILED, "safety fault"
 
                 # 3) logging and evaluation (the ONLY place ground truth is read)
                 hit = sim.collided
@@ -866,10 +922,10 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
                 log.record(frame.time, sim.ground_truth(), x_eval, estimator.P,
                         phase.value, v, w, n_valid, n_updates, mode, n_tag_upd)
                 if visualizer is not None:
-                    visualizer.record(frame.time, x_eval, frame.lidar, mode, frame.marker, sim,
-                                    markers=frame.markers)
+                    visualizer.record(frame.time, x_eval, frame.lidar, mode, frame.marker,
+                                    markers=frame.markers, frame=frame)
                     if phase is Phase.DONE:
-                        visualizer.capture_target(sim, label="Docked at charging station")
+                        visualizer.capture_target(label="Docked at charging station")
                 if verbose and step % report_every == 0:
                     print(table_row(frame.time, x_est, n_valid, frame.lidar.valid.size,
                                     n_updates, v, w, mode, sigma_xy, n_tag_upd, last_tags), flush=True)
@@ -892,8 +948,15 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
                 step += 1
 
         if visualizer is not None:
-            viz_outputs = visualizer.finish(sim, success=phase is Phase.DONE,
-                                            reason=reason, sim_time=sim.time)
+            viz_outputs = visualizer.finish(
+                success=phase is Phase.DONE, reason=reason, sim_time=sim.time,
+                extra={"seed": seed,
+                    "calibration_source": "nominal_mujoco" if calibration is None
+                                            else calibration.intrinsics.source,
+                    "validation": {"simulation": phase is Phase.DONE,
+                                    "hardware_ready": False,      # set True only after the checklist
+                                    "hardware_verified": False},
+                    "events": events})
         cam_stats = (sensing.n_camera, sensing.n_detect)
         n_detect_any = sensing.n_detect_any
         truth = sim.ground_truth()           # final pose, evaluation only
@@ -937,9 +1000,7 @@ def plot_run(result: RunResult, cfg: Config = CONFIG, path: Optional[Path] = Non
     ax.add_patch(Rectangle((-hx, -hy), 2 * hx, 2 * hy, fill=False, edgecolor="gray"))
     for ox, oy, r in result_obstacles(result, cfg):
         ax.add_patch(Circle((ox, oy), r, color="tab:red", alpha=0.4))
-    wp = np.array(cfg.env.waypoints)
-    ax.plot(wp[:, 0], wp[:, 1], "k^", label="waypoints")
-    ax.plot(cfg.env.dock_pose[0], cfg.env.dock_pose[1], "gs", markersize=10, label="dock marker")
+    ax.plot(cfg.env.dock_pose[0], cfg.env.dock_pose[1], "gs", markersize=10, label="Tags (true, evaluation)")
     ax.plot(a["truth"][:, 0], a["truth"][:, 1], label="true pose (evaluation)")
     ax.plot(a["est"][:, 0], a["est"][:, 1], "--", label="estimate")
     ax.set_aspect("equal")
@@ -978,15 +1039,16 @@ def _ensure_mjpython() -> None:
 # Repeated trials with different noise seeds: success rate and mean +- std of the key metrics
 def run_trials(n: int, seed0: int = 0, cfg: Config = CONFIG, use_marker_cov: bool = False,
             marker_sigma_px: float = 0.5, scene_dir: Optional[Path] = None,
-            randomize_obstacles: bool = False, use_lidar_map: bool = False) -> int:
+            randomize_obstacles: bool = False, use_lidar_map: bool = False, use_recovery: bool = False) -> int:
     rows = []
     print(f"marker R: {'per-measurement' if use_marker_cov else 'fixed'} | sigma_px {marker_sigma_px}")
     print(f"{'seed':>5} {'result':>7} {'reason':>15} {'time':>6} {'pos RMSE':>9} "
         f"{'NEES':>6} {'NIS/dof':>8} {'det %':>6} {'rej':>4} {'rec':>4} {'dock lat':>9}")
     for i in range(n):
         res = run_pipeline(cfg, seed=seed0 + i, scene_dir=scene_dir,
+                        dock_use_estimate=True,
                         marker_sigma_px=marker_sigma_px, use_marker_cov=use_marker_cov,
-                        randomize_obstacles=randomize_obstacles, use_lidar_map=use_lidar_map)
+                        randomize_obstacles=randomize_obstacles, use_lidar_map=use_lidar_map, use_recovery=use_recovery)
         rep = compute_report(res, cfg)
         n_cam, n_det = res.camera_stats
         row = {"ok": res.success, "reason": res.reason, "time": res.time,
@@ -1046,6 +1108,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="ideal simulation (no hidden errors, delays or sensor degradation)")
     parser.add_argument("--lidar-map", action="store_true",
                         help="EKF uses LiDAR against the fixed room walls (needs the world frame; off by default)")
+    parser.add_argument("--recovery", action="store_true",
+                        help="enable the tag recovery (spin / stand-off points) when the EKF is lost")
+    parser.add_argument("--lidar-fault", type=float, default=None,
+                        help="simulate a LiDAR outage starting at this time [s]")
     return parser
 
 def main(argv=None) -> int:
@@ -1063,17 +1129,20 @@ def main(argv=None) -> int:
     if args.trials > 0:
         return run_trials(args.trials, seed or 0, cfg,
                         use_marker_cov=args.marker_cov, marker_sigma_px=args.sigma_px,
-                        randomize_obstacles=randomize, use_lidar_map=args.lidar_map)
+                        randomize_obstacles=randomize, use_lidar_map=args.lidar_map,
+                        use_recovery=args.recovery)
     use_viewer = not args.no_viewer
     if use_viewer:
         _ensure_mjpython()
     viz = None if args.no_viz else RouteVisualizer(
-        cfg, live_view=use_viewer and not args.no_live_camera)
+        cfg, output_dir=RESULTS_DIR / "visualization" / f"seed_{seed if seed is not None else cfg.sim.seed}",
+        live_view=use_viewer and not args.no_live_camera)
     result = run_pipeline(cfg, seed=seed, viewer=use_viewer, verbose=True,
                         dock_use_estimate=True,
                         marker_sigma_px=args.sigma_px, use_marker_cov=args.marker_cov,
                         visualizer=viz, randomize_obstacles=randomize,
-                        use_lidar_map=args.lidar_map)
+                        use_lidar_map=args.lidar_map, use_recovery=args.recovery,
+                        lidar_fault_at=args.lidar_fault)
     ecfg = result.world_cfg or cfg          # the real world, for evaluation only
 
     dr_rmse = None

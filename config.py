@@ -46,6 +46,8 @@ class CameraConfig:
     bearing_noise_std: float = 0.01  # [rad]
     view_noise_std: float = 0.03     # [rad] std of the marker view angle (third camera measurement)
     forward_offset: Optional[float] = None  # measured camera position ahead of the robot centre [m]; None = nominal
+    lateral_offset: Optional[float] = None  # measured camera offset to the robot's left [m]; None = nominal (0)
+    yaw: Optional[float] = None             # measured camera yaw relative to the robot heading [rad]; None = nominal (0)
 
 @dataclass(frozen=True)
 class EKFConfig:
@@ -86,23 +88,23 @@ class EnvConfig:
     # Circular obstacles: (x, y, radius)
     obstacles: tuple = (
         (0.0, -0.5, 0.2),
+        (1.0, 0.0, 0.2),
+        (-0.9, 0.6, 0.2),
     )
     waypoints: tuple = (
         (-1.0, -1.2),
         (0.6, -1.2),
-        (1.5, -0.1),
-        (1.2, 1.0),
     )
     # Charging station marker: x, y, yaw (marker faces -x direction)
     dock_pose: tuple = (1.9, 1.0, math.pi)
 
 @dataclass(frozen=True)
 class TagConfig:
-    n_tags: int = 3          # number of extra checkpoint tags (ids marker_id+1 ... marker_id+n_tags); 0 = dock only
+    n_tags: int = 4          # number of extra checkpoint tags (ids marker_id+1 ... marker_id+n_tags); 0 = dock only
     inset: float = 0.05      # [m] distance of each tag panel from the wall
     standoff: float = 0.9    # [m] recovery waypoint distance in front of a tag
     lost_std: float = 0.15   # [m] sqrt(trace(P_xy)) above this = robot is lost
-    spin_omega: float = 0.2  # [rad/s] in-place rotation while looking for a tag
+    spin_omega: float = 0.7  # [rad/s] in-place rotation while looking for a tag
     use_survey: bool = True       # learn the tag poses at the start pose instead of reading them from the config
     survey_omega: float = 0.4     # [rad/s] in-place rotation while scanning
     survey_angle: float = math.pi # [rad] total rotation of the survey (half a turn from the start heading)

@@ -71,12 +71,17 @@ def random_obstacles(cfg: Config, rng: np.random.Generator,
                     max_tries: int = 2000) -> list[tuple]:
     hx, hy = cfg.env.room_half_size
     sx, sy, _ = cfg.env.start_pose
-    dx, dy, _ = cfg.env.dock_pose
+    dx, dy, dyaw = cfg.env.dock_pose
     robot_r = cfg.robot.body_radius
     robot_d = 2.0 * robot_r                    # robot diameter
     path = ([(sx, sy)]
             + [(float(w[0]), float(w[1])) for w in getattr(cfg.env, "waypoints", ())]
             + [(dx, dy)])
+    # Keep the dock visible and reachable: the sight line from the start pose to the dock,
+    # and the corridor in front of the dock (along the tag normal).
+    dock_front = (dx + 1.8 * math.cos(dyaw), dy + 1.8 * math.sin(dyaw))
+    sight_line = ((sx, sy), (dx, dy))
+    front_corridor = ((dx, dy), dock_front)
     # Stand-off points in front of the extra tags (the robot drives there during recovery)
     # Configs without a tag table (e.g. minimal test stubs) simply have no stand-off points.
     standoff_pts = []
@@ -101,6 +106,12 @@ def random_obstacles(cfg: Config, rng: np.random.Generator,
             # keep the waypoint path free (the robot must fit between path and obstacle)
             if any(point_segment_distance(x, y, *a, *b) < r + robot_r + path_margin
                 for a, b in zip(path[:-1], path[1:])):
+                continue
+            # keep the dock visible from the start pose
+            if point_segment_distance(x, y, *sight_line[0], *sight_line[1]) < r + 0.15:
+                continue
+            # keep the corridor in front of the dock free for the approach
+            if point_segment_distance(x, y, *front_corridor[0], *front_corridor[1]) < r + robot_r + path_margin:
                 continue
             # keep the recovery stand-off points free
             if any(math.hypot(x - px, y - py) < r + robot_r + path_margin

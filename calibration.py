@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import math
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Sequence
@@ -18,6 +19,7 @@ SOURCE_CALIBRATED = "calibrated"    # estimated from images of a calibration tar
 MIN_CALIBRATION_VIEWS = 5
 VALID_DIST_LENGTHS = (4, 5, 8, 12, 14)
 MAX_REPROJ_PX = 3.0                 # default reprojection-error gate for marker pose [px]
+MAX_CALIB_RMS_PX = 1.0              # max accepted RMS reprojection error of a real calibration [px]
 
 # Intrinsics
 @dataclass(frozen=True, eq=False)
@@ -44,6 +46,20 @@ def camera_matrix(cfg: Config = CONFIG) -> np.ndarray:
 def camera_forward_offset(cfg: Config = CONFIG) -> float:
     measured = getattr(cfg.camera, "forward_offset", None)
     return cfg.robot.body_radius + 0.01 if measured is None else float(measured)
+
+# Measured camera mounting in the robot frame: (forward [m], lateral-left [m], yaw [rad]).
+# Values missing from the config fall back to the nominal simulator mounting (0 lateral, 0 yaw)
+def camera_extrinsics(cfg: Config = CONFIG) -> tuple[float, float, float]:
+    lateral = getattr(cfg.camera, "lateral_offset", None)
+    yaw = getattr(cfg.camera, "yaw", None)
+    return (camera_forward_offset(cfg),
+            0.0 if lateral is None else float(lateral),
+            0.0 if yaw is None else float(yaw))
+
+# 2-D rotation matrix
+def _rot2(angle: float) -> np.ndarray:
+    c, s = math.cos(angle), math.sin(angle)
+    return np.array([[c, -s], [s, c]])
 
 # Known (not measured) intrinsics of the simulated camera: ideal pinhole, no distortion
 def nominal_intrinsics(cfg: Config = CONFIG) -> CameraIntrinsics:
@@ -78,22 +94,32 @@ def assert_valid_intrinsics(intr: CameraIntrinsics) -> None:
     problems = validate_intrinsics(intr)
     if problems:
         raise ValueError("Invalid intrinsics: " + "; ".join(problems))
+
+# The runtime image resolution must match the resolution used for calibration
+def check_resolution(intr: CameraIntrinsics, cfg: Config = CONFIG) -> list[str]:
+    expected = (int(cfg.camera.width), int(cfg.camera.height))
+    actual = tuple(int(v) for v in intr.image_size)
+    if actual != expected:
+        return [f"calibration resolution {actual} != runtime resolution {expected}"]
+    return []
     
 # Frame transforms: camera to robot
 # Camera-frame point (X right, Y down, Z forward) -> robot ground-plane point (x, y)
 def camera_to_robot(p_cam, cfg: Config = CONFIG) -> np.ndarray:
     X, _, Z = np.asarray(p_cam, dtype=float).reshape(3)
-    return np.array([Z + camera_forward_offset(cfg), -X])
+    fwd, lat, yaw = camera_extrinsics(cfg)
+    return _rot2(yaw) @ np.array([Z, -X]) + np.array([fwd, lat])
 
 # Robot ground-plane point -> camera frame. `height` is the point height above the camera axis [m]
 def robot_to_camera(p_robot, height: float = 0.0, cfg: Config = CONFIG) -> np.ndarray:
-    x_r, y_r = np.asarray(p_robot, dtype=float).reshape(2)
-    return np.array([-y_r, -height, x_r - camera_forward_offset(cfg)])
+    fwd, lat, yaw = camera_extrinsics(cfg)
+    q = _rot2(-yaw) @ (np.asarray(p_robot, dtype=float).reshape(2) - np.array([fwd, lat]))
+    return np.array([-q[1], -height, q[0]])
 
 # Direction vector (no translation): camera frame -> robot ground plane
-def camera_dir_to_robot(d_cam) -> np.ndarray:
+def camera_dir_to_robot(d_cam, cfg: Config = CONFIG) -> np.ndarray:
     d = np.asarray(d_cam, dtype=float).reshape(3)
-    return np.array([d[2], -d[0]])
+    return _rot2(camera_extrinsics(cfg)[2]) @ np.array([d[2], -d[0]])
 
 def range_bearing(p_robot) -> tuple[float, float]:
     x, y = np.asarray(p_robot, dtype=float).reshape(2)
@@ -107,14 +133,22 @@ def marker_object_points(marker_size: float) -> np.ndarray:
     s = marker_size / 2.0
     return np.array([[-s, s, 0.0], [s, s, 0.0], [s, -s, 0.0], [-s, -s, 0.0]])
 
-# Convert a solvePnP result (marker in camera frame) into (range, bearing, view_angle)
-def marker_pose_from_pnp(rvec, tvec, cfg: Config = CONFIG) -> tuple[float, float, float]:
-    p_robot = camera_to_robot(tvec, cfg)
+# Marker pose (translation t, rotation R in the camera frame) -> (range, bearing, view_angle)
+def _marker_pose(t, R, cfg: Config = CONFIG) -> tuple[float, float, float]:
+    p_robot = camera_to_robot(t, cfg)
     rng, bearing = range_bearing(p_robot)
-    normal_cam = cv2.Rodrigues(np.asarray(rvec, dtype=float).reshape(3, 1))[0][:, 2]
-    n = camera_dir_to_robot(normal_cam)       # normal points towards the viewer
+    n = camera_dir_to_robot(np.asarray(R, dtype=float)[:, 2], cfg)   # normal points towards the viewer
     view_angle = wrap_angle(math.atan2(n[1], n[0]) - math.pi)
     return rng, bearing, float(view_angle)
+
+# Convert a solvePnP result (marker in camera frame) into (range, bearing, view_angle)
+def marker_pose_from_pnp(rvec, tvec, cfg: Config = CONFIG) -> tuple[float, float, float]:
+    R = cv2.Rodrigues(np.asarray(rvec, dtype=float).reshape(3, 1))[0]
+    return _marker_pose(np.asarray(tvec, dtype=float).reshape(3), R, cfg)
+
+# Convert an SE3-like pose (attributes .t and .R, marker in the camera frame) into (range, bearing, view_angle)
+def marker_pose_from_T(T, cfg: Config = CONFIG) -> tuple[float, float, float]:
+    return _marker_pose(np.asarray(T.t, dtype=float).reshape(3), T.R, cfg)
 
 # Marker pose in the camera frame from the 4 detected corners
 def solve_marker_pose(image_pts, K: np.ndarray, dist_coeffs: np.ndarray,
@@ -220,8 +254,13 @@ def check_units(cfg: Config = CONFIG) -> list[str]:
         problems.append("marker_size outside 0.01-1.0 m (millimetres instead of metres?)")
     if not 10.0 <= cfg.camera.fovy_deg <= 170.0:
         problems.append("fovy_deg outside 10-170 deg (radians instead of degrees?)")
-    if not 0.0 < camera_forward_offset(cfg) < 0.5:
+    fwd, lat, yaw = camera_extrinsics(cfg)
+    if not 0.0 < fwd < 0.5:
         problems.append("camera forward offset outside 0-0.5 m")
+    if abs(lat) > 0.5:
+        problems.append("camera lateral offset outside +-0.5 m")
+    if abs(yaw) > math.pi / 2.0:
+        problems.append("camera yaw outside +-90 deg (degrees instead of radians?)")
     return problems
 
 # Return a list of violated conventions (empty list = all consistent)
@@ -230,14 +269,18 @@ def check_frame_conventions(cfg: Config = CONFIG, intr: Optional[CameraIntrinsic
     intr = nominal_intrinsics(cfg) if intr is None else intr
     problems = check_units(cfg)
     cx, cy = intr.K[0, 2], intr.K[1, 2]
+    fwd, lat, yaw = camera_extrinsics(cfg)
+    origin = np.array([fwd, lat])
+    axis = np.array([math.cos(yaw), math.sin(yaw)])       # camera optical axis on the ground plane
+    left_dir = np.array([-axis[1], axis[0]])
 
-    ahead = project_robot_point([1.0, 0.0], intr, 0.0, cfg)
+    ahead = project_robot_point(origin + 1.0 * axis, intr, 0.0, cfg)
     if ahead is None or abs(ahead[0] - cx) > 1e-3 or abs(ahead[1] - cy) > 1e-3:
-        problems.append("a point straight ahead must project to the principal point")
-    left = project_robot_point([1.0, 0.2], intr, 0.0, cfg)
+        problems.append("a point straight ahead of the camera must project to the principal point")
+    left = project_robot_point(origin + 1.0 * axis + 0.2 * left_dir, intr, 0.0, cfg)
     if left is None or left[0] >= cx:
         problems.append("a point on the robot's left (y>0) must appear left of the image centre")
-    above = project_robot_point([1.0, 0.0], intr, 0.1, cfg)
+    above = project_robot_point(origin + 1.0 * axis, intr, 0.1, cfg)
     if above is None or above[1] >= cy:
         problems.append("a point above the camera axis must appear above the image centre")
 
@@ -245,11 +288,13 @@ def check_frame_conventions(cfg: Config = CONFIG, intr: Optional[CameraIntrinsic
     if np.linalg.norm(camera_to_robot(robot_to_camera(p, 0.0, cfg), cfg) - p) > tol:
         problems.append("robot->camera->robot round trip is not the identity")
 
-    # Head-on marker: OpenCV pose with the marker y axis flipped (rotation pi about X)
-    rng, bearing, view = marker_pose_from_pnp(np.array([math.pi, 0.0, 0.0]),
-                                            np.array([0.0, 0.0, 1.0]), cfg)
-    if abs(bearing) > tol or abs(view) > tol or abs(rng - (1.0 + camera_forward_offset(cfg))) > tol:
-        problems.append("head-on marker must give bearing 0, view angle 0 and range Z + offset")
+    # Head-on marker: OpenCV pose with the marker y axis flipped (rotation pi about X).
+    # Only meaningful when the camera is mounted on the robot axis and looks straight ahead.
+    if abs(lat) < tol and abs(yaw) < tol:
+        rng, bearing, view = marker_pose_from_pnp(np.array([math.pi, 0.0, 0.0]),
+                                                np.array([0.0, 0.0, 1.0]), cfg)
+        if abs(bearing) > tol or abs(view) > tol or abs(rng - (1.0 + fwd)) > tol:
+            problems.append("head-on marker must give bearing 0, view angle 0 and range Z + offset")
 
     half_v = math.atan(cy / intr.K[1, 1])
     if abs(half_v - math.radians(cfg.camera.fovy_deg) / 2.0) > 1e-6 and not intr.is_calibrated:
@@ -298,6 +343,9 @@ def calibrate_intrinsics(object_points: Sequence[np.ndarray], image_points: Sequ
 # Convenience wrapper: detect the chessboard in every image, then calibrate
 def calibrate_from_images(images: Sequence[np.ndarray], pattern_size: tuple,
                         square_size: float) -> CameraIntrinsics:
+    sizes = {img.shape[:2] for img in images}
+    if len(sizes) != 1:
+        raise ValueError(f"all calibration images must have the same resolution, got {sizes}")
     obj_template = chessboard_object_points(pattern_size, square_size)
     obj, img = [], []
     for image in images:
@@ -336,6 +384,8 @@ class Calibration:
     intrinsics: CameraIntrinsics
     forward_offset: float
     marker_size: float
+    lateral_offset: float = 0.0     # camera offset to the robot's left [m]
+    yaw: float = 0.0                # camera yaw relative to the robot heading [rad]
 
     @property
     def K(self) -> np.ndarray:
@@ -349,17 +399,36 @@ class Calibration:
     def marker_points(self) -> np.ndarray:
         return marker_object_points(self.marker_size)
 
-# Nominal MuJoCo intrinsics unless a calibrated set is supplied
-def get_calibration(cfg: Config = CONFIG, intrinsics: Optional[CameraIntrinsics] = None, sample_image: Optional[np.ndarray] = None) -> Calibration:
+# Nominal MuJoCo intrinsics unless a calibrated set is supplied.
+# With require_calibrated=True (hardware runs) a real, saved calibration is mandatory.
+def get_calibration(cfg: Config = CONFIG, intrinsics: Optional[CameraIntrinsics] = None,
+                    sample_image: Optional[np.ndarray] = None,
+                    require_calibrated: bool = False) -> Calibration:
     """
-    Provide a Calibration object with the camera intrinsics, forward offset, and marker size. 
-    If no intrinsics are provided, the nominal MuJoCo intrinsics are used. 
+    Provide a Calibration object with the camera intrinsics, camera extrinsics, and marker size.
+    If no intrinsics are provided, the nominal MuJoCo intrinsics are used (a warning is issued).
+    If require_calibrated is True, nominal intrinsics are rejected and the reprojection error is gated.
     If a sample image is provided, the effectiveness of lens distortion removal is validated and reported.
     """
+    if intrinsics is None:
+        if require_calibrated:
+            raise ValueError("A calibrated intrinsics file is required; refusing to use nominal_mujoco")
+        warnings.warn("Using nominal MuJoCo intrinsics (NOT measured); do not use on hardware")
     intr = nominal_intrinsics(cfg) if intrinsics is None else intrinsics
     assert_valid_intrinsics(intr)
+
+    problems = check_resolution(intr, cfg)
+    if require_calibrated:
+        if not intr.is_calibrated:
+            problems.append("intrinsics are not from a real calibration")
+        elif intr.reprojection_error is None or intr.reprojection_error > MAX_CALIB_RMS_PX:
+            problems.append(f"calibration RMS error {intr.reprojection_error} px exceeds {MAX_CALIB_RMS_PX} px")
+    if problems:
+        raise ValueError("Calibration rejected: " + "; ".join(problems))
+
     assert_frame_conventions(cfg, intr)
-    calib_obj = Calibration(intr, camera_forward_offset(cfg), cfg.camera.marker_size)
+    fwd, lat, yaw = camera_extrinsics(cfg)
+    calib_obj = Calibration(intr, fwd, cfg.camera.marker_size, lat, yaw)
     
     # Validate the effectiveness of lens distortion removal if a sample image is provided
     if sample_image is not None and intr.is_calibrated:
@@ -368,6 +437,10 @@ def get_calibration(cfg: Config = CONFIG, intrinsics: Optional[CameraIntrinsics]
             print(f"[Calibration Check] Undistort check passed. Mean pixel shift: {val_res['mean_pixel_difference']:.3f} px")
             
     return calib_obj
+
+# Hardware entry point: load the saved calibration file and require it to be real
+def load_calibration(path, cfg: Config = CONFIG, sample_image: Optional[np.ndarray] = None) -> Calibration:
+    return get_calibration(cfg, load_intrinsics(path), sample_image, require_calibrated=True)
 
 # Validate the effectiveness of lens distortion removal by comparing the raw and undistorted images.
 def validate_calibration_image_effect(raw_image: np.ndarray, K: np.ndarray, dist_coeffs: np.ndarray) -> dict:
@@ -401,6 +474,8 @@ if __name__ == "__main__":
                         help="inner corners of the chessboard (cols rows)")
     parser.add_argument("--square", type=float, default=0.025, help="chessboard square size [m]")
     parser.add_argument("--out", default="results/camera_intrinsics.json")
+    parser.add_argument("--check", metavar="INTRINSICS_JSON", default=None,
+                        help="load a saved calibration and verify it is usable on hardware")
     args = parser.parse_args()
 
     if args.calibrate:
@@ -409,6 +484,10 @@ if __name__ == "__main__":
         intr = calibrate_from_images(images, tuple(args.pattern), args.square)
         save_intrinsics(intr, args.out)
         print(f"Saved {args.out} | RMS reprojection error: {intr.reprojection_error:.3f} px")
+    elif args.check:
+        cal = load_calibration(args.check)
+        print("Hardware calibration OK | RMS:", round(cal.intrinsics.reprojection_error, 3), "px")
+        print("Extrinsics (fwd, lat, yaw):", cal.forward_offset, cal.lateral_offset, cal.yaw)
     else:
         cal = get_calibration()
         print("Source        :", cal.intrinsics.source)

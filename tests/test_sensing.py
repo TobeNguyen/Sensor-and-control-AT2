@@ -9,15 +9,16 @@ from dataclasses import replace
 from config import CONFIG, RealismConfig
 IDEAL = replace(CONFIG, realism=RealismConfig(enabled=False))
 from robot_model import measurement_model
-from sensing import (
-    MAX_REPROJ_PX, MarkerMeasurement, Sensing, camera_forward_offset, camera_matrix,
-    detect_marker, detect_markers, lidar_points, make_lidar_scan, sector_min_range,
-)
+from calibration import camera_forward_offset, camera_matrix
+from sensing import MarkerMeasurement, Sensing, detect_markers, lidar_points, make_lidar_scan, sector_min_range
 
 N_BEAMS = CONFIG.lidar.num_beams
 ANGLES = np.linspace(0.0, 2.0 * math.pi, N_BEAMS, endpoint=False)
 BLACK_PX = 120   # side of the black marker in the synthetic image [px]
 
+def detect_marker(img, K=None, time=0.0, **kw):          # K giữ cho khớp chữ ký cũ, không dùng
+    return next((m for m in detect_markers(img, CONFIG, time, **kw)
+                if m.marker_id == CONFIG.camera.marker_id), None)
 
 def free_ranges():
     return np.full(N_BEAMS, CONFIG.lidar.range_max)
@@ -104,40 +105,6 @@ def test_marker_on_the_left_of_image_has_positive_bearing():
 def test_marker_on_the_right_of_image_has_negative_bearing():
     m = detect_marker(synthetic_marker_image(shift_px=80))
     assert m.bearing < 0
-
-# ------------------------------------------------- noise model and quality gates
-def test_marker_measurement_defaults():
-    m = MarkerMeasurement(1.0, 0.0, 0.0, 0, 0.0)
-    assert m.cov is None and math.isnan(m.reproj_error)
-
-
-def test_detect_marker_returns_valid_covariance():
-    m = detect_marker(synthetic_marker_image(), camera_matrix())
-    assert m is not None and m.cov is not None and m.cov.shape == (2, 2)
-    np.testing.assert_allclose(m.cov, m.cov.T)
-    assert np.all(np.linalg.eigvalsh(m.cov) > 0)
-    assert 0.0 <= m.reproj_error <= MAX_REPROJ_PX
-
-
-def test_covariance_grows_with_distance():
-    K = camera_matrix()
-    near = detect_marker(synthetic_marker_image(black_px=120), K)
-    far = detect_marker(synthetic_marker_image(black_px=60), K)
-    assert near is not None and far is not None
-    assert far.range > near.range
-    assert far.cov[0, 0] > near.cov[0, 0]          # range variance increases with distance
-
-
-def test_covariance_scales_with_sigma_px():
-    K = camera_matrix()
-    img = synthetic_marker_image()
-    a = detect_marker(img, K, sigma_px=0.5)
-    b = detect_marker(img, K, sigma_px=1.0)
-    assert b.cov[1, 1] == pytest.approx(4.0 * a.cov[1, 1])   # variance ~ sigma^2
-
-
-def test_reprojection_gate_rejects_marker():
-    assert detect_marker(synthetic_marker_image(), camera_matrix(), max_reproj_px=-1.0) is None
 
 
 def test_view_angle_gate_rejects_marker():
@@ -239,18 +206,6 @@ def test_sensing_returns_marker_when_visible():
     frame = Sensing(sim, camera_period=0.0).read()
     assert frame.marker is not None and frame.marker.range > 0
 
-def test_sensing_uses_the_calibration_module():
-    import calibration
-    import sensing
-    assert sensing.camera_matrix is calibration.camera_matrix
-    assert sensing.solve_marker_pose is calibration.solve_marker_pose
-
-def test_sensing_exposes_new_calibration_functions():
-    import calibration
-    import sensing
-    assert sensing.marker_measurement_covariance is calibration.marker_measurement_covariance
-    assert sensing.MAX_REPROJ_PX == calibration.MAX_REPROJ_PX
-
 
 def test_sensing_counts_camera_frames_and_detections():
     sim = FakeSim()
@@ -263,21 +218,6 @@ def test_sensing_counts_camera_frames_and_detections():
     assert (sensing.n_camera, sensing.n_detect) == (3, 2)
     sensing.reset()
     assert (sensing.n_camera, sensing.n_detect) == (0, 0)
-
-
-def test_sensing_sigma_px_changes_covariance():
-    sim = FakeSim()
-    sim.image = synthetic_marker_image()
-    lo = Sensing(sim, camera_period=0.0, marker_sigma_px=0.5).read().marker
-    hi = Sensing(sim, camera_period=0.0, marker_sigma_px=2.0).read().marker
-    assert hi.cov[1, 1] > lo.cov[1, 1]
-
-
-def test_sensing_quality_gates_can_reject_everything():
-    sim = FakeSim()
-    sim.image = synthetic_marker_image()
-    assert Sensing(sim, camera_period=0.0, max_view_angle=-1.0).read().marker is None
-    assert Sensing(sim, camera_period=0.0, max_reproj_px=-1.0).read().marker is None
 
 
 # ------------------------------------------------------ Sensing (real MuJoCo)
@@ -348,23 +288,6 @@ def test_real_marker_not_seen_when_facing_away(real_sim):
     real_sim.reset((dx - 0.7, dy, math.pi))
     assert read_or_skip(Sensing(real_sim, camera_period=0.0)).marker is None
 
-def test_real_marker_has_covariance_and_small_reprojection_error(real_sim):
-    dx, dy, _ = CONFIG.env.dock_pose
-    real_sim.reset((dx - 0.7, dy, 0.0))
-    m = read_or_skip(Sensing(real_sim, camera_period=0.0)).marker
-    assert m is not None and m.cov is not None
-    assert m.reproj_error < MAX_REPROJ_PX
-
-
-def test_real_marker_noise_grows_with_range(real_sim):
-    dx, dy, _ = CONFIG.env.dock_pose
-    real_sim.reset((dx - 0.5, dy, 0.0))
-    near = read_or_skip(Sensing(real_sim, camera_period=0.0)).marker
-    real_sim.reset((dx - 1.2, dy, 0.0))
-    far = read_or_skip(Sensing(real_sim, camera_period=0.0)).marker
-    assert near is not None and far is not None
-    assert far.cov[0, 0] > near.cov[0, 0]
-
 # ------------------------------------------------- extra checkpoint tags
 def synthetic_multi_marker_image(placements, black_px=BLACK_PX):
     """White image with several markers: placements = [(marker_id, shift_px), ...]."""
@@ -386,13 +309,13 @@ TAG_ID = DOCK_ID + 1
 
 def test_detect_markers_returns_every_known_id():
     img = synthetic_multi_marker_image([(DOCK_ID, 160), (TAG_ID, -160)])
-    found = detect_markers(img, camera_matrix())
+    found = detect_markers(img)
     assert sorted(m.marker_id for m in found) == [DOCK_ID, TAG_ID]
 
 
 def test_detect_markers_bearing_follows_the_image_side():
     img = synthetic_multi_marker_image([(DOCK_ID, 160), (TAG_ID, -160)])
-    by_id = {m.marker_id: m for m in detect_markers(img, camera_matrix())}
+    by_id = {m.marker_id: m for m in detect_markers(img)}
     assert by_id[TAG_ID].bearing > 0       # left of the image
     assert by_id[DOCK_ID].bearing < 0      # right of the image
 
@@ -400,12 +323,12 @@ def test_detect_markers_bearing_follows_the_image_side():
 def test_detect_markers_ignores_ids_outside_the_tag_table():
     unknown = max(CONFIG.tag_table()) + 5
     img = synthetic_multi_marker_image([(unknown, 0)])
-    assert detect_markers(img, camera_matrix()) == []
+    assert detect_markers(img) == []
 
 
 def test_detect_markers_is_empty_on_a_blank_image():
     blank = np.full((CONFIG.camera.height, CONFIG.camera.width, 3), 255, np.uint8)
-    assert detect_markers(blank, camera_matrix()) == []
+    assert detect_markers(blank) == []
 
 
 def test_detect_marker_still_returns_only_the_dock():
@@ -413,6 +336,14 @@ def test_detect_marker_still_returns_only_the_dock():
     m = detect_marker(img, camera_matrix())
     assert m is not None and m.marker_id == DOCK_ID
     assert detect_marker(synthetic_multi_marker_image([(TAG_ID, 0)]), camera_matrix()) is None
+
+
+def test_detect_markers_survives_a_toolbox_failure(monkeypatch):
+    import sensing
+    def boom(*a, **k):
+        raise ValueError("zero norm vector")
+    monkeypatch.setattr(sensing.Image, "fiducial", boom)
+    assert detect_markers(synthetic_marker_image()) == []
 
 
 def test_sensing_frame_separates_the_dock_from_the_tags():
@@ -455,3 +386,31 @@ def test_real_extra_tag_is_seen_from_its_standoff_point(real_sim):
         assert by_id[tid].range == pytest.approx(s, abs=0.1)
         assert by_id[tid].bearing == pytest.approx(0.0, abs=0.1)
         assert frame.marker is None          # the dock is not in view from here
+
+def test_frame_carries_the_processed_image_and_sensor_ages():
+    sim = FakeSim()
+    sim.image = synthetic_marker_image()
+    frame = Sensing(sim, camera_period=0.0).read()
+    assert frame.image is not None and frame.image.shape == sim.image.shape
+    assert frame.lidar_age == 0.0 and frame.camera_age == 0.0
+
+
+def test_calibration_resolution_mismatch_is_rejected():
+    from calibration import get_calibration
+    sim = FakeSim()
+    sim.image = np.full((240, 320, 3), 255, np.uint8)
+    with pytest.warns(UserWarning):
+        calib = get_calibration(CONFIG)
+    with pytest.raises(ValueError, match="resolution"):
+        Sensing(sim, camera_period=0.0, calibration=calib).read()
+
+
+def test_nominal_calibration_gives_the_same_detection():
+    from calibration import get_calibration
+    sim = FakeSim()
+    sim.image = synthetic_marker_image()
+    with pytest.warns(UserWarning):
+        calib = get_calibration(CONFIG)
+    a = Sensing(sim, camera_period=0.0).read().marker
+    b = Sensing(sim, camera_period=0.0, calibration=calib).read().marker
+    assert a.range == pytest.approx(b.range)

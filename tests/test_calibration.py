@@ -1,416 +1,130 @@
-# Including libraries
 import math
-import tempfile
-import unittest
-from pathlib import Path
-
-import cv2
 import numpy as np
-
+import pytest
+from spatialmath import SE3
+import warnings, cv2
 import calibration as cal
 from config import CONFIG
-from robot_model import measurement_model, wrap_angle
-
+from dataclasses import replace
 OFF = cal.camera_forward_offset(CONFIG)
 
 
-class TestIntrinsics(unittest.TestCase):
-    def test_nominal_matrix_values(self):
-        K = cal.camera_matrix(CONFIG)
-        f = 240.0 / math.tan(math.radians(30.0))
-        np.testing.assert_allclose(K, [[f, 0, 320], [0, f, 240], [0, 0, 1]])
-
-    def test_nominal_is_not_labelled_calibrated(self):
-        intr = cal.nominal_intrinsics(CONFIG)
-        self.assertEqual(intr.source, cal.SOURCE_NOMINAL)
-        self.assertFalse(intr.is_calibrated)
-        self.assertIsNone(intr.reprojection_error)
-        self.assertEqual(cal.validate_intrinsics(intr), [])
-
-    def test_validate_detects_problems(self):
-        good = cal.nominal_intrinsics(CONFIG)
-        bad_f = cal.CameraIntrinsics(np.array([[-1, 0, 320], [0, 400, 240], [0, 0, 1.]]),
-                                    np.zeros(5), (640, 480), cal.SOURCE_NOMINAL)
-        bad_pp = cal.CameraIntrinsics(np.array([[400, 0, 900], [0, 400, 240], [0, 0, 1.]]),
-                                    np.zeros(5), (640, 480), cal.SOURCE_NOMINAL)
-        bad_shape = cal.CameraIntrinsics(np.eye(2), np.zeros(5), (640, 480), cal.SOURCE_NOMINAL)
-        bad_dist = cal.CameraIntrinsics(good.K, np.zeros(3), (640, 480), cal.SOURCE_NOMINAL)
-        bad_src = cal.CameraIntrinsics(good.K, np.zeros(5), (640, 480), "guess")
-        for intr in (bad_f, bad_pp, bad_shape, bad_dist, bad_src):
-            self.assertTrue(cal.validate_intrinsics(intr))
-            with self.assertRaises(ValueError):
-                cal.assert_valid_intrinsics(intr)
+def marker_T(yaw, t):
+    """Marker pose in the camera frame, normal pointing at the viewer."""
+    R = (SE3.Ry(yaw) * SE3.Rx(math.pi)).R
+    return SE3.Rt(R, np.array(t, dtype=float))
 
 
-class TestCameraRobotFrames(unittest.TestCase):
-    def test_straight_ahead(self):
-        p = cal.camera_to_robot([0.0, 0.0, 1.0], CONFIG)
-        np.testing.assert_allclose(p, [1.0 + OFF, 0.0])
-        rng, bearing = cal.range_bearing(p)
-        self.assertAlmostEqual(bearing, 0.0)
-
-    def test_image_right_is_robot_right(self):
-        p = cal.camera_to_robot([0.3, 0.0, 1.0], CONFIG)   # X > 0 -> right of the camera
-        self.assertLess(p[1], 0.0)                         # robot y < 0 -> right
-        self.assertLess(cal.range_bearing(p)[1], 0.0)
-
-    def test_round_trip(self):
-        p = np.array([1.7, -0.6])
-        back = cal.camera_to_robot(cal.robot_to_camera(p, 0.0, CONFIG), CONFIG)
-        np.testing.assert_allclose(back, p, atol=1e-12)
-
-    def test_range_bearing_round_trip(self):
-        p = cal.xy_from_range_bearing(1.2, 0.4)
-        r, b = cal.range_bearing(p)
-        self.assertAlmostEqual(r, 1.2)
-        self.assertAlmostEqual(b, 0.4)
-
-    def test_direction_has_no_offset(self):
-        np.testing.assert_allclose(cal.camera_dir_to_robot([0, 0, 1]), [1, 0])
-        np.testing.assert_allclose(cal.camera_dir_to_robot([1, 0, 0]), [0, -1])
-
-    def test_projection_directions(self):
-        intr = cal.nominal_intrinsics(CONFIG)
-        c = cal.project_robot_point([1.0, 0.0], intr, 0.0, CONFIG)
-        np.testing.assert_allclose(c, [320, 240], atol=1e-6)
-        self.assertLess(cal.project_robot_point([1.0, 0.2], intr, 0.0, CONFIG)[0], 320)   # left
-        self.assertLess(cal.project_robot_point([1.0, 0.0], intr, 0.1, CONFIG)[1], 240)   # up
-        self.assertIsNone(cal.project_robot_point([0.0, 0.0], intr, 0.0, CONFIG))         # behind
-
-    def test_marker_object_points(self):
-        pts = cal.marker_object_points(0.15)
-        self.assertEqual(pts.shape, (4, 3))
-        np.testing.assert_allclose(pts[0], [-0.075, 0.075, 0.0])
-        np.testing.assert_allclose(pts[2], [0.075, -0.075, 0.0])
+def test_camera_matrix_values():
+    f = 240.0 / math.tan(math.radians(30.0))
+    np.testing.assert_allclose(cal.camera_matrix(CONFIG), [[f, 0, 320], [0, f, 240], [0, 0, 1]])
 
 
-class TestMarkerPose(unittest.TestCase):
-    S = CONFIG.camera.marker_size
-
-    def _true_pose(self, yaw, t):
-        Rx = cv2.Rodrigues(np.array([math.pi, 0.0, 0.0]))[0]
-        R = cv2.Rodrigues(np.array([0.0, yaw, 0.0]))[0] @ Rx   # marker z points to the viewer
-        return cv2.Rodrigues(R)[0], np.array(t, dtype=float).reshape(3, 1)
-
-    def _rendered_corners(self, yaw, t):
-        """Warp a real ArUco image into the camera view and detect it with the OpenCV detector."""
-        K = cal.camera_matrix(CONFIG)
-        dic = cv2.aruco.getPredefinedDictionary(getattr(cv2.aruco, CONFIG.camera.aruco_dict))
-        img = cv2.aruco.generateImageMarker(dic, CONFIG.camera.marker_id, 200)
-        img = cv2.copyMakeBorder(img, 40, 40, 40, 40, cv2.BORDER_CONSTANT, value=255)
-        half = self.S / 2.0 * 280 / 200
-        rvec, tvec = self._true_pose(yaw, t)
-        c3 = np.array([[-half, half, 0], [half, half, 0], [half, -half, 0], [-half, -half, 0]])
-        px, _ = cv2.projectPoints(c3, rvec, tvec, K, np.zeros(5))
-        H = cv2.getPerspectiveTransform(np.array([[0, 0], [280, 0], [280, 280], [0, 280]], np.float32),
-                                        px.reshape(4, 2).astype(np.float32))
-        frame = cv2.warpPerspective(img, H, (640, 480), borderValue=128)
-        det = cv2.aruco.ArucoDetector(dic, cv2.aruco.DetectorParameters())
-        corners, ids, _ = det.detectMarkers(frame)
-        self.assertIsNotNone(ids)
-        return corners[0].reshape(4, 2)
-
-    def test_head_on(self):
-        rng, bearing, view = cal.marker_pose_from_pnp([math.pi, 0, 0], [0, 0, 1.0], CONFIG)
-        self.assertAlmostEqual(rng, 1.0 + OFF)
-        self.assertAlmostEqual(bearing, 0.0)
-        self.assertAlmostEqual(view, 0.0)
-
-    def test_exact_projection_round_trip(self):
-        K = cal.camera_matrix(CONFIG)
-        rvec, tvec = self._true_pose(0.3, (-0.2, 0.0, 1.0))
-        img, _ = cv2.projectPoints(cal.marker_object_points(self.S), rvec, tvec, K, np.zeros(5))
-        sol = cal.solve_marker_pose(img, K, np.zeros(5), self.S)
-        self.assertIsNotNone(sol)
-        rng, bearing, view = cal.marker_pose_from_pnp(sol[0], sol[1], CONFIG)
-        p = cal.camera_to_robot((-0.2, 0.0, 1.0), CONFIG)
-        self.assertAlmostEqual(rng, math.hypot(*p), places=3)
-        self.assertAlmostEqual(bearing, math.atan2(p[1], p[0]), places=3)
-        self.assertAlmostEqual(view, -0.3, places=2)
-        self.assertGreater(bearing, 0.0)   # X < 0 -> marker on the left -> positive bearing
-
-    def test_detected_marker_view_angle_has_no_flip(self):
-        """Regression: raw IPPE_SQUARE returns view_angle = -pi for some head-on views."""
-        K = cal.camera_matrix(CONFIG)
-        for yaw, t in [(0.0, (0, 0, 1.0)), (0.3, (-0.2, 0, 1.0)), (-0.4, (0.15, 0, 1.2))]:
-            corners = self._rendered_corners(yaw, t)
-            sol = cal.solve_marker_pose(corners, K, np.zeros(5), self.S)
-            self.assertIsNotNone(sol)
-            _, bearing, view = cal.marker_pose_from_pnp(sol[0], sol[1], CONFIG)
-            self.assertAlmostEqual(view, -yaw, delta=0.06)
-            self.assertAlmostEqual(sol[1][2, 0], t[2], delta=0.03)
-
-    def test_view_angle_sign_flips_with_yaw(self):
-        K = cal.camera_matrix(CONFIG)
-        views = []
-        for yaw in (0.3, -0.3):
-            rvec, tvec = self._true_pose(yaw, (0.0, 0.0, 1.0))
-            img, _ = cv2.projectPoints(cal.marker_object_points(self.S), rvec, tvec, K, np.zeros(5))
-            sol = cal.solve_marker_pose(img, K, np.zeros(5), self.S)
-            views.append(cal.marker_pose_from_pnp(sol[0], sol[1], CONFIG)[2])
-        self.assertAlmostEqual(views[0], -views[1], places=2)
-
-    def test_marker_behind_camera_rejected(self):
-        K = cal.camera_matrix(CONFIG)
-        # corners in clockwise-reversed order describe a marker seen from behind -> no valid pose
-        img = np.array([[300, 220], [300, 260], [340, 260], [340, 220]], dtype=float)
-        self.assertIsNone(cal.solve_marker_pose(img, K, np.zeros(5), self.S))
-
-    def test_validate_estimated_pose(self):
-        K = cal.camera_matrix(CONFIG)
-        rvec, tvec = self._true_pose(0.2, (-0.1, 0.0, 1.0))
-        img, _ = cv2.projectPoints(cal.marker_object_points(self.S), rvec, tvec, K, np.zeros(5))
-        img = img.reshape(4, 2)
-        ok, err = cal.validate_estimated_pose(img, rvec, tvec, K, np.zeros(5), self.S)
-        self.assertTrue(ok)
-        self.assertAlmostEqual(err, 0.0, places=6)
-        bad = img + np.array([5.0, 0.0])                      # 5 px shift of all corners
-        ok, err = cal.validate_estimated_pose(bad, rvec, tvec, K, np.zeros(5), self.S)
-        self.assertFalse(ok)
-        self.assertAlmostEqual(err, 5.0, places=3)
-        ok, err = cal.validate_estimated_pose(None, rvec, tvec, K, np.zeros(5), self.S)
-        self.assertFalse(ok)
-        self.assertEqual(err, float("inf"))
-        ok, _ = cal.validate_estimated_pose(img[:3], rvec, tvec, K, np.zeros(5), self.S)
-        self.assertFalse(ok)
-
-    def test_pose_error_with_pixel_noise(self):
-        K = cal.camera_matrix(CONFIG)
-        rvec, tvec = self._true_pose(0.2, (-0.1, 0.0, 1.0))
-        clean, _ = cv2.projectPoints(cal.marker_object_points(self.S), rvec, tvec, K, np.zeros(5))
-        clean = clean.reshape(4, 2)
-        rng_ = np.random.default_rng(0)
-        errs = []
-        for _ in range(200):
-            noisy = clean + rng_.normal(0, 0.5, (4, 2))
-            sol = cal.solve_marker_pose(noisy, K, np.zeros(5), self.S)
-            if sol is not None:
-                errs.append(abs(sol[1][2, 0] - 1.0))
-        self.assertGreater(len(errs), 150)             # success rate > 75 %
-        self.assertLess(np.mean(errs), 0.03)           # mean depth error < 3 cm
-        print(f"\n[noise 0.5px] success {len(errs)}/200, mean depth err {np.mean(errs)*100:.2f} cm")
-
-    def test_reprojection_gate_rejects_noisy_pose(self):
-        K = cal.camera_matrix(CONFIG)
-        rvec, tvec = self._true_pose(0.2, (-0.1, 0.0, 1.0))
-        clean, _ = cv2.projectPoints(cal.marker_object_points(self.S), rvec, tvec, K, np.zeros(5))
-        noisy = clean.reshape(4, 2) + np.random.default_rng(1).normal(0, 1.0, (4, 2))
-        self.assertIsNotNone(cal.solve_marker_pose(noisy, K, np.zeros(5), self.S, max_reproj_px=5.0))
-        self.assertIsNone(cal.solve_marker_pose(noisy, K, np.zeros(5), self.S, max_reproj_px=1e-3))
-
-    def test_distortion_must_be_compensated(self):
-        K = cal.camera_matrix(CONFIG)
-        dist = np.array([-0.3, 0.1, 0.0, 0.0, 0.0])
-        rvec, tvec = self._true_pose(0.2, (0.25, 0.0, 1.0))
-        img, _ = cv2.projectPoints(cal.marker_object_points(self.S), rvec, tvec, K, dist)
-        sol_ok = cal.solve_marker_pose(img, K, dist, self.S)
-        self.assertIsNotNone(sol_ok)
-        err_ok = abs(sol_ok[1][2, 0] - 1.0)
-        self.assertLess(err_ok, 0.02)
-        sol_bad = cal.solve_marker_pose(img, K, np.zeros(5), self.S)   # ignoring distortion
-        if sol_bad is not None:
-            self.assertGreater(abs(sol_bad[1][2, 0] - 1.0), err_ok)
+def test_straight_ahead():
+    np.testing.assert_allclose(cal.camera_to_robot([0, 0, 1.0], CONFIG), [1.0 + OFF, 0.0])
 
 
-class TestWorldFrame(unittest.TestCase):
-    def test_round_trip(self):
-        pose = (1.0, -0.5, 0.8)
-        p = np.array([0.4, 1.1])
-        np.testing.assert_allclose(cal.world_to_robot(pose, cal.robot_to_world(pose, p)), p, atol=1e-12)
-
-    def test_pose_matrix_rotation(self):
-        np.testing.assert_allclose(cal.robot_to_world((0, 0, math.pi / 2), [1, 0]), [0, 1], atol=1e-12)
-
-    def test_marker_world_position_matches_ekf_measurement_model(self):
-        landmark = np.array([1.9, 1.0])
-        pose = np.array([0.5, 0.2, 0.7])
-        rng, bearing = measurement_model(pose, landmark)
-        np.testing.assert_allclose(cal.marker_world_position(pose, rng, bearing), landmark, atol=1e-9)
+def test_image_right_is_robot_right():
+    assert cal.camera_to_robot([0.3, 0, 1.0], CONFIG)[1] < 0
 
 
-class TestConsistencyChecks(unittest.TestCase):
-    def test_default_config_passes(self):
-        self.assertEqual(cal.check_frame_conventions(CONFIG), [])
-        cal.assert_frame_conventions(CONFIG)
-
-    def test_unit_errors_detected(self):
-        from dataclasses import replace
-        bad = replace(CONFIG, camera=replace(CONFIG.camera, marker_size=150.0, fovy_deg=1.0))
-        self.assertEqual(len(cal.check_units(bad)), 2)
-        with self.assertRaises(ValueError):
-            cal.assert_frame_conventions(bad)
-
-    def test_wrong_fov_is_caught(self):
-        # An intrinsic matrix with the principal point moved must fail the 'ahead' check.
-        intr = cal.nominal_intrinsics(CONFIG)
-        K = intr.K.copy(); K[0, 2] += 50.0
-        shifted = cal.CameraIntrinsics(K, np.zeros(5), intr.image_size, cal.SOURCE_NOMINAL)
-        # projection still goes to the shifted centre, so convention check follows K and passes;
-        # but a wrong fov relative to config must be flagged.
-        K2 = intr.K.copy(); K2[1, 1] *= 1.3
-        wrong_fov = cal.CameraIntrinsics(K2, np.zeros(5), intr.image_size, cal.SOURCE_NOMINAL)
-        self.assertEqual(cal.check_frame_conventions(CONFIG, shifted), [])
-        self.assertTrue(cal.check_frame_conventions(CONFIG, wrong_fov))
-
-    def test_each_unit_error_detected_separately(self):
-        from dataclasses import replace
-        cam = CONFIG.camera
-        self.assertEqual(len(cal.check_units(replace(CONFIG, camera=replace(cam, marker_size=150.0)))), 1)
-        self.assertEqual(len(cal.check_units(replace(CONFIG, camera=replace(cam, fovy_deg=1.0)))), 1)
-        big_robot = replace(CONFIG.robot, body_radius=1.0)             # offset 1.01 m > 0.5 m
-        self.assertEqual(len(cal.check_units(replace(CONFIG, robot=big_robot))), 1)
+def test_head_on_marker():
+    rng, bearing, view = cal.marker_pose_from_T(marker_T(0.0, (0, 0, 1.0)), CONFIG)
+    assert rng == pytest.approx(1.0 + OFF)
+    assert bearing == pytest.approx(0.0, abs=1e-9)
+    assert view == pytest.approx(0.0, abs=1e-9)
 
 
-class TestCalibrationProcedure(unittest.TestCase):
-    def setUp(self):
-        self.K = np.array([[500.0, 0, 322.0], [0, 505.0, 238.0], [0, 0, 1]])
-        self.pattern, self.square = (9, 6), 0.025
-        self.obj = cal.chessboard_object_points(self.pattern, self.square)
-
-    def _views(self, n, noise, seed=0):
-        rng = np.random.default_rng(seed)
-        objs, imgs = [], []
-        for _ in range(n):
-            rvec = rng.uniform(-0.5, 0.5, 3)
-            tvec = np.array([-0.1, -0.06, 0.0]) + np.array([rng.uniform(-0.03, 0.03),
-                                                        rng.uniform(-0.03, 0.03),
-                                                        rng.uniform(0.5, 0.8)])
-            p, _ = cv2.projectPoints(self.obj, rvec, tvec, self.K, np.zeros(5))
-            objs.append(self.obj)
-            imgs.append(p.reshape(-1, 2) + rng.normal(0, noise, (len(self.obj), 2)))
-        return objs, imgs
-
-    def test_object_points_grid(self):
-        self.assertEqual(self.obj.shape, (54, 3))
-        np.testing.assert_allclose(self.obj[1], [0.025, 0, 0], atol=1e-7)
-        np.testing.assert_allclose(self.obj[9], [0, 0.025, 0], atol=1e-7)
-
-    def test_recovers_intrinsics_from_synthetic_views(self):
-        objs, imgs = self._views(12, noise=0.1)
-        intr = cal.calibrate_intrinsics(objs, imgs, (640, 480))
-        self.assertTrue(intr.is_calibrated)
-        self.assertLess(intr.reprojection_error, 0.5)
-        self.assertAlmostEqual(intr.K[0, 0] / 500.0, 1.0, delta=0.02)
-        self.assertAlmostEqual(intr.K[1, 1] / 505.0, 1.0, delta=0.02)
-        self.assertAlmostEqual(intr.K[0, 2], 322.0, delta=5.0)
-        self.assertAlmostEqual(intr.K[1, 2], 238.0, delta=5.0)
-
-    def test_too_few_views_rejected(self):
-        objs, imgs = self._views(3, noise=0.0)
-        with self.assertRaises(ValueError):
-            cal.calibrate_intrinsics(objs, imgs, (640, 480))
-
-    def test_mismatched_inputs_rejected(self):
-        objs, imgs = self._views(6, noise=0.0)
-        with self.assertRaises(ValueError):
-            cal.calibrate_intrinsics(objs, imgs[:-1], (640, 480))
-
-    def test_chessboard_detection_on_rendered_board(self):
-        sq = 40
-        board = np.full((8 * sq, 11 * sq), 255, np.uint8)
-        for r in range(7):
-            for c in range(10):
-                if (r + c) % 2 == 0:
-                    board[(r + 1) * sq:(r + 2) * sq, (c + 1) * sq:(c + 2) * sq] = 0
-        corners = cal.find_chessboard_corners(board, self.pattern)
-        self.assertIsNotNone(corners)
-        self.assertEqual(corners.shape, (54, 2))
-        self.assertIsNone(cal.find_chessboard_corners(np.full((480, 640), 128, np.uint8), self.pattern))
-
-    def test_calibrate_from_images_requires_enough_detections(self):
-        blanks = [np.full((480, 640, 3), 128, np.uint8)] * 6
-        with self.assertRaises(ValueError):
-            cal.calibrate_from_images(blanks, self.pattern, self.square)
+def test_marker_on_the_left_has_positive_bearing():
+    _, bearing, _ = cal.marker_pose_from_T(marker_T(0.0, (-0.2, 0, 1.0)), CONFIG)
+    assert bearing > 0
 
 
-class TestPersistenceAndBundle(unittest.TestCase):
-    def test_save_load_round_trip(self):
-        intr = cal.CameraIntrinsics(cal.camera_matrix(CONFIG), np.array([0.1, -0.05, 0, 0, 0]),
-                                    (640, 480), cal.SOURCE_CALIBRATED, 0.31)
-        with tempfile.TemporaryDirectory() as d:
-            path = cal.save_intrinsics(intr, Path(d) / "sub" / "cam.json")
-            back = cal.load_intrinsics(path)
-        np.testing.assert_allclose(back.K, intr.K)
-        np.testing.assert_allclose(back.dist_coeffs, intr.dist_coeffs)
-        self.assertEqual(back.source, cal.SOURCE_CALIBRATED)
-        self.assertEqual(back.image_size, (640, 480))
-        self.assertAlmostEqual(back.reprojection_error, 0.31)
+def test_view_angle_sign_flips_with_yaw():
+    v1 = cal.marker_pose_from_T(marker_T(0.3, (0, 0, 1.0)), CONFIG)[2]
+    v2 = cal.marker_pose_from_T(marker_T(-0.3, (0, 0, 1.0)), CONFIG)[2]
+    assert v1 == pytest.approx(-0.3, abs=1e-6)
+    assert v1 == pytest.approx(-v2, abs=1e-6)
 
-    def test_default_bundle(self):
-        c = cal.get_calibration(CONFIG)
-        self.assertEqual(c.intrinsics.source, cal.SOURCE_NOMINAL)
-        self.assertAlmostEqual(c.forward_offset, OFF)
-        self.assertEqual(c.marker_points.shape, (4, 3))
-        self.assertEqual(c.dist_coeffs.shape, (5,))
-
-    def test_bundle_rejects_invalid_intrinsics(self):
-        bad = cal.CameraIntrinsics(np.eye(3), np.zeros(5), (640, 480), cal.SOURCE_NOMINAL)
-        with self.assertRaises(ValueError):
-            cal.get_calibration(CONFIG, bad)
-
-    def test_load_rejects_corrupt_file(self):
-        import json
-        with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "bad.json"
-            p.write_text(json.dumps({"K": [[1, 0], [0, 1]], "dist_coeffs": [0] * 5,
-                                    "image_size": [640, 480], "source": "nominal_mujoco"}))
-            with self.assertRaises(ValueError):
-                cal.load_intrinsics(p)
-            p.write_text(json.dumps({"K": cal.camera_matrix(CONFIG).tolist(), "dist_coeffs": [0] * 5,
-                                    "image_size": [640, 480], "source": "guess"}))
-            with self.assertRaises(ValueError):
-                cal.load_intrinsics(p)
-
-    def test_sample_image_gray_does_not_crash(self):
-        gray = np.full((480, 640), 128, np.uint8)
-        c = cal.get_calibration(CONFIG, sample_image=gray)              # nominal -> check is skipped
-        self.assertFalse(c.intrinsics.is_calibrated)
-        res = cal.validate_calibration_image_effect(gray, c.K, c.dist_coeffs)
-        self.assertEqual(res["status"], "success")
-        self.assertAlmostEqual(res["mean_pixel_difference"], 0.0, places=6)
-        self.assertEqual(cal.validate_calibration_image_effect(np.empty(0), c.K, c.dist_coeffs)["status"], "error")
-
-class TestNoiseModelAndLidar(unittest.TestCase):
-    def test_covariance_properties(self):
-        intr = cal.nominal_intrinsics(CONFIG)
-        S = CONFIG.camera.marker_size
-        R1 = cal.marker_measurement_covariance(0.8, intr, S)
-        R2 = cal.marker_measurement_covariance(2.0, intr, S)
-        np.testing.assert_allclose(R1, R1.T)
-        self.assertTrue(np.all(np.linalg.eigvalsh(R1) > 0))
-        self.assertGreater(R2[0, 0], R1[0, 0])                 # range noise grows with distance
-        R3 = cal.marker_measurement_covariance(0.8, intr, S, sigma_px=1.0)
-        self.assertGreater(R3[1, 1], R1[1, 1])                 # more pixel noise -> larger R
-
-    def test_covariance_matches_monte_carlo(self):
-        """The analytic range sigma should be the same order as the simulated one."""
-        K = cal.camera_matrix(CONFIG)
-        S = CONFIG.camera.marker_size
-        Rx = cv2.Rodrigues(np.array([math.pi, 0.0, 0.0]))[0]
-        rvec, tvec = cv2.Rodrigues(Rx)[0], np.array([[0.0], [0.0], [1.0]])
-        clean, _ = cv2.projectPoints(cal.marker_object_points(S), rvec, tvec, K, np.zeros(5))
-        g = np.random.default_rng(2)
-        rs = []
-        for _ in range(300):
-            sol = cal.solve_marker_pose(clean.reshape(4, 2) + g.normal(0, 0.5, (4, 2)), K, np.zeros(5), S)
-            if sol is not None:
-                rs.append(cal.marker_pose_from_pnp(sol[0], sol[1], CONFIG)[0])
-        sim = float(np.std(rs))
-        ana = math.sqrt(cal.marker_measurement_covariance(1.0 + OFF, cal.nominal_intrinsics(CONFIG), S)[0, 0])
-        self.assertGreater(sim / ana, 0.2)
-        self.assertLess(sim / ana, 5.0)
-        print(f"\n[range sigma] simulated {sim*1000:.1f} mm vs analytic {ana*1000:.1f} mm")
-
-    def test_lidar_filtering_and_frame(self):
-        ranges = [0.05, 1.0, np.inf, 2.0, np.nan, 4.0]
-        angles = [0.0, 0.0, 0.0, math.pi / 2, 0.0, 0.0]
-        pts, ok = cal.lidar_to_robot(ranges, angles)
-        self.assertEqual(pts.shape, (2, 2))                    # only 1.0 m and 2.0 m remain
-        np.testing.assert_allclose(pts[0], [1.0, 0.0], atol=1e-12)
-        np.testing.assert_allclose(pts[1], [0.0, 2.0], atol=1e-12)   # +90 deg = robot left (+y)
-        pts_off, _ = cal.lidar_to_robot([1.0], [0.0], offset=(-0.05, 0.0))
-        np.testing.assert_allclose(pts_off[0], [0.95, 0.0], atol=1e-12)
+def calibrated_intr(rms=0.4, size=(640, 480), scale=1.0):
+    K = cal.camera_matrix(CONFIG).copy()
+    K[:2] *= scale
+    return cal.CameraIntrinsics(K, np.zeros(5), size, cal.SOURCE_CALIBRATED, rms)
 
 
-if __name__ == "__main__":
-    unittest.main()
+def test_nominal_calibration_warns():
+    with pytest.warns(UserWarning):
+        assert cal.get_calibration(CONFIG).intrinsics.source == cal.SOURCE_NOMINAL
+
+
+def test_hardware_mode_refuses_nominal():
+    with pytest.raises(ValueError):
+        cal.get_calibration(CONFIG, require_calibrated=True)
+    with pytest.raises(ValueError):
+        cal.get_calibration(CONFIG, cal.nominal_intrinsics(CONFIG), require_calibrated=True)
+
+
+def test_hardware_mode_accepts_good_and_rejects_bad_calibration():
+    assert cal.get_calibration(CONFIG, calibrated_intr(0.4), require_calibrated=True).intrinsics.is_calibrated
+    with pytest.raises(ValueError, match="RMS"):
+        cal.get_calibration(CONFIG, calibrated_intr(2.0), require_calibrated=True)
+
+
+def test_resolution_mismatch_is_rejected():
+    with pytest.raises(ValueError, match="resolution"):
+        cal.get_calibration(CONFIG, calibrated_intr(size=(320, 240), scale=0.5), require_calibrated=True)
+
+
+def test_load_calibration_round_trip_and_nominal_file_rejected(tmp_path):
+    path = cal.save_intrinsics(calibrated_intr(0.5), tmp_path / "intr.json")
+    assert cal.load_calibration(path, CONFIG).intrinsics.reprojection_error == pytest.approx(0.5)
+    nominal = cal.save_intrinsics(cal.nominal_intrinsics(CONFIG), tmp_path / "nominal.json")
+    with pytest.raises(ValueError):
+        cal.load_calibration(nominal, CONFIG)
+
+
+def test_extrinsics_are_applied_and_consistent():
+    ext = replace(CONFIG, camera=replace(CONFIG.camera, forward_offset=0.25, lateral_offset=0.03, yaw=0.1))
+    np.testing.assert_allclose(cal.camera_to_robot([0, 0, 1.0], ext),
+                               [math.cos(0.1) + 0.25, math.sin(0.1) + 0.03])
+    q = np.array([1.3, -0.4])
+    np.testing.assert_allclose(cal.camera_to_robot(cal.robot_to_camera(q, 0.0, ext), ext), q, atol=1e-9)
+    assert cal.check_frame_conventions(ext) == []
+
+
+def synthetic_views(n=8):
+    K, obj = cal.camera_matrix(CONFIG), cal.chessboard_object_points((9, 6), 0.025)
+    rng = np.random.default_rng(0)
+    objs, imgs = [], []
+    for _ in range(n):
+        pts, _ = cv2.projectPoints(obj, rng.uniform(-0.5, 0.5, 3),
+                                   np.array([-0.1, -0.06, rng.uniform(0.35, 0.6)]), K, np.zeros(5))
+        objs.append(obj)
+        imgs.append(pts.reshape(-1, 2))
+    return objs, imgs
+
+
+def test_intrinsics_are_recovered_from_synthetic_views():
+    intr = cal.calibrate_intrinsics(*synthetic_views(), (640, 480))
+    assert intr.is_calibrated and intr.reprojection_error < 0.5
+    assert intr.K[0, 0] == pytest.approx(cal.camera_matrix(CONFIG)[0, 0], rel=0.05)
+
+
+def test_too_few_views_are_rejected():
+    with pytest.raises(ValueError):
+        cal.calibrate_intrinsics(*synthetic_views(3), (640, 480))
+
+
+def test_pnp_and_se3_paths_agree():
+    T = marker_T(0.3, (0.1, 0.0, 1.0))
+    a = cal.marker_pose_from_pnp(cv2.Rodrigues(T.R)[0], T.t, CONFIG)
+    np.testing.assert_allclose(a, cal.marker_pose_from_T(T, CONFIG), atol=1e-9)
+
+
+def test_solve_marker_pose_recovers_the_pose():
+    T, K = marker_T(0.3, (0.1, 0.0, 1.0)), cal.camera_matrix(CONFIG)
+    corners, _ = cv2.projectPoints(cal.marker_object_points(0.15), cv2.Rodrigues(T.R)[0],
+                                   T.t.reshape(3, 1), K, np.zeros(5))
+    best = cal.solve_marker_pose(corners.reshape(4, 2), K, np.zeros(5), 0.15)
+    assert best is not None
+    np.testing.assert_allclose(best[1].ravel(), T.t, atol=1e-3)

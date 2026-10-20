@@ -51,16 +51,10 @@ class TagRecovery:
     def finished(self) -> bool:
         return self.phase in (RecoveryPhase.DONE, RecoveryPhase.FAILED)
 
-    # Begin recovery: first look around from the current spot, then visit the tags one by one.
+    # Begin recovery: first look around from the current spot (full turn), then visit the tags one by one.
     def start(self, x_est=None) -> None:
         self.reset()
-        self._final_spin = False
-        if not self.available:
-            self.phase = RecoveryPhase.FAILED
-        elif self.dock is not None:
-            self._start_map_follow()
-        else:
-            self._start_goto(np.asarray(x_est, dtype=float))
+        self.phase = RecoveryPhase.SPIN if self.available else RecoveryPhase.FAILED
 
     # Point in front of the tag (along its normal) from where the camera can see it
     def standoff_point(self, tag_id: int) -> np.ndarray:
@@ -102,29 +96,22 @@ class TagRecovery:
             self.phase = RecoveryPhase.DONE
             return 0.0, 0.0
         x = np.asarray(x_est, dtype=float)
-        omega = self.cfg.tags.spin_omega
 
         if self.phase is RecoveryPhase.SPIN:
             self._spun += abs(dtheta)
-            if self._spun < math.pi:                     # quay nửa vòng thôi
-                return 0.0, omega
-            if self._final_spin:                         # spin cuối cùng cũng không thấy: bỏ cuộc
-                self.phase = RecoveryPhase.FAILED
+            if self._spun < 2.0 * math.pi:
+                return 0.0, self.cfg.tags.spin_omega
+            self._start_goto(x)                        # full turn without a tag: next tag, or follow the map
+            if self.phase is RecoveryPhase.FAILED:
                 return 0.0, 0.0
-        self._start_goto(x)
-        if self.phase is RecoveryPhase.FAILED:
-            return 0.0, 0.0
 
         cmd = self._nav.update(x, scan)
-        if cmd.finished:
-            if self.phase is RecoveryPhase.MAP_GOTO:
-                self.arrived_by_map = True
-                self.phase = RecoveryPhase.DONE
-                return 0.0, 0.0
-            self._start_goto(x)                          # hết tag thì tự sang map-follow
-            if self.phase is RecoveryPhase.FAILED:
-                self._final_spin = True
-                self._spun = 0.0
-                self.phase = RecoveryPhase.SPIN          # spin là lựa chọn cuối
-                return 0.0, omega
-        return cmd.v, cmd.w
+        if not cmd.finished:
+            return cmd.v, cmd.w
+        if self.phase is RecoveryPhase.MAP_GOTO:       # reached the dock approach point
+            self.arrived_by_map = True
+            self.phase = RecoveryPhase.DONE
+            return 0.0, 0.0
+        self.phase = RecoveryPhase.SPIN                # reached a tag stand-off: look around again
+        self._spun = 0.0
+        return 0.0, self.cfg.tags.spin_omega

@@ -36,14 +36,14 @@ import queue
 import cv2
 import numpy as np
 from matplotlib.figure import Figure
-from matplotlib.patches import Rectangle
+from matplotlib.patches import Circle, Rectangle
 
 from config import CONFIG, RESULTS_DIR, Config
 
 
-def get_rgb(sim: Any) -> np.ndarray:
-    """Simulation.read_camera() -> RGB uint8 HxWx3 copy."""
-    rgb = np.asarray(sim.read_camera())
+def as_rgb(image: Any) -> np.ndarray:
+    """Validate a camera image (RGB uint8 HxWx3) and return a copy."""
+    rgb = np.asarray(image)
     if rgb.ndim != 3 or rgb.shape[2] != 3:
         raise ValueError("Camera must return an HxWx3 RGB image")
     if rgb.dtype != np.uint8:
@@ -86,14 +86,14 @@ class LiveCameraView:
         self._proc.start()
 
     # NEW: `markers` = every marker accepted in the latest frame (dock + extra tags)
-    def update(self, t: float, sim: Any, mode: str = "", marker: Any = None,
-               markers: Any = ()) -> None:
+    def update(self, t: float, image: Any, mode: str = "", marker: Any = None,
+            markers: Any = ()) -> None:
         if not self.enabled or t - self._last_t < self.period - 1e-9:
             return
         self._last_t = t
         if self._proc is None:
             self._start()
-        bgr = cv2.cvtColor(get_rgb(sim), cv2.COLOR_RGB2BGR)
+        bgr = cv2.cvtColor(as_rgb(image), cv2.COLOR_RGB2BGR)
         if self.scale != 1.0:
             bgr = cv2.resize(bgr, None, fx=self.scale, fy=self.scale)
         # NEW: show the ids of every visible marker, not only the dock
@@ -168,16 +168,23 @@ class RouteVisualizer:
         self._target_caption = ""
         self._learned_tags: dict = {}           # NEW: {id: (x, y)} learned during SURVEY (estimated)
         self.outputs: dict[str, Path] = {}
+        self._last_image: np.ndarray | None = None   # latest image the robot processed
 
     # ------------------------------------------------------------------ capture
-    def start(self, sim: Any) -> None:
-        """Call right after sim.reset(): stores the starting-point image."""
-        self.reset()
-        self._start_image = get_rgb(sim)
+    def set_world(self, world_cfg: Config, obstacles) -> None:
+        """Real world (moved dock, real obstacles). EVALUATION drawing only, never used for control."""
+        self.eval_cfg = world_cfg
+        self.eval_obstacles = list(obstacles)
 
-    def capture_target(self, sim: Any, *, label: str = "Destination view") -> None:
-        """Store the target image (once). Also callable from main.py when DOCKED."""
-        self._target_image = get_rgb(sim)
+    def start(self, sim: Any = None) -> None:
+        """Call right after sim.reset(). The start image is taken from the first processed camera frame."""
+        self.reset()
+
+    def capture_target(self, sim: Any = None, *, label: str = "Destination view") -> None:
+        """Store the target image (once), from the latest processed camera frame."""
+        if self._last_image is None:
+            return
+        self._target_image = self._last_image.copy()
         self._target_confirmed = True
         self._target_caption = label
 
@@ -187,12 +194,12 @@ class RouteVisualizer:
         self._learned_tags = {int(i): (float(p[0]), float(p[1])) for i, (p, _) in table.items()}
 
     def record(self, t: float, pose_est: Any, lidar: Any,
-               mode: str, marker: Any = None, sim: Any = None, markers: Any = ()) -> None:
+               mode: str, marker: Any = None, sim: Any = None, markers: Any = (),
+               frame: Any = None) -> None:
         """Call once per control step, after the EKF update.
 
-        pose_est is [x, y, theta] from the EKF, NOT ground truth.
-        lidar is a sensing.LidarScan; marker is the dock MarkerMeasurement or None;
-        markers = every accepted marker of the frame (dock + extra tags), display only.
+        pose_est is [x, y, theta] from the EKF, NOT ground truth. Images come from `frame.image`,
+        so the visualizer never touches the simulator (no extra random draws, no side effects).
         """
         t = float(t)
         pose = np.asarray(pose_est, dtype=float)
@@ -224,16 +231,23 @@ class RouteVisualizer:
                 self._lidar_batches.append(points)
                 self._point_count += len(points)
 
+        image = None if frame is None else getattr(frame, "image", None)
+        if image is None:
+            return
+        self._last_image = image
+        has_content = bool(np.any(image))                        # a dropped frame is all zeros
+        if self._start_image is None and has_content:
+            self._start_image = np.array(image, copy=True)
+
         # Target snapshot: exactly once, when the marker is near and roughly centred
-        if (sim is not None and not self._target_confirmed and marker is not None
+        if (has_content and not self._target_confirmed and marker is not None
                 and math.isfinite(float(marker.range)) and math.isfinite(float(marker.bearing))
                 and float(marker.range) <= self.target_capture_range
                 and abs(float(marker.bearing)) <= self.target_max_bearing):
-            self.capture_target(sim, label="ArUco marker / destination")
+            self.capture_target(label="ArUco marker / destination")
 
         # Live camera window (display only)
-        if sim is not None:
-            self.live.update(t, sim, mode, marker, markers)
+        self.live.update(t, image, mode, marker, markers)
 
     # ------------------------------------------------------------------- output
     @staticmethod
@@ -244,7 +258,7 @@ class RouteVisualizer:
             raise OSError(f"Could not write camera image: {path}")
 
     def finish(self, sim: Any | None = None, *, success: bool = False, reason: str = "",
-               sim_time: float | None = None) -> dict[str, Path]:
+               sim_time: float | None = None, extra: dict | None = None) -> dict[str, Path]:
         """Write JPEG snapshots, trajectory CSV, summary PNG and JSON. No video."""
         self.live.close()
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -255,9 +269,9 @@ class RouteVisualizer:
             self._save_rgb(p, self._start_image)
             self.outputs["start_camera"] = p
 
-        if self._target_image is None and sim is not None:
+        if self._target_image is None and self._last_image is not None:
             # Do not pretend a camera view proves the target was located.
-            self._target_image = get_rgb(sim)
+            self._target_image = self._last_image.copy()
             self._target_caption = "Final view (target NOT confirmed)"
 
         if self._target_image is not None:
@@ -286,13 +300,16 @@ class RouteVisualizer:
             "camera_target_label": self._target_caption,
             "estimated_path_samples": len(self._routes),
             "lidar_map_points": self._point_count,
-            "learned_tag_ids": sorted(self._learned_tags),      # NEW
+            "learned_tag_ids": sorted(self._learned_tags),
             "method": "EKF trajectory + LiDAR projected with estimated pose; not SLAM",
-            "ground_truth_used": False,
+            "ground_truth_used_for_control": False,
+            "ground_truth_drawn_for_evaluation": True,   # true dock / obstacles are drawn as reference
             "video_recorded": False,
         }
+        if extra:
+            metadata.update(extra)
         metadata_path = self.output_dir / "summary.json"
-        metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+        metadata_path.write_text(json.dumps(metadata, indent=2, default=str), encoding="utf-8")
         self.outputs["summary"] = metadata_path
         return self.outputs.copy()
 
@@ -322,24 +339,23 @@ class RouteVisualizer:
                              head_width=0.045, head_length=0.06, color="#1674b8",
                              alpha=0.65, length_includes_head=True, zorder=3)
 
-        # Configured scene objects are context, not map-derived observations.
+        # Real world (evaluation only): moved dock, real obstacles, extra tags
         hx, hy = self.cfg.env.room_half_size
         ax_map.add_patch(Rectangle((-hx, -hy), 2 * hx, 2 * hy, fill=False, edgecolor="#777777",
                                    lw=1.1, linestyle=":", label="Configured room bounds"))
-        ax_map.scatter([w[0] for w in self.cfg.env.waypoints],
-                       [w[1] for w in self.cfg.env.waypoints],
-                       s=27, marker="^", c="#858585", label="Configured waypoints")
-        dock_x, dock_y, _ = self.cfg.env.dock_pose
+        world = self.eval_cfg
+        for ox, oy, r in self.eval_obstacles:
+            ax_map.add_patch(Circle((ox, oy), r, color="tab:red", alpha=0.35))
+        dock_x, dock_y, _ = world.env.dock_pose
         ax_map.scatter([dock_x], [dock_y], marker="*", s=200, c="#ba559b",
-                       label="Configured ArUco target", zorder=6)
+                       label="ArUco target (true, evaluation)", zorder=6)
 
-        # NEW: extra tags from the config (context) and the tags learned by the SURVEY (estimated)
-        dock_id = int(self.cfg.camera.marker_id)
-        tags_cfg = {i: p for i, p in self.cfg.tag_table().items() if i != dock_id}
+        dock_id = int(world.camera.marker_id)
+        tags_cfg = {i: p for i, p in world.tag_table().items() if i != dock_id}
         if tags_cfg:
             ax_map.scatter([p[0] for p in tags_cfg.values()], [p[1] for p in tags_cfg.values()],
                            s=45, marker="s", facecolors="none", edgecolors="#ba559b",
-                           label="Configured tags")
+                           label="Tags (true, evaluation)")
         if self._learned_tags:
             ax_map.scatter([p[0] for p in self._learned_tags.values()],
                            [p[1] for p in self._learned_tags.values()],

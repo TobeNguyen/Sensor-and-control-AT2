@@ -11,7 +11,7 @@ import numpy as np
 from config import CONFIG, Config
 from calibration import camera_forward_offset
 from controller import limit_command
-from robot_model import default_landmark, measurement_model, view_angle_model, wrap_angle
+from robot_model import measurement_model, view_angle_model, wrap_angle
 from sensing import MarkerMeasurement, OdometryIncrement, Sensing
 
 DOCK_MAX_SPEED = 0.12        # [m/s]
@@ -28,7 +28,7 @@ ALIGN_TIMEOUT = 12.0         # [s] give up if close but never aligned
 RETREAT_DELAY = 1.0          # [s] arrived but off the marker axis this long -> back off and re-approach
 RETREAT_EXTRA = 0.15         # [m] back off until this much beyond the arrival range (short: no LiDAR behind the robot)
 RETREAT_SPEED = -0.08        # [m/s] reverse speed while backing off
-MAX_DOCK_TIME = 90.0         # [s] total time limit for docking
+MAX_DOCK_TIME = 40.0         # [s] total time limit for docking
 MARKER_FACE_OFFSET = 0.005   # [m] half thickness of the marker panel (see simulation.py)
 VISIBILITY_MARGIN = 1.2      # marker must fit in the image with this safety factor
 AXIS_SLOW = 0.6              # [rad] forward speed is reduced as |axis| grows towards this
@@ -111,7 +111,7 @@ def docking_command(rng: float, bearing: float, view_angle: float,
     speed *= float(np.clip(1.0 - abs(bearing) / BETA_MAX, 0.0, 1.0))   # turn first if off-centre
     axis = float(wrap_angle(bearing - view_angle))
     speed *= float(np.clip(1.0 - abs(axis) / AXIS_SLOW, 0.3, 1.0))     # slow down while off the marker axis
-    w = (K_BEARING + K_AXIS) * bearing - K_AXIS * view_angle
+    w = (K_BEARING + K_AXIS) * bearing - K_AXIS * float(np.clip(view_angle, -0.5, 0.5))
     if abs(bearing) >= BETA_MAX:                                        # not moving: just turn towards the marker
         w = (K_BEARING + K_AXIS) * bearing                              # (the view term could cancel it: dead-lock)
     w = float(np.clip(w, -DOCK_MAX_TURN, DOCK_MAX_TURN))
@@ -325,7 +325,7 @@ class DockingController:
 if __name__ == "__main__":
     from simulation import Simulation
     with Simulation() as sim:
-        wx, wy = CONFIG.env.waypoints[-1]
+        wx, wy = CONFIG.env.dock_pose[0] - 1.0, CONFIG.env.dock_pose[1]
         start = (wx, wy, math.pi / 2)          # where navigation hands over
         sim.reset(start)
         sensing, dock = Sensing(sim), DockingController()

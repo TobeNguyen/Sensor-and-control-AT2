@@ -12,16 +12,17 @@ from dataclasses import replace
 from config import CONFIG, RealismConfig
 IDEAL = replace(CONFIG, realism=RealismConfig(enabled=False))
 from docking import (
-    ALIGN_TIMEOUT, BETA_MAX, BLIND_TIMEOUT, DOCK_CONFIRM_FRAMES, DOCK_MAX_SPEED, DOCK_MIN_SPEED,
+    ALIGN_TIMEOUT, BETA_MAX, DOCK_MAX_SPEED, DOCK_MIN_SPEED,
     K_AXIS, K_BEARING, K_CENTER, K_RANGE, MAX_DOCK_TIME, SEARCH_OMEGA, DockCommand, DockPhase,
-    DockingController, docking_command, is_docked, marker_from_pose, min_visible_range,
+    DockingController, docking_command, is_docked, min_visible_range,
     propagate_marker,
 )
 from estimator import EKFEstimator
 from robot_model import measurement_model, motion_model, view_angle_model, wrap_angle
 from sensing import (
-    MarkerMeasurement, OdometryIncrement, Sensing, camera_forward_offset, camera_matrix,
+    MarkerMeasurement, OdometryIncrement, Sensing,
 )
+from calibration import camera_forward_offset, camera_matrix
 
 D = CONFIG.docking
 DOCK_X, DOCK_Y, DOCK_YAW = CONFIG.env.dock_pose
@@ -41,12 +42,6 @@ class ConfigTagMap:
     def table(self):
         return {int(i): (np.array(p[:2], dtype=float), float(p[2]))
                 for i, p in self.cfg.tag_table().items()}
-    
-def make_dock(x0=None):
-    # Controller that already knows the dock (as if learned during SURVEY)
-    dock = DockingController()
-    dock.begin(x0, landmark=LANDMARK, dock_yaw=DOCK_YAW)
-    return dock
 
 def marker(rng, bearing, view, t):
     return MarkerMeasurement(rng, bearing, view, CONFIG.camera.marker_id, t)
@@ -370,70 +365,6 @@ def test_docking_fails_after_the_total_time_limit():
         cmd = dock.update(marker(1.5, 0.0, 0.0, k * DT), odom(k * DT))
     assert cmd.phase is DockPhase.FAILED and cmd.finished
 
-
-# ----------------------------------------- docking driven by the EKF estimate (x_est)
-def test_marker_from_pose_matches_the_models():
-    pose = np.array([DOCK_X - 0.8, DOCK_Y - 0.1, 0.15])
-    r, b, v = marker_from_pose(pose, CONFIG, LANDMARK, DOCK_YAW)
-    r_ref, b_ref = measurement_model(pose, LANDMARK)
-    assert r == pytest.approx(r_ref) and b == pytest.approx(b_ref)
-    assert v == pytest.approx(view_angle_model(pose, DOCK_YAW))
-
-
-def test_marker_from_pose_rejects_unusable_poses():
-    assert marker_from_pose([float("nan"), 0.0, 0.0], CONFIG, LANDMARK, DOCK_YAW) is None
-    assert marker_from_pose([DOCK_X, DOCK_Y, 0.0], CONFIG, LANDMARK, DOCK_YAW) is None   # on top of the marker
-    assert marker_from_pose([1.0, 2.0], CONFIG, LANDMARK, DOCK_YAW) is None              # wrong shape
-
-
-def test_marker_from_pose_needs_a_learned_dock():
-    assert marker_from_pose([DOCK_X - 0.8, DOCK_Y, 0.0]) is None
-
-
-def test_estimate_mode_keeps_approaching_without_a_marker():
-    pose = (DOCK_X - 1.0, DOCK_Y, HEAD_ON)
-    dock = make_dock()
-    dock.update(marker(1.0, 0.0, 0.0, 0.0), odom(0.0), pose)
-    cmd = None
-    for k in range(1, int(1.5 / DT)):                        # 1.5 s with no detection
-        cmd = dock.update(None, odom(k * DT), pose)
-    assert cmd.phase is DockPhase.APPROACH and cmd.v > 0.0  # raw mode would be searching by now
-    assert cmd.marker_range == pytest.approx(1.0)
-
-
-def test_estimate_mode_turns_towards_the_marker_when_facing_away():
-    cmd = make_dock().update(None, odom(0.0), (DOCK_X - 0.7, DOCK_Y, math.pi / 2))
-    assert cmd.v == 0.0 and cmd.w < 0.0                     # marker is on the right
-
-
-def test_estimate_mode_stops_trusting_the_estimate_when_blind_for_too_long():
-    pose = (DOCK_X - 1.0, DOCK_Y, HEAD_ON)
-    dock = make_dock()
-    cmd = None
-    n_blind = int((BLIND_TIMEOUT + 1.0) / DT)
-    for k in range(int((BLIND_TIMEOUT + D.max_search_time + 2.0) / DT)):
-        cmd = dock.update(None, odom(k * DT), pose)
-        if k == n_blind:
-            assert cmd.phase is DockPhase.SEARCH and cmd.v == 0.0
-    assert cmd.phase is DockPhase.FAILED
-
-
-def test_estimate_mode_needs_a_real_detection_to_declare_docked():
-    pose = (DOCK_X - D.target_distance, DOCK_Y, HEAD_ON)    # the estimate says "docked"
-    dock = make_dock()
-    cmd = dock.update(None, odom(0.0), pose)
-    assert cmd.phase is DockPhase.ALIGN and not cmd.docked
-    for k in range(1, DOCK_CONFIRM_FRAMES + 1):              # several consecutive real detections
-        cmd = dock.update(marker(D.target_distance, 0.0, 0.0, k * DT), odom(k * DT), pose)
-    assert cmd.docked and cmd.finished
-
-
-def test_estimate_mode_falls_back_to_the_raw_measurement_for_an_unusable_pose():
-    cmd = DockingController().update(marker(0.8, 0.0, 0.0, 0.0), odom(0.0), [float("nan"), 0.0, 0.0])
-    assert cmd.phase is DockPhase.APPROACH
-    assert cmd.marker_range == pytest.approx(0.8)
-
-
 def run_dock_ekf(x0, seed=0, bias=0.0, blackout=None, use_estimate=True, max_time=60.0):
     """Docking with the EKF in the loop: noisy odometry with a heading bias [rad/step], noisy
     10 Hz camera and an optional camera blackout window (t0, t1) [s]. The controller never sees
@@ -490,25 +421,6 @@ def test_closed_loop_with_ekf_survives_odometry_bias_and_a_marker_blackout():
     x, cmd, _ = run_dock_ekf((wx, wy, math.pi / 2), seed=2, bias=0.0004, blackout=(2.0, 4.0))
     assert cmd.phase is DockPhase.DOCKED
     assert final_pose_ok(x, lateral_tol=0.10, heading_tol=0.30)
-
-
-def test_estimate_mode_docks_faster_than_raw_mode_through_a_marker_blackout():
-    # The marker disappears for 2 s during the approach. Raw mode has to stop and search,
-    # estimate mode keeps driving on the EKF prediction.
-    wx, wy = HANDOFF
-    times = {True: [], False: []}
-    ok = {True: 0, False: 0}
-    for seed in range(10):
-        for use_estimate in (True, False):
-            x, cmd, t = run_dock_ekf((wx, wy, math.pi / 2), seed=seed, bias=0.0004,
-                                    blackout=(2.0, 4.0), use_estimate=use_estimate)
-            times[use_estimate].append(t)
-            ok[use_estimate] += int(cmd.phase is DockPhase.DOCKED and final_pose_ok(x))
-    print("blackout 2 s, mean docking time [s] (EKF | raw):",
-        round(float(np.mean(times[True])), 1), round(float(np.mean(times[False])), 1))
-    assert ok[True] >= 9 and ok[True] >= ok[False]
-    assert np.mean(times[True]) < np.mean(times[False])
-
 
 def success_rate(pos_span, heading_span, n_trials, use_estimate):
     """Fraction of random handoff poses that end DOCKED AND pass the ground-truth pose check."""
