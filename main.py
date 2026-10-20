@@ -415,7 +415,8 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
                 randomize_obstacles: bool = False,
                 use_recovery: bool = False,
                 use_survey: Optional[bool] = None,
-                use_lidar_map: bool = False, calibration=None, lidar_fault_at: Optional[float] = None) -> RunResult:
+                use_lidar_map: bool = False, calibration=None, lidar_fault_at: Optional[float] = None,
+                hard_obstacles: bool = False, block_sight: bool = True) -> RunResult:
     log = TrialLog()
     phase, reason = Phase.NAVIGATE, "timeout"
     nav_time: Optional[float] = None
@@ -472,7 +473,8 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
             print(f"  >> [t={t:5.1f}s] {text}", flush=True)
 
     with Simulation(cfg, seed=seed, scene_dir=scene_dir,
-                    randomize_obstacles=randomize_obstacles) as sim:
+                    randomize_obstacles=randomize_obstacles,
+                    hard_obstacles=hard_obstacles, block_sight=block_sight) as sim:
         # Effective config: the obstacles that are really in the scene (random or fixed)
         obstacles = list(sim.obstacles)
         world_cfg = sim.world_cfg
@@ -717,8 +719,9 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
                         v = w = 0.0
 
                 if (phase is Phase.NAVIGATE and aim_mode and dock_lm is not None
-                        and frame.marker is not None and frame.marker.range < 1.8
+                        and frame.marker is not None and 1.0 <= frame.marker.range < 1.8
                         and abs(frame.marker.bearing) < 0.6
+                        and abs(wrap_angle(frame.marker.bearing - frame.marker.view_angle)) < 0.35
                         and frame.time - last_rot_t >= 0.3 and frame.time - dock_fail_t > 5.0):
                     aim_mode = False
                     phase, nav_time = Phase.DOCK, frame.time
@@ -751,7 +754,8 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
                                 gd = math.hypot(gx - x_est[0], gy - x_est[1])
                                 close_enough = rng_d <= run_cfg.tags.approach_dist + 0.4
                                 on_axis = abs(wrap_angle(brg_d - view_d)) < 0.25 and abs(brg_d) < 0.5
-                                if (gd < 0.25 and close_enough and on_axis) or (rng_d <= 1.5 and on_axis):
+                                too_close = rng_d < 0.9
+                                if ((gd < 0.25 and close_enough and on_axis) or (rng_d <= 1.5 and on_axis)) and not too_close:
                                     aim_mode = False
                                     phase, nav_time = Phase.DOCK, frame.time
                                     dock.begin(x_est, dock_lm, dock_yaw)
@@ -797,7 +801,7 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
                         w, observe = scan.update(frame.time, frame.odometry.dtheta)
                         if observe and frame.marker is not None:
                             ap_state = "LOOK"
-                        elif scan.spun >= 2.0 * math.pi:           # half a turn is enough, not 2*pi
+                        elif scan.spun >= math.pi:           # half a turn is enough, not 2*pi
                             if ap_goal_id is not None:
                                 ap_tried.add(ap_goal_id)     # reached and scanned: do not come back here
                             ap_goal_pt, ap_goal_id = None, None
@@ -1039,7 +1043,8 @@ def _ensure_mjpython() -> None:
 # Repeated trials with different noise seeds: success rate and mean +- std of the key metrics
 def run_trials(n: int, seed0: int = 0, cfg: Config = CONFIG, use_marker_cov: bool = False,
             marker_sigma_px: float = 0.5, scene_dir: Optional[Path] = None,
-            randomize_obstacles: bool = False, use_lidar_map: bool = False, use_recovery: bool = False) -> int:
+            randomize_obstacles: bool = False, use_lidar_map: bool = False, use_recovery: bool = False,
+            hard_obstacles: bool = False, block_sight: bool = True) -> int:
     rows = []
     print(f"marker R: {'per-measurement' if use_marker_cov else 'fixed'} | sigma_px {marker_sigma_px}")
     print(f"{'seed':>5} {'result':>7} {'reason':>15} {'time':>6} {'pos RMSE':>9} "
@@ -1048,7 +1053,8 @@ def run_trials(n: int, seed0: int = 0, cfg: Config = CONFIG, use_marker_cov: boo
         res = run_pipeline(cfg, seed=seed0 + i, scene_dir=scene_dir,
                         dock_use_estimate=True,
                         marker_sigma_px=marker_sigma_px, use_marker_cov=use_marker_cov,
-                        randomize_obstacles=randomize_obstacles, use_lidar_map=use_lidar_map, use_recovery=use_recovery)
+                        randomize_obstacles=randomize_obstacles, use_lidar_map=use_lidar_map, use_recovery=use_recovery,
+                        hard_obstacles=hard_obstacles, block_sight=block_sight)
         rep = compute_report(res, cfg)
         n_cam, n_det = res.camera_stats
         row = {"ok": res.success, "reason": res.reason, "time": res.time,
@@ -1102,6 +1108,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="do not open the live camera window")
     parser.add_argument("--fixed-obstacles", action="store_true",
                         help="use the fixed obstacle layout from config instead of a random one")
+    parser.add_argument("--hard-obstacles", action="store_true",
+                        help="harder random layout: obstacles may block the direct route and hide the dock")
+    parser.add_argument("--keep-sight", action="store_true",
+                        help="hard layout, but the dock is NOT forced to be hidden at the start")
     parser.add_argument("--no-survey", action="store_true",
                         help="skip the start-pose survey and use the tag poses written in the config")
     parser.add_argument("--ideal", action="store_true",
@@ -1116,6 +1126,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
+    if args.keep_sight:                      # --keep-sight implies the hard layout
+        args.hard_obstacles = True
     cfg = replace(CONFIG, realism=RealismConfig(enabled=False)) if args.ideal else CONFIG
     randomize = not args.fixed_obstacles
 
@@ -1124,13 +1136,15 @@ def main(argv=None) -> int:
     if randomize and seed is None:
         seed = int.from_bytes(os.urandom(4), "little")
     if randomize:
-        print(f"Random obstacles | seed {seed} (reproduce with --seed {seed})")
+        flag = (" --keep-sight" if args.keep_sight else " --hard-obstacles") if args.hard_obstacles else ""
+        print(f"Random obstacles | seed {seed} (reproduce with --seed {seed}{flag})")
 
     if args.trials > 0:
         return run_trials(args.trials, seed or 0, cfg,
                         use_marker_cov=args.marker_cov, marker_sigma_px=args.sigma_px,
                         randomize_obstacles=randomize, use_lidar_map=args.lidar_map,
-                        use_recovery=args.recovery)
+                        use_recovery=args.recovery, hard_obstacles=args.hard_obstacles,
+                        block_sight=not args.keep_sight)
     use_viewer = not args.no_viewer
     if use_viewer:
         _ensure_mjpython()
@@ -1142,7 +1156,8 @@ def main(argv=None) -> int:
                         marker_sigma_px=args.sigma_px, use_marker_cov=args.marker_cov,
                         visualizer=viz, randomize_obstacles=randomize,
                         use_lidar_map=args.lidar_map, use_recovery=args.recovery,
-                        lidar_fault_at=args.lidar_fault)
+                        lidar_fault_at=args.lidar_fault, hard_obstacles=args.hard_obstacles,
+                        block_sight=not args.keep_sight)
     ecfg = result.world_cfg or cfg          # the real world, for evaluation only
 
     dr_rmse = None
@@ -1150,7 +1165,8 @@ def main(argv=None) -> int:
         # Same seed -> same obstacle layout as the main run
         baseline = run_pipeline(cfg, seed=seed,
                                 estimator=EKFEstimator(cfg, use_marker=False, use_lidar=False),
-                                randomize_obstacles=randomize)
+                                randomize_obstacles=randomize, hard_obstacles=args.hard_obstacles,
+                                block_sight=not args.keep_sight)
         dr_rmse = compute_report(baseline, ecfg).get("position_rmse")
 
     print()

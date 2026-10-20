@@ -14,7 +14,7 @@ class SimConfig:
     model_path: Path = ASSETS_DIR / "turtlebot3_scene.xml"
     dt: float = 0.002           # physics step [s]
     control_dt: float = 0.02    # control / EKF period [s] (50 Hz)
-    max_time: float = 120.0     # time limit per trial [s]
+    max_time: float = 180.0     # time limit per trial [s]
     seed: int = 42              # for reproducible noise
 
 @dataclass(frozen=True)
@@ -107,7 +107,7 @@ class TagConfig:
     spin_omega: float = 0.7  # [rad/s] in-place rotation while looking for a tag
     use_survey: bool = True       # learn the tag poses at the start pose instead of reading them from the config
     survey_omega: float = 0.4     # [rad/s] in-place rotation while scanning
-    survey_angle: float = math.pi # [rad] total rotation of the survey (half a turn from the start heading)
+    survey_angle: float = 2.0 * math.pi # [rad] total rotation of the survey (half a turn from the start heading)
     survey_min_obs: int = 3       # observations needed before a tag is added to the learned map
     survey_max_range: float = 2.5 # [m] ignore tag observations farther than this (too noisy for the map)
     survey_max_time: float = 60.0 # [s] stop scanning after this
