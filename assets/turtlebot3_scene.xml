@@ -31,17 +31,17 @@
     <geom name="wall_west" type="box" size="0.05 2.1 0.25" pos="-2.05 0 0.25" rgba="0.5 0.5 0.6 1"/>
     <geom name="wall_north" type="box" size="2.0 0.05 0.25" pos="0 2.05 0.25" rgba="0.5 0.5 0.6 1"/>
     <geom name="wall_south" type="box" size="2.0 0.05 0.25" pos="0 -2.05 0.25" rgba="0.5 0.5 0.6 1"/>
-    <geom name="obstacle_0" type="cylinder" size="0.2 0.25" pos="-0.5241719259671812 0.010258456440287222 0.25" rgba="0.8 0.3 0.2 1"/>
-    <geom name="obstacle_1" type="cylinder" size="0.2 0.25" pos="0.7449497236809146 -0.20204456281062488 0.25" rgba="0.8 0.3 0.2 1"/>
-    <geom name="obstacle_2" type="cylinder" size="0.2 0.25" pos="0.8399758306713145 -1.3234890839547637 0.25" rgba="0.8 0.3 0.2 1"/>
+    <geom name="obstacle_0" type="cylinder" size="0.2 0.25" pos="-0.3069598823835662 -0.16213935770955556 0.25" rgba="0.8 0.3 0.2 1"/>
+    <geom name="obstacle_1" type="cylinder" size="0.2 0.25" pos="-1.340037399952254 0.2717144591619993 0.25" rgba="0.8 0.3 0.2 1"/>
+    <geom name="obstacle_2" type="cylinder" size="0.2 0.25" pos="1.1058562335716846 -0.3249698405379897 0.25" rgba="0.8 0.3 0.2 1"/>
     <geom name="dock_marker" type="box" size="0.005 0.09999999999999999 0.09999999999999999"
-        pos="1.909939394503827 0.7608348022299791 0.15" euler="0 0 3.128511980121164" material="marker_mat"/>
+        pos="1.9169139831686244 1.0138957810982614 0.15" euler="0 0 3.1989653422864275" material="marker_mat"/>
     <geom name="tag_marker_1" type="box" size="0.005 0.09999999999999999 0.09999999999999999"
-        pos="-1.95 -0.7608348022299791 0.15" euler="0 0 0.0" material="tag_mat_1"/>
+        pos="-1.95 -1.0138957810982616 0.15" euler="0 0 0.0" material="tag_mat_1"/>
     <geom name="tag_marker_2" type="box" size="0.005 0.09999999999999999 0.09999999999999999"
         pos="0.0 1.95 0.15" euler="0 0 -1.5707963267948966" material="tag_mat_2"/>
     <geom name="tag_marker_3" type="box" size="0.005 0.09999999999999999 0.09999999999999999"
-        pos="1.95 -0.7608348022299791 0.15" euler="0 0 3.141592653589793" material="tag_mat_3"/>
+        pos="1.95 -1.0138957810982616 0.15" euler="0 0 3.141592653589793" material="tag_mat_3"/>
     <geom name="tag_marker_4" type="box" size="0.005 0.09999999999999999 0.09999999999999999"
         pos="0.0 -1.95 0.15" euler="0 0 1.5707963267948966" material="tag_mat_4"/>
     <body name="base" pos="0 0 0">
@@ -59,8 +59,8 @@
       <geom name="cam_lens_vis" type="cylinder" size="0.008 0.004" pos="0.207 0 0.15" euler="0 1.5708 0" rgba="0.1 0.3 1.0 1" contype="0" conaffinity="0" density="1"/>
       <geom name="cam_arm_vis" type="box" size="0.0575 0.008 0.006" pos="0.1375 0 0.15" rgba="0.3 0.3 0.3 1" contype="0" conaffinity="0" density="1"/>
       <geom name="cam_post_vis" type="box" size="0.008 0.012 0.05" pos="0.10 0 0.09999999999999999" rgba="0.3 0.3 0.3 1" contype="0" conaffinity="0" density="1"/>
-        <camera name="front_cam" pos="0.23637102147066325 0 0.15"
-            xyaxes="0 -1 0 0 0 1" fovy="61.288853476425764"/>
+        <camera name="front_cam" pos="0.22137772910053985 0 0.15"
+            xyaxes="0 -1 0 0 0 1" fovy="59.74978839136475"/>
     </body>
     </worldbody>
 </mujoco>

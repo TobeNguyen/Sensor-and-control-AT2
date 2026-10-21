@@ -27,7 +27,7 @@ from sensing import Sensing, sector_min_range
 from simulation import Simulation, render_chessboard_views
 from visualization import RouteVisualizer
 
-MAX_RECOVERIES = 3   # maximum number of tag recoveries per run (avoid endless retry loops)
+MAX_RECOVERIES = 1   # maximum number of tag recoveries per run (avoid endless retry loops)
 EXPLORE_SCAN_ANGLE = 2 * math.pi / 3   # EXPLORE: rotation at every stop [rad] (use math.pi for a faster 180 deg scan)
 EXPLORE_STEP = 1.0                   # EXPLORE: distance driven between two scans [m]
 
@@ -474,6 +474,7 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
     dock_near = TagMap(min_obs=3)        # dock observations made from close range only
     dock_refined = False                 # True once the dock pose was re-learned from a close view
     aim_mode = False                     # NAVIGATE driven by "look - turn - move" instead of a fixed waypoint
+    recover_from_aim = False             # True when the recovery interrupted AIM
     ap_state = "LOOK"                    # LOOK -> TURN -> MOVE -> LOOK ... (SEARCH / PLAN when the dock is not seen)
     ap_t0 = None                         # time when the current LOOK started
     ap_obs = []                          # (range, bearing) of the dock seen while standing still
@@ -763,8 +764,9 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
                         note(frame.time, f"map updated while navigating: learned ids {sorted(learned)}")
 
                 # 2a) position uncertainty too large while navigating: start the tag recovery
-                if (use_recovery and phase is Phase.NAVIGATE and not aim_mode and recovery.available
-                        and n_tag_recoveries < MAX_RECOVERIES and estimator.is_lost()):
+                if (use_recovery and phase is Phase.NAVIGATE and recovery.available and n_tag_recoveries < MAX_RECOVERIES and estimator.is_lost()):
+                    recover_from_aim = aim_mode
+                    aim_mode = False
                     recovery.start(x_est)
                     n_tag_recoveries += 1
                     recovery_after_dock = False
@@ -796,9 +798,14 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
                         else:
                             note(frame.time, f"RELOCALIZED (sigma {sigma_xy:.3f} m, tag updates "
                                             f"{int(getattr(estimator, 'n_tag_updates', 0))}) -> resume navigation")
-                            approach = None if dock_lm is None else dock_approach_point(run_cfg, dock_lm, dock_yaw)
-                            nav = resume_navigator(nav, run_cfg, recovery_after_dock, approach)
-                            phase = Phase.NAVIGATE
+                            if recover_from_aim:
+                                aim_mode, ap_state, ap_t0 = True, "LOOK", None
+                                recover_from_aim = False
+                                phase = Phase.NAVIGATE
+                            else:
+                                approach = None if dock_lm is None else dock_approach_point(run_cfg, dock_lm, dock_yaw)
+                                nav = resume_navigator(nav, run_cfg, recovery_after_dock, approach)
+                                phase = Phase.NAVIGATE
                         v = w = 0.0
                     elif recovery.phase is RecoveryPhase.FAILED:
                         note(frame.time, "recovery FAILED: nothing left to try")

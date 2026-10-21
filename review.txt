@@ -1,847 +1,539 @@
-REVIEW: Track A - TurtleBot3 visual waypoint navigation (MuJoCo)
-Môn 41014 - toàn bộ mã nguồn
+REVIEW / CHEAT SHEET: Track A - TurtleBot3 visual waypoint navigation (MuJoCo)
+Môn 41014 - phiên bản mã nguồn sau cùng (sau các chỉnh sửa gần nhất)
 
 ==================================================
-0. TỔNG QUAN
+0. CÁCH DÙNG FILE NÀY
 ==================================================
-
-0.1 Ánh xạ file -> tiêu chí (theo print_report trong main.py)
-- A Modelling   : config.py (RobotConfig), robot_model.py
-- B Sensing     : calibration.py, sensing.py, environment.py,
-                  simulation.py (cảm biến và thế giới thật)
-- C Estimation  : estimator.py
-- D Control     : controller.py, navigation.py
-- E Integration : docking.py, safety.py, main.py, visualization.py,
-                  simulation.py (độ bền vững)
-- F Recovery    : recovery.py (và tương tác với safety.py trong main.py)
-
-0.2 Kiến trúc và luồng dữ liệu
-- "Thế giới thật" (simulation.py) tách khỏi "niềm tin của robot"
-  (config.py + robot_model.py + bản đồ học lúc chạy). Thế giới thật cố ý
-  lệch niềm tin: dock dịch và xoay, FOV, offset camera, bán kính bánh,
-  wheel_base, trượt bánh, trễ và rớt dữ liệu, nhiễu ảnh.
-- Mỗi bước điều khiển (main.py):
-  Simulation -> MuJoCoEnvironment -> Sensing.read() -> EKF (predict,
-  update marker, update LiDAR) -> máy trạng thái
-  (SURVEY / EXPLORE / NAVIGATE-AIM / RECOVER / DOCK) ->
-  Navigator / DockingController / TagRecovery -> SafetyGuard.filter ->
-  Simulation.step(v, w).
-- Song song: TrialLog.record (ground truth, chỉ để đánh giá) và
-  RouteVisualizer.record (pose đã đổi sang khung thế giới).
-- EKF chạy trong khung riêng của robot (gốc = pose bắt đầu). Phép đổi sang
-  khung thế giới (est_to_world) chỉ dùng cho log, vẽ và đánh giá.
-- Luồng chính: SURVEY (học tag/dock tại chỗ) -> [EXPLORE nếu chưa thấy
-  dock] -> NAVIGATE ở chế độ AIM (nhìn - tính điểm tiếp cận - đi - nhìn
-  lại) -> DOCK (visual servoing) -> DONE.
-  DOCK thất bại: RECOVER (nếu bật --recovery) hoặc quay lại AIM
-  (tối đa 3 lần), hết lần thì FAILED.
-
-0.3 Kiểm tra ràng buộc "không dùng ground truth"
-- Điều khiển chỉ nhận: x_est (EKF), scan LiDAR, marker từ camera, bản đồ
-  tag học được lúc chạy, odometry. Tất cả qua giao diện RobotEnvironment.
-- ground_truth(), sim.collided, world_cfg, sim.obstacles chỉ xuất hiện ở
-  main.py (log, đánh giá, vẽ) và trong __main__ của một số module.
-- Config.tag_table() và dock_pose trong config chỉ dùng để sinh môi trường
-  và đánh giá (diag["tag_map_errors"], dock_errors với world_cfg).
-- Điểm yếu cần xử lý (chi tiết ở mục 0.4, mục 1 và file main.py):
-  + run_cfg mang vật cản THẬT (sim.obstacles); hiện không module điều
-    khiển nào đọc, nhưng chưa được cưỡng chế.
-  + Dòng "ground truth used in control: NO" và cờ
-    ground_truth_used_for_control = False đều là chuỗi/giá trị viết cứng.
-  + landmark_table(cfg, None) và default_landmark() rơi về pose trong
-    config; chỉ an toàn vì không được gọi trên đường chạy thật.
-  + Cờ --no-survey mô tả "dùng pose tag trong config" (hiện không có tác
-    dụng, nhưng nếu nối dây sẽ vi phạm ràng buộc).
-
-0.4 Danh sách vấn đề theo mức ưu tiên (sửa trước khi nộp)
-
-[CAO]
-1. main.py, nhánh "2c) navigation" (NAVIGATE và không AIM): chỉ gọi
-   nav.update(), không gán v, w và không xử lý ncmd.finished. Robot đứng
-   yên ở trạng thái này. Xảy ra khi dock_first = False, và sau
-   recovery do docking thất bại (đường RELOCALIZED -> resume navigation).
-   Cần thêm "v, w = ncmd.v, ncmd.w" và chuyển sang DOCK khi finished.
-2. Đo lặp theo bước điều khiển thay vì theo khung camera: camera 0.1 s,
-   điều khiển 0.02 s. Nếu Sensing trả lại cùng marker ở các bước giữa hai
-   khung thì EKF cập nhật cùng một phép đo nhiều lần (NEES cao, quá tự
-   tin), và các ngưỡng min_obs, "3 quan sát", "2 mẫu" đạt từ một khung.
-   Cần kiểm tra frame.markers trong sensing.py; main.py đã có
-   sensing.n_camera để phát hiện khung mới nhưng chỉ dùng để hiển thị.
-3. Xung đột SafetyGuard và recovery: sau estimator.inflate() sigma_xy tăng
-   (> 0.30 m thì guard giảm tốc, >= 1.00 m thì cấm tịnh tiến), nên GOTO và
-   MAP_GOTO bị chặn, robot quay xong rồi đứng yên. Cần chọn chung ngưỡng
-   (is_lost / lost_std của EKF và sigma_slow, sigma_stop của guard) hoặc
-   cho phép riêng cho phase RECOVER.
-4. Cưỡng chế ranh giới ground truth: đặt obstacles = () cho run_cfg, và
-   thay chuỗi "ground truth used in control: NO" bằng kiểm tra thật hoặc
-   ghi rõ đó là khẳng định thiết kế.
-5. Cờ CLI không có tác dụng: --dock-raw, --no-survey, --sigma-px
-   (tham số use_survey và marker_sigma_px của run_pipeline không dùng).
-   Xoá hoặc nối dây.
-6. Recovery giữa đường không bao giờ chạy khi dock_first = True (điều kiện
-   bắt đầu cần not aim_mode, mà NAVIGATE luôn ở AIM). Recovery thực tế chỉ
-   chạy sau khi docking thất bại. Cột "F. Recovery" khi đó không đo khả
-   năng lấy lại định vị giữa đường; báo cáo phải nêu rõ.
-
-[TRUNG BÌNH]
-7. Bản đồ học từ chính pose ước lượng (TagMap.add dùng x_est), EKF lại
-   dùng bản đồ đó để cập nhật mà không có hiệp phương sai chéo robot-
-   landmark, nên dễ quá tự tin. Đưa diag["tag_map_errors"] vào báo cáo.
-8. Chỉ số "AVOID % of navigation" gần như luôn 0 % vì trong AIM mode bị
-   ghi đè thành "AIM-<state>". Đếm theo ncmd.phase.
-9. --compare không công bằng: baseline chạy lại cả pipeline với EKF không
-   có marker nên đi quỹ đạo khác. Nên tính dead-reckoning offline trên
-   cùng chuỗi odometry của lần chạy chính.
-10. Mã chết trong AIM: trạng thái "TURN", "MOVE" và khối ap_idle chỉ được
-    vào từ chính nó. Kẹt trong GO hoặc FACE chỉ thoát nhờ timeout 8 s của
-    GO; FACE và EXPLORE-TURN không có timeout riêng.
-11. Recovery không có giới hạn thời gian cho từng pha; SPIN không kết thúc
-    nếu robot không quay thật (guard chặn, kẹt, trượt).
-12. EKF trong main.py dùng R = diag(0.15^2, 0.05^2), R_view = 0.15^2, lớn
-    hơn nhiều so với nhiễu camera trong config (0.02 m, 0.01 rad,
-    0.03 rad). Có lý do (bù sai số hệ thống của thế giới ẩn) nhưng phải
-    nêu trong báo cáo; R_camera() của config không được dùng.
-13. Hai chế độ DOCKED có tiêu chí khác nhau: đo thô (một phép đo đủ) cho
-    tới khi dock_refined, sau đó dùng ước lượng (cần 3 đo thật liên tiếp).
-14. --lidar-map chỉ đúng khi start_pose = (0, 0, 0); NEES chỉ đúng khi
-    yaw bắt đầu = 0 (P không được xoay sang khung thế giới).
-15. Nhánh tuổi dữ liệu LiDAR chỉ thử được bằng --lidar-fault (cộng tuổi
-    giả 5 s); mô phỏng không làm mất dữ liệu thật. Camera chưa có cơ chế
-    tương tự.
-16. Rất nhiều "số ma thuật" trong máy trạng thái của main.py và hằng số
-    trong docking.py nên đưa vào config (AXIS_TOLERANCE, 0.2 m/s ở
-    EXPLORE cao hơn tốc độ cruise 0.15 m/s, các timeout, các cung LiDAR).
-17. wrap_angle định nghĩa trùng ở robot_model.py, simulation.py và
-    navigation.py (_wrap).
-
-[THẤP]
-18. Comment lỗi thời hoặc sai: DOCK_MIN_SPEED ("never creep slower"),
-    "CONFIRM_WINDOW" (tên đúng DOCK_CONFIRM_FRAMES), docstring đầu
-    visualization.py, comment "EKF LiDAR map must contain the obstacles"
-    mâu thuẫn với code ngay dưới, comment "# NEW" còn sót, comment bị
-    lặp ở phần cột bảng của main.py, dòng "SURVEY: scanning 180 deg" viết
-    cứng.
-19. Lỗi chính tả: "fown", "obstale" (controller.py).
-20. Tham số/biến không dùng: cfg trong marker_from_pose, sim trong
-    visualization (start, capture_target, finish), x_est trong
-    TagRecovery.start, min_visible_range, _Measurement._meas ở chế độ có
-    x_est.
-
-0.5 Phạm vi và độ tin cậy của bản review
-- Các mục về config, robot_model, calibration, sensing, estimator được giữ
-  từ bản trước và cập nhật theo cách main.py gọi chúng; chưa đối chiếu
-  lại với từng dòng code trong lần này. Những chỗ ghi "cần kiểm tra" là
-  chưa được kiểm chứng.
-- Chưa review: calibrate_odometry.py (được nhắc trong environment.py),
-  các file test (nếu có) và bất kỳ file nào khác ngoài danh sách dưới đây.
+- Mục 1: pitch 1 phút. Mục 2: lệnh chạy demo và cách đọc log.
+- Mục 3: luồng hệ thống. Mục 4: từng file (vai trò, số quan trọng, lưu ý).
+- Mục 5: giới hạn nên tự nói trước. Mục 6: hỏi đáp dự kiến. Mục 7: số liệu có sẵn.
+- Nhãn bằng chứng dùng xuyên suốt:
+  [ĐÃ CHẠY]  đã thấy kết quả trong log.
+  [BẢN CŨ]   đã chạy nhưng trên phiên bản code trước các chỉnh sửa gần nhất.
+  [CHƯA CHẠY] code có nhưng chưa có bằng chứng chạy.
 
 ==================================================
-1. config.py  (Phần A: Modelling, tham số toàn hệ thống)
+1. PITCH 1 PHÚT
 ==================================================
-Vai trò
-- Một nơi duy nhất chứa mọi tham số: sim, robot, lidar, camera, EKF, LQR,
-  docking, môi trường, tag/survey, realism.
-- Dataclass frozen: tham số không đổi khi chạy. Seed cố định (42) để
-  nhiễu tái lập được.
+- Robot TurtleBot3 (unicycle, camera trước, LiDAR 360 độ, encoder) trong phòng
+  4x4 m có 3 vật cản ngẫu nhiên và một trạm sạc dán marker ArUco.
+- Robot KHÔNG được biết vị trí dock hay điểm xuất phát tuyệt đối. EKF bắt đầu ở
+  (0, 0, 0) trong khung riêng của robot. Vị trí dock và 4 tag phụ trên tường
+  được học lúc chạy (quay quan sát, khi cần thì đi thăm dò).
+- Đi tới gần dock bằng chu trình "nhìn - quay - đi - nhìn lại" (AIM) với LQR
+  bám đường và né vật cản bằng LiDAR; sau đó docking bằng visual servoing,
+  dừng cách marker 0,55 m, đúng trục.
+- Nếu bị lạc (sigma_xy > 0,15 m) thì có recovery giới hạn thời gian: quay nửa
+  vòng tìm tag, ghé tối đa 1 tag, không được thì đi theo bản đồ tới điểm tiếp
+  cận dock; tối đa 1 lần mỗi lần chạy [CHƯA CHẠY].
+- Mô phỏng cố ý làm thế giới thật lệch niềm tin của robot: dock dịch và xoay,
+  FOV, offset camera, bán kính bánh, wheel_base, trượt bánh, camera trễ và rớt
+  khung, LiDAR trễ và rớt tia, nhiễu ảnh. Mỗi seed là một thế giới lệch khác nhau.
+- Trước khi chạy: hiệu chuẩn odometry (đi thẳng + quay) và hiệu chuẩn camera
+  (ảnh bàn cờ) ngay trong mô phỏng.
+- Ground truth chỉ dùng để chấm điểm và để dừng khi va chạm, không dùng để
+  điều khiển. Chỉ mới kiểm chứng trong mô phỏng (hardware_ready = False).
 
-Nội dung chính
-- A Modelling   : RobotConfig (bán kính bánh 0.033, wheel_base 0.287,
-                  v tối đa 0.26 m/s, w tối đa 1.82 rad/s)
-- B Sensing     : LidarConfig (360 tia, 0.12-3.5 m, nhiễu 0.01 m),
-                  CameraConfig (ArUco 4x4, marker 0.15 m, nhiễu range
-                  0.02 m, bearing 0.01 rad, view 0.03 rad)
-- C Estimation  : EKFConfig (state [x, y, theta], P0 = 0.05^2,
-                  Q = 0.01^2), R_camera() cho [range, bearing]
-- D Control     : ControllerConfig (LQR Q = (10, 10, 1), R = (1, 1),
-                  waypoint_tolerance 0.10 m)
-- E Integration : DockingConfig (dừng cách marker 0.55 m, sai số
-                  0.05 m / 0.05 rad), TagConfig, RealismConfig
+==================================================
+2. LỆNH CHẠY VÀ CÁCH ĐỌC LOG
+==================================================
+2.1 Lệnh
+  python main.py                      Một lần chạy trực tiếp có cửa sổ MuJoCo và
+                                      camera. Seed ngẫu nhiên, in ra để chạy lại.
+                                      Mặc định BẬT: hiệu chuẩn camera, hiệu chuẩn
+                                      odometry, recovery, bố cục vật cản "hard"
+                                      (dock KHÔNG bị ép che lúc xuất phát), lưu run.png.
+  python main.py --seed N             Chạy lại đúng lần đó (seed quyết định cả thế
+                                      giới ẩn lẫn vật cản). Nên dùng seed đã thành công.
+  python main.py --hide-dock          Chế độ khó: ép một vật cản chắn tầm nhìn tới dock.
+  python main.py --no-viewer          Không mở cửa sổ MuJoCo (nhanh hơn).
+  python main.py --compare            Chạy thêm baseline dead-reckoning (xem mục 5).
+  python main.py --ideal              Tắt mọi sai lệch ẩn, trễ, nhiễu (để so sánh).
+  python main.py --lidar-fault T      Giả lập mất dữ liệu LiDAR từ giây T (thử E-STOP).
+  python main.py --no-calib-camera / --no-calib-odometry / --no-recovery
+  python main.py --camera-delay 0.2   Bù trễ camera trong EKF (mặc định 0 = tắt).
+  python main.py --suite [--seed 100 --suite-trials 30]
+                                      Bộ so sánh nhiều seed, không viewer, 3 cấu hình:
+                                      Final system / Ablation: no calibration /
+                                      Stress: dock hidden.
+  python main.py --trials N           N lần chạy một cấu hình, in thống kê.
+- LƯU Ý QUAN TRỌNG: --suite và --trials KHÔNG chạy hiệu chuẩn camera
+  (run_trials và SUITE không truyền calib_camera), còn lần chạy trực tiếp thì có.
+  Hai cấu hình này khác nhau; số liệu suite là của camera danh nghĩa.
+- Thời gian: có viewer thì mô phỏng chạy theo thời gian thực (khoảng 1,5 đến
+  2 phút cho một lần thành công) cộng vài giây hiệu chuẩn.
+- Muốn so sánh có/không recovery: chạy cùng seed với và không có --no-recovery
+  (dùng --no-viewer cho nhanh). Recovery chỉ có tác dụng khi robot bị lạc, nên
+  hai kết quả có thể giống hệt nhau nếu không có lần lạc nào.
 
-Cách config đáp ứng ràng buộc
-- Pose duy nhất robot "biết" là gốc khung của chính nó: EKF reset về
-  (0, 0, 0) (main.py). start_pose chỉ dùng để đặt robot vào thế giới mô
-  phỏng và để đổi khung khi đánh giá.
-- TagConfig.dock_first = True: đích là điểm tiếp cận dock đã học bằng
-  SURVEY/EXPLORE, không đọc từ config.
-- RealismConfig làm thế giới thật lệch niềm tin để kiểm tra độ bền vững.
+2.2 Đầu ra
+  results/run.png                                  quỹ đạo thật và ước lượng, sai số và 2 sigma
+  results/visualization/seed_N/start_camera.jpg    ảnh lúc xuất phát
+  results/visualization/seed_N/target_camera.jpg   ảnh đích (final_view.jpg nếu chưa xác nhận)
+  results/visualization/seed_N/estimated_path.csv  quỹ đạo EKF
+  results/visualization/seed_N/route_and_snapshots.png   bản đồ LiDAR + quỹ đạo + 2 ảnh
+  results/visualization/seed_N/summary.json        kết quả, nguồn hiệu chuẩn camera, cờ
+                                                   hardware_ready/hardware_verified = false
+  results/chessboard/views.png, results/camera_intrinsics_sim.json   hiệu chuẩn camera
+  (results/odometry_calibration.json chỉ được ghi khi chạy riêng calibrate_odometry.py)
 
+2.3 Đọc log theo thứ tự
+  [Calibration] RMS x px | fx y        camera được hiệu chuẩn (RMS phải <= 1 px).
+  Camera calibration failed (...)      bị từ chối: robot dùng camera danh nghĩa.
+                                       (run_pipeline thử lại một lần và ghi
+                                       "CAMERA CALIBRATION FAILED ..." trong events).
+  odometry calibrated: wheel_radius, wheel_base   giá trị hiệu dụng (đã gồm trượt bánh).
+  SURVEY: scanning ...                 đứng yên, quay từng chút để học tag/dock.
+  SURVEY: dock not seen -> EXPLORE     chưa thấy dock: đi thăm dò.
+  EXPLORE done: dock learned           đã thấy dock >= 3 lần.
+  AIM: dock X m -> approach point ...  đi tới điểm tiếp cận phía trước dock.
+  AIM: dock not seen -> fallback ...   mất marker: chuỗi dự phòng.
+  map updated while navigating         học thêm tag phụ khi đang đi.
+  dock re-learned from a close view    dock được học lại từ quan sát gần (< 1,5 m).
+  LOST (sigma ... > 0.15 m) -> tag recovery #1 started
+                                       bị lạc khi đang NAVIGATE/AIM: bắt đầu recovery.
+  recovery: no tag seen, driving to tag K stand-off (...)
+                                       quay nửa vòng không thấy tag: đi tới tag K.
+  recovery: no tag found -> following the learned map to the dock approach point
+                                       hết tag hoặc quá 25 s: đi theo bản đồ tới dock.
+  RELOCALIZED (sigma ..., tag updates ...) -> resume navigation
+                                       thấy tag, hết lạc: quay lại AIM (nếu bị lạc
+                                       trong AIM) hoặc Navigator (nếu sau docking hỏng).
+  map-follow finished (not relocalized) -> docking
+                                       tới điểm tiếp cận mà vẫn chưa định vị lại: docking.
+  recovery FAILED: nothing left to try kết thúc FAILED "recovery failed".
+  docking failed -> P inflated -> tag recovery #1 started
+                                       docking hỏng và recovery còn lượt.
+  docking failed -> back to AIM (retry k/3)
+                                       docking hỏng và recovery hết lượt hoặc không khả dụng.
+  dock seen at X m -> docking          chuyển sang DOCK.
+  DOCKED                               thành công.
+  SAFETY: ...                          SafetyGuard đã can thiệp.
+  Cột Mode trong bảng: SURVEY, EXPLORE, AIM-LOOK/GO/TURN/MOVE/FACE/SEARCH/PLAN,
+  DOCK-SEARCH/APPROACH/ALIGN, RECOVER-SPIN/GOTO/MAP/DONE, DONE.
+
+==================================================
+3. LUỒNG HỆ THỐNG
+==================================================
+3.1 Kiến trúc
+- "Thế giới thật" (simulation.py) tách khỏi "niềm tin của robot" (config.py,
+  robot_model.py, bản đồ tag học lúc chạy). Robot chỉ nói chuyện với thế giới
+  qua RobotEnvironment (environment.py).
+- EKF chạy trong khung riêng của robot (gốc = pose xuất phát). est_to_world()
+  chỉ dùng cho log, vẽ, đánh giá.
+
+3.2 Mỗi chu kỳ điều khiển (0,02 s, 50 Hz), trong main.py
+  1) Sensing.read(): odometry từ encoder, LiDAR, camera (cứ 0,1 s một khung).
+  2) EKF.predict(ds, dtheta).
+  3) EKF.update(marker) cho từng marker, CHỈ KHI robot không quay
+     (|dtheta|/dt <= 0,05 rad/s và đã qua 0,3 s từ lần quay cuối).
+  4) EKF.update_lidar: mặc định TẮT (chỉ bật với --lidar-map).
+  5) Máy trạng thái quyết định (v, w) từ POSE ƯỚC LƯỢNG.
+  6) SafetyGuard.filter(v, w, ...) cho mọi lệnh, mọi phase.
+  7) Ghi log và đánh giá (chỗ duy nhất đọc ground truth), rồi env.step(v, w).
+
+3.3 Máy trạng thái (Phase)
+  SURVEY   Đứng yên, quay stop-go (quay 0,5 rad, dừng 0,7 s, quan sát khi đã
+           đứng yên >= 0,3 s). Học tag/dock; kết thúc khi dock đủ 3 quan sát,
+           hoặc quay đủ 180 độ, hoặc quá 60 s. Dock chấp nhận trong 3,0 m, tag phụ
+           trong 2,5 m (còn 2,0 m nếu sigma_xy > 0,12).
+  EXPLORE  Chưa thấy dock: chọn hướng thoáng và xa chỗ đã quét (có phạt điểm
+           đã quét, điểm bị chắn, hướng quay đầu lại), quay, đi 1,0 m (1,5 m khi
+           đã biết đủ 4 tag phụ) với v = 0,2 m/s, dừng quét 120 độ. Tối đa 120 s.
+           Dừng đi nếu phía trước < 0,6 m hoặc đứng yên > 2 s.
+  NAVIGATE Chế độ AIM (xem 3.4) hoặc Navigator bám waypoint.
+  DOCK     DockingController (xem docking.py).
+  RECOVER  TagRecovery (xem 4.13). Vào RECOVER từ NAVIGATE (kể cả đang AIM) khi
+           estimator.is_lost() (sigma_xy > 0,15 m), hoặc từ DOCK khi docking hỏng.
+           Mỗi lần chạy tối đa MAX_RECOVERIES = 1 lần, nên chỉ MỘT trong hai
+           đường vào (lạc khi đi / docking hỏng) dùng được recovery. Không áp
+           dụng cho SURVEY và EXPLORE.
+  DONE / FAILED
+
+3.4 AIM (NAVIGATE khi dock_first = True)
+  LOOK   Đứng yên 1,2 s, lấy quan sát sau 0,4 s, cần >= 2 mẫu, lấy median
+         (range, bearing, view angle).
+         - range > 2,0 m: đích là điểm cách dock 1,8 m trên đường ngắm.
+         - ngược lại: đích là điểm cách dock approach_dist = 1,0 m phía trước mặt tag
+           (hướng mặt tag ước lượng từ view angle khi range < 2,5 m).
+         - Chuyển DOCK nếu (đã gần đích, đủ gần và đúng trục) hoặc
+           (range <= 1,5 m và đúng trục); "đúng trục" = |bearing - view| < 0,25
+           và |bearing| < 0,5.
+         - Một điều kiện sớm hơn nữa: thấy dock < 1,8 m, |bearing| < 0,6,
+           |bearing - view| < 0,4, đang đứng yên, và > 5 s sau lần docking hỏng
+           -> chuyển DOCK ngay ("dock seen at ...").
+  GO     Navigator một waypoint (tối đa 1,5 m, timeout 8 s). Hết GO thì quay mặt
+         về điểm dock đã thấy (TURN) rồi LOOK lại.
+  Không thấy dock: PLAN -> điểm tiếp cận dock -> FACE -> SEARCH (quét 180 độ)
+         -> lần lượt các tag phụ (gần dock trước) -> hết điểm: docking "mù" nếu đã
+         học dock, ngược lại FAILED "dock not found". Mỗi điểm timeout 25 s.
+  Chống kẹt: MOVE đứng yên > 2 s thì lập kế hoạch lại; kẹt lặp lại thì quay
+         ép 90 độ.
+  Bị lạc trong AIM: bước 2a (chạy trước khối AIM trong cùng chu kỳ) ghi nhớ
+         recover_from_aim = True, tắt aim_mode và chuyển RECOVER. Khi RELOCALIZED
+         thì bật lại aim_mode, ap_state = LOOK rồi tiếp tục AIM [CHƯA CHẠY].
+         Các biến AIM khác (ap_tried, ap_goal_pt...) được giữ nguyên.
+
+3.5 Học và tinh chỉnh bản đồ lúc chạy
+  - TagMap gom quan sát từ pose ƯỚC LƯỢNG (trung bình có trọng số 1/range^2).
+  - Khi gần dock (range < 1,5 m, |view| < 0,6, đang đứng yên) học lại dock từ
+    >= 3 quan sát gần; khi đó MapView mới cho EKF dùng dock (show_dock = True) và
+    DockingController chuyển sang chế độ có x_est (dock_refined).
+  - Khi không bị lạc, học thêm tag phụ ở trong 2,0 m cho tới khi mỗi tag có >= 3
+    quan sát. Mỗi lần bản đồ lớn thêm, đối tượng TagRecovery được tạo lại từ bản
+    đồ mới (nên recovery luôn dùng bản đồ mới nhất).
+
+==================================================
+4. TỪNG FILE
+==================================================
+----------------------------------------------
+4.1 config.py  (A. Modelling, tham số)
+----------------------------------------------
+Vai trò: một nơi chứa mọi tham số (dataclass frozen), CONFIG duy nhất.
+Số quan trọng
+  Sim: dt 0,002 s; control_dt 0,02 s; max_time 180 s; seed 42.
+  Robot: bán kính bánh 0,033 m; wheel_base 0,287 m; body_radius 0,22 m;
+         v max 0,26 m/s; w max 1,82 rad/s; nhiễu encoder 0,002 rad/bước.
+  LiDAR: 360 tia, 0,12-3,5 m, nhiễu 0,01 m, safe_distance 0,35 m.
+  Camera: 640x480, fovy 60 độ, ArUco 4x4_50, marker 0,15 m.
+  EKF: P0 = 0,05^2; LQR: Q = diag(10, 10, 1), R = diag(1, 1).
+  Docking: dừng cách marker 0,55 m, sai số 0,05 m, |bearing| <= 0,08 rad
+           (đã nới từ 0,05), tìm tối đa 10 s.
+  Môi trường: phòng +-2 m; start (-1,5; -1,5; 0); dock (1,9; 1,0; pi);
+              4 tag phụ trên tường.
+  Tag: standoff 0,9 m; lost_std 0,15 m; approach_dist 1,0 m; survey_min_obs 3;
+       dock_max_range 3,0 m (đã đổi từ 4,5); spin_omega (tốc độ quay của recovery,
+       nên giữ khoảng 0,6-0,8 rad/s).
+  Realism (thế giới ẩn, lấy mẫu theo seed): dock dịch +-0,03 m (x) và +-0,25 m (y),
+       xoay +-5 độ; FOV +-3 %; offset camera +-1,5 cm; bán kính bánh và wheel_base
+       +-2 %; trượt thẳng <= 2 %, trượt quay <= 5 %; camera trễ 0,15 s (thực tế
+       0,15 đến 0,25 s do chu kỳ 0,1 s); rớt khung 5 %; LiDAR trễ 2 bước, rớt tia 3 %;
+       nhiễu ảnh 3 mức xám; độ sáng 0,7-1,2; vùng chết v 0,01 và w 0,03; gia tốc
+       tối đa 0,5 m/s^2 và 3,0 rad/s^2.
 Lưu ý
-- start_pose hiện là (-1.5, -1.5, 0.0), khác chuẩn đề bài (0, 0, 0). Chấp
-  nhận được vì main.py đã có est_to_world; nhưng --lidar-map (cần bản đồ
-  tuyệt đối) chỉ đúng khi start_pose = (0, 0, 0).
-- Config.tag_table() chứa pose tag THẬT; chỉ dùng để sinh môi trường và
-  đánh giá, không đưa vào điều khiển.
-- TagConfig.use_survey không được run_pipeline dùng (SURVEY luôn chạy);
-  hành vi thật do dock_first quyết định.
-- main.py truyền R riêng cho EKF (0.15 m, 0.05 rad, view 0.15 rad), nên
-  R_camera() và nhiễu camera trong config không tham gia cập nhật. Nêu rõ
-  trong báo cáo đây là R bảo thủ để bù sai số hệ thống.
-- R_camera() chưa gồm view_noise_std (đo thứ ba của camera). Q của EKF là
-  hằng số, LQR chưa tune ngoài bộ trọng số mặc định.
+  - Pose tag/dock trong config chỉ dùng để sinh môi trường và đánh giá, không
+    dùng để điều khiển. NGOẠI LỆ NHỎ: main.py (EXPLORE) lấy SỐ LƯỢNG tag phụ
+    từ cfg.tag_table() làm tri thức có trước (xem mục 5).
+  - EKFConfig.process_noise_std (Q) không được dùng trong predict.
+  - TagConfig.use_survey không có tác dụng; SURVEY luôn chạy.
+  - start_pose khác (0, 0, 0) nên --lidar-map (cần bản đồ tuyệt đối) không đúng.
+  - Tăng tags.lost_std thì recovery khó kích hoạt hơn (ít chạy, đỡ tốn thời gian,
+    nhưng chịu lạc lâu hơn).
 
-==================================================
-2. robot_model.py  (Phần A: Modelling, nền cho C và D)
-==================================================
-Vai trò
-- Chứa toàn bộ mô hình toán của robot và các mô hình đo, dùng chung cho
-  EKF và controller. Không phụ thuộc MuJoCo.
-
-Nội dung chính
-- Trạng thái x = [x, y, theta] (N_STATE = 3); wrap_angle() về [-pi, pi].
-- Odometry: odometry_increment() đổi 2 góc bánh tích luỹ thành
-  ds = r(dl + dr)/2 và dtheta = r(dr - dl)/b.
-- Mô hình chuyển động: motion_model() dạng điểm giữa (theta + dtheta/2);
-  jacobian_F (theo trạng thái) và jacobian_G (theo [ds, dtheta]).
-- Mô hình đo camera:
-  + measurement_model(): [range, bearing] tới landmark.
-  + Mô hình thêm view_angle = dock_yaw - pi - theta (docking.py gọi hàm
-    này là view_angle_model; bản review cũ ghi measurement_model_pose,
-    cần kiểm tra tên trong bản hiện tại).
-  + measurement_jacobian() 2x3 và bản 3x3 cho 3 đo (view_angle chỉ phụ
-    thuộc theta).
-  + innovation(): wrap bearing và view_angle.
-- Mô hình đo LiDAR: lidar_range_model() = tia cắt 4 tường + vật cản tròn
-  (nghiệm nhỏ nhất của giao tia-đường tròn); lidar_jacobian() bằng sai
-  phân hữu hạn trung tâm.
-- TagMap: gom quan sát tag từ pose ước lượng, trung bình có trọng số
-  1/range^2, yaw lấy trung bình trên vòng tròn; bỏ quan sát xa hơn
-  max_range; chỉ nhận tag có >= min_obs quan sát.
-- landmark_table(): bảng {id: (vị trí, yaw)} từ TagMap đã học.
-- Mô hình sai số bám quỹ đạo (cho LQR): pose_error() trong hệ robot;
-  tracking_error_model() rời rạc hoá A = I + A_c*dt, B = B_c*dt quanh
-  (v_ref, w_ref).
-- Phân tích: controllability_matrix, observability_matrix, is_controllable,
-  is_observable, analyse_model() (in rank khi chạy và khi dừng).
-
+----------------------------------------------
+4.2 robot_model.py  (A. Modelling, nền cho C và D)
+----------------------------------------------
+Vai trò: mô hình toán dùng chung cho EKF và LQR; không phụ thuộc MuJoCo.
+Nội dung
+  - Trạng thái [x, y, theta]; wrap_angle().
+  - odometry_increment(): ds = r (dl + dr)/2, dtheta = r (dr - dl)/b.
+  - motion_model() (điểm giữa), jacobian_F, jacobian_G.
+  - Mô hình đo camera: measurement_model [range, bearing]; view_angle_model
+    (0 khi robot nhìn thẳng vào mặt marker); measurement_model_pose [range,
+    bearing, view]; measurement_jacobian (2x3) và measurement_jacobian_pose (3x3).
+  - innovation() có wrap góc. lidar_range_model (4 tường + vật cản tròn) và
+    lidar_jacobian (sai phân hữu hạn).
+  - TagMap, landmark_table(). pose_error() và tracking_error_model() cho LQR.
+  - controllability/observability, analyse_model().
 Lưu ý
-- landmark_table(cfg, tag_map=None) và default_landmark() rơi về pose
-  trong config: chỉ dùng cho test/phân tích. Đường chạy thật không gọi
-  (TagRecovery truyền tag_map hoặc để bảng rỗng; EKF dùng MapView).
-- lidar_range_model() dùng obstacles và room_half_size từ config, tức là
-  EKF coi bản đồ phòng là đã biết. main.py tạo EKF với obstacles = () và
-  chỉ bật LiDAR update khi có --lidar-map; cần nêu giả định này.
-- TagMap lưu thuộc tính riêng _obs mà main.py truy cập trực tiếp khi học
-  lại dock; dễ vỡ nếu đổi cấu trúc.
-- Mô hình unicycle, không có động lực học bánh xe hay trượt.
-- wrap_angle() trùng ở simulation.py và navigation.py (_wrap).
+  - Lý thuyết (chạy python robot_model.py để in hạng thật): đo range + bearing
+    một landmark có hạng quan sát 3 khi robot đang di chuyển, nhưng giảm khi đứng
+    yên; thêm view angle thì đủ 3 ngay cả khi đứng yên. Điều khiển được khi
+    (v, w) khác (0, 0).
+  - landmark_table(cfg, None) và default_landmark() rơi về pose trong config;
+    chỉ để test, không nằm trên đường chạy thật.
+  - main.py truy cập trực tiếp tag_map._obs khi học lại dock; dễ vỡ nếu đổi cấu trúc.
+  - Mô hình unicycle, không có động lực học bánh xe.
 
-==================================================
-3. calibration.py  (Phần B: Sensing - calibration, hệ toạ độ)
-==================================================
-Vai trò
-- Quản lý thông số camera và chuyển đổi giữa các hệ toạ độ; chuyển kết quả
-  PnP của marker thành (range, bearing, view_angle) cho EKF.
+----------------------------------------------
+4.3 calibrate_odometry.py  (B. Sensing: hiệu chuẩn bánh xe, trong mô phỏng)
+----------------------------------------------
+Vai trò: ước lượng wheel_radius và wheel_base như sẽ làm trên robot thật.
+Cách làm
+  1) Đi thẳng ~1 m (v = 0,15): radius = quãng đường / góc quay trung bình của bánh.
+  2) Quay tại chỗ 2 vòng (w = 0,5): base = radius * (dphi_phải - dphi_trái) / góc quay thân.
+  Quãng đường và góc quay lấy từ pose thật của mô phỏng ("thước đo", tương
+  đương băng keo hoặc mocap trên robot thật; chỉ dùng ở bước này).
+  apply_odometry(): tạo config cho NIỀM TIN của robot; thế giới thật không đổi.
+Kết quả thấy trong log [ĐÃ CHẠY]: config 0,0330 / 0,2870 m; ước lượng
+  0,0324 / 0,2980 (seed 4), 0,0323 / 0,2810 (seed 949553173), 0,0332 / 0,2961 (seed 3).
+Lưu ý: kết quả là giá trị HIỆU DỤNG (đã gồm trượt bánh), khác giá trị
+  thật ẩn; mỗi seed cho kết quả khác vì thế giới ẩn khác.
 
-Nội dung chính
-- CameraIntrinsics: K, dist_coeffs, image_size, source
-  (nominal_mujoco hoặc calibrated), reprojection_error.
-- camera_matrix(): K tính từ fovy của simulator (pinhole lý tưởng).
-- camera_extrinsics(): (forward, lateral, yaw) của camera trong hệ robot;
-  None trong config thì dùng nominal (forward = body_radius + 0.01).
-  camera_forward_offset() được docking.py dùng.
-- Chuyển hệ toạ độ: camera <-> robot, robot <-> world, marker_world_position.
-- solve_marker_pose(): giải PnP bằng IPPE_SQUARE và ITERATIVE, loại ứng
-  viên có z <= 0 hoặc sai hướng pháp tuyến hoặc reprojection error > 3 px,
-  chọn ứng viên sai số nhỏ nhất.
-- marker_pose_from_pnp() / marker_pose_from_T(): ra (range, bearing,
-  view_angle).
-- marker_measurement_covariance(): mô hình nhiễu bậc nhất theo khoảng cách
-  (sigma_r ~ Z^2 / (f * marker_size), sigma_b ~ 1 / (2f)).
-- Kiểm tra: validate_intrinsics, check_resolution, check_units,
-  check_frame_conventions.
-- Hiệu chuẩn thật: chessboard -> calibrate_intrinsics (cần >= 5 view),
-  save/load JSON, cổng RMS <= 1 px khi require_calibrated = True;
-  validate_calibration_image_effect() kiểm tra hiệu quả undistort.
-- CLI: --calibrate, --check, hoặc mặc định in K và kiểm tra quy ước.
-
+----------------------------------------------
+4.4 calibration.py  (B. Sensing: camera và hệ toạ độ)
+----------------------------------------------
+Vai trò: thông số camera, đổi hệ toạ độ, PnP ra (range, bearing, view_angle),
+  và hiệu chuẩn camera bằng bàn cờ.
+Nội dung
+  - CameraIntrinsics (K, méo, nguồn nominal_mujoco hoặc calibrated, sai số tái chiếu).
+  - camera_matrix() từ fovy; camera_extrinsics() (forward = body_radius + 0,01,
+    lateral = 0, yaw = 0 nếu config để None).
+  - solve_marker_pose(): IPPE_SQUARE + ITERATIVE, loại ứng viên sai hướng hoặc
+    reprojection error > 3 px.
+  - check_units, check_frame_conventions (kiểm tra quy ước trục, round trip...).
+  - calibrate_intrinsics (>= 5 view); calibrate_from_images: LOẠI DẦN các ảnh có
+    sai số lớn nhất (tối đa 4, giữ >= 7 ảnh) cho tới khi RMS <= 1 px.
+  - calibrate_camera_in_sim(): render 20 ảnh bàn cờ (9x6 góc trong, ô 0,04 m) bằng
+    camera mô phỏng, hiệu chuẩn, TỪ CHỐI nếu RMS > 1 px.
+  - save/load JSON; load_calibration() cho phần cứng đòi RMS <= 1 px.
+  - CLI: --calibrate, --check, --sim.
 Lưu ý
-- Trong mô phỏng dùng intrinsics nominal (có cảnh báo), không phải đo thật;
-  main.py truyền calibration=None và ghi "nominal_mujoco" vào summary.json.
-- Chỉ hiệu chuẩn intrinsics; extrinsics lấy từ config hoặc đo tay.
-- RealismConfig làm camera thật lệch nhẹ (FOV, offset) nên còn sai số hệ
-  thống, là một phần của thử nghiệm độ bền vững.
+  - Camera mô phỏng là pinhole lý tưởng, KHÔNG có méo: hệ số méo k1, k2 tìm
+    được xấp xỉ 0. Cái hiệu chuẩn bắt được là tiêu cự thật (FOV ẩn lệch tới +-3 %).
+  - Extrinsics (vị trí camera) và kích thước marker vẫn là giá trị danh nghĩa;
+    thế giới ẩn lệch offset camera +-1,5 cm.
+  - Kết quả hiệu chuẩn bản cuối [CHƯA RÕ]: lần chạy đầu của phiên bản cũ bị từ
+    chối với RMS 1,53 px. Lấy số thật từ dòng log "[Calibration] RMS ... | fx ...".
+    Nếu bị từ chối, main.py in thông báo và dùng camera danh nghĩa.
+  - Việc loại ảnh xấu là xử lý ngoại lai; nên nói rõ khi trình bày.
 
-==================================================
-4. sensing.py  (Phần B: Sensing - nhiễu, frames)
-==================================================
-Vai trò
-- Đọc cảm biến từ môi trường (MuJoCo hoặc phần cứng) và đóng gói thành
-  SensorFrame cho estimator và controller. Không đọc ground truth.
+----------------------------------------------
+4.5 sensing.py  (B. Sensing: gói dữ liệu cảm biến)
+----------------------------------------------
+Vai trò: đọc encoder, LiDAR, camera qua RobotEnvironment, đóng gói SensorFrame.
+Nội dung
+  - LidarScan, MarkerMeasurement (range, bearing, view_angle, id, time),
+    OdometryIncrement, SensorFrame (kèm ảnh, tuổi dữ liệu, marker dock, mọi marker).
+  - detect_markers(): Machine Vision Toolbox; chỉ nhận id đã biết; bỏ marker
+    nhìn chéo > 70 độ; PnP lỗi thì coi như mất khung.
+  - Sensing.read(): camera mỗi 0,1 s. Ở các bước giữa hai khung camera,
+    marker = None và markers = () (KHÔNG lặp phép đo cũ); vì vậy EKF và TagMap
+    chỉ nhận mỗi khung camera một lần.
+  - Nếu có calibration thật: khử méo ảnh và dùng K đã hiệu chuẩn.
+Lưu ý: MarkerMeasurement không có trường cov, nên cờ --marker-cov không có tác dụng.
 
-Nội dung chính
-- Cấu trúc dữ liệu: LidarScan, MarkerMeasurement (range, bearing,
-  view_angle, id, time), OdometryIncrement, SensorFrame (kèm ảnh, tuổi dữ
-  liệu LiDAR/camera, markers, marker dock).
-- detect_markers(): Machine Vision Toolbox (fiducial) với ArUco 4x4_50;
-  chỉ nhận id nằm trong dải đã biết; bỏ marker nhìn chéo quá 70 độ; PnP
-  lỗi thì coi như mất khung.
-- make_lidar_scan(): mặt nạ valid theo range_min / range_max.
-- Tiện ích LiDAR: lidar_points(), sector_min_range().
-- Lớp Sensing:
-  + Odometry từ encoder qua odometry_increment().
-  + LiDAR mỗi bước điều khiển; camera theo chu kỳ 0.1 s; undistort nếu
-    intrinsics là hiệu chuẩn thật; kiểm tra độ phân giải khớp calibration.
-  + Bộ đếm n_camera, n_detect (dock), n_detect_any.
-  + Đọc sensor_ages() nếu môi trường hỗ trợ.
-
+----------------------------------------------
+4.6 estimator.py  (C. Estimation, EKF)
+----------------------------------------------
+Vai trò: EKF [x, y, theta]; nguồn pose duy nhất cho điều khiển.
+Nội dung
+  - predict(): motion_model + F, G; nhiễu odometry suy ra từ nhiễu encoder.
+  - update(marker): 3 đo [range, bearing, view] nếu có view, ngược lại 2 đo.
+    Gate NIS chi-bình-phương, TỰ ĐIỀU CHỈNH theo số bậc tự do (cùng mức tin cậy).
+    Bị từ chối liên tiếp max_rejects = 10 lần thì nới P rồi chấp nhận (chống khoá).
+    Dạng Joseph.
+  - update_lidar(): so với bản đồ phòng đã biết; mặc định TẮT.
+  - position_std(), is_lost() (sqrt(trace P_xy) > 0,15 m), inflate().
+    is_lost() là điều kiện kích hoạt recovery; inflate() được gọi khi docking hỏng
+    để EKF chấp nhận lại các lần phát hiện tag.
+  - camera_delay + _to_now(): đưa số đo marker trễ về hiện tại bằng odometry
+    của khoảng trễ. MẶC ĐỊNH TẮT (camera_delay = 0) [CHƯA CHẠY].
+  - Đánh giá: nees(), chi2_bounds(), mean_nis_per_dof().
+Cấu hình trong main.py: gate 9,21; R = diag(0,15^2, 0,05^2); R_view = 0,15^2.
+  R lớn hơn nhiều nhiễu camera trong config (0,02 m, 0,01 rad, 0,03 rad), có
+  chủ ý để bù sai số hệ thống của thế giới ẩn; nêu rõ khi báo cáo.
 Lưu ý
-- Cần kiểm tra: ở các bước điều khiển giữa hai khung camera (5 bước mỗi
-  khung), frame.markers và frame.marker có rỗng hay lặp lại phép đo cũ?
-  Nếu lặp, EKF, TagMap, dock_near và ap_obs trong main.py bị đếm trùng
-  (xem mục 0.4, vấn đề 2).
-- MarkerMeasurement không có trường cov, nên use_marker_cov của EKF chưa
-  có tác dụng.
-- Danh sách id marker lấy từ config (chỉ id, không phải pose).
-- Ảnh có thể trễ, rớt khung, mờ, nhiễu theo RealismConfig; khung rớt toàn
-  số 0 và detect_markers bỏ qua khung xấu.
+  - Trong các log đã có, phần lớn số lần cập nhật đến từ TAG PHỤ, không phải
+    dock (ví dụ "dock 0, tags 36"): dock bị ẩn khỏi EKF cho tới khi học lại từ
+    quan sát gần.
+  - Bản đồ tag học từ chính pose ước lượng, không có hiệp phương sai chéo
+    robot-landmark.
+  - NEES chỉ đúng khi yaw xuất phát = 0 (P ở khung robot, sai số ở khung thế giới).
+  - EKF chỉ cập nhật marker khi robot không quay; vì vậy lúc recovery đang SPIN
+    (quay liên tục) EKF chưa nhận tag; chỉ khi dừng hoặc đi thẳng mới hết "lạc".
+    Đây là rủi ro chính của recovery (xem mục 5).
 
-==================================================
-5. estimator.py  (Phần C: Estimation)
-==================================================
-Vai trò
-- EKF cho trạng thái [x, y, theta], nguồn x_hat duy nhất cho controller,
-  navigation, docking và recovery.
-
-Nội dung chính
-- Khởi tạo: reset((0, 0, 0)) với P0 từ config; không có landmark cho tới
-  khi main.py gọi set_tag_map() với MapView (bản đồ học lúc chạy; dock bị
-  ẩn cho tới khi học lại từ quan sát gần).
-- predict(ds, dtheta): motion_model và Jacobian F, G; nhiễu odometry suy
-  ra từ nhiễu encoder, bán kính bánh, wheel_base; q_extra tuỳ chọn.
-- update(marker): 3 dof [range, bearing, view_angle] nếu có view_angle,
-  ngược lại 2 dof. Gate NIS theo chi-square (main.py đặt gate = 9.21). Bị
-  từ chối liên tiếp max_rejects lần thì nới P rồi chấp nhận (chống khoá).
-  Dạng Joseph, đối xứng hoá P.
-- update_lidar(scan): so với bản đồ phòng đã biết; mỗi tia là một cập nhật
-  vô hướng tuần tự, lấy 1 tia mỗi 30 tia, nhân sigma với 2, gate 99 %.
-  Mặc định tắt trong main.py (chỉ bật với --lidar-map).
-- Quản lý mất vị trí: position_std(), is_lost(), inflate() (main.py gọi
-  inflate() sau docking thất bại để chấp nhận tag kế tiếp).
-- Đánh giá (không dùng trong điều khiển): nees(), chi2_bounds(),
-  mean_nis_per_dof(), bộ đếm update / reject / recover / tag.
-
-Lưu ý
-- Gate cố định 9.21 là ngưỡng chi-bình-phương 2 bậc tự do mức 99 %. Với
-  đo 3 dof, cùng ngưỡng này tương ứng mức tin cậy thấp hơn (khoảng 97 %);
-  cần kiểm tra estimator.py có tự điều chỉnh theo số dof hay không.
-- Q của EKFConfig (process_noise_std) không được dùng trong predict;
-  nhiễu quá trình chỉ đến từ odometry và q_extra.
-- main.py chỉ gọi update(marker) khi robot không quay (< 0.05 rad/s và
-  đã qua 0.3 s), nên khi bám cung cong liên tục EKF ít được hiệu chỉnh.
-- nees() cần ground truth nên chỉ dùng để đánh giá; P ở khung robot còn
-  est và truth ở khung thế giới nên NEES chỉ đúng khi yaw bắt đầu = 0.
-- EKF dùng bản đồ tag học từ chính pose ước lượng, không có hiệp phương
-  sai chéo robot-landmark, nên dễ quá tự tin (NEES, NIS/dof cao).
-- use_marker_cov = False mặc định nên dùng R cố định, chưa dùng
-  marker_measurement_covariance().
-
-==================================================
-6. environment.py  (Phần B: giao diện chung mô phỏng và robot thật)
-==================================================
-Vai trò
-- Định nghĩa giao diện RobotEnvironment mà Sensing, EKF, controller chỉ
-  được dùng để nói chuyện với robot, để cùng một chương trình chạy trên
-  MuJoCo (MuJoCoEnvironment) và robot thật (HardwareEnvironment). Không
-  dùng ground truth.
-
-Nội dung chính
+----------------------------------------------
+4.7 environment.py  (B. giao diện chung mô phỏng và robot thật)
+----------------------------------------------
 - RobotEnvironment (ABC): time, lidar_angles, read_encoders, read_lidar,
-  read_camera, step(v, w); có sẵn sensor_ages() = (0, 0), emergency_stop(),
-  close() và context manager.
-- MuJoCoEnvironment: adapter mỏng bọc Simulation; ground truth ở lại
-  Simulation.
-- HardwareEnvironment: 4 hook _driver_* chưa cài (NotImplementedError);
-  time = monotonic; sensor_ages() = now - timestamp; step() kẹp giới hạn,
-  đổi (v, w) sang tốc độ góc bánh, gửi xuống driver rồi ngủ cho đủ
-  control_dt; emergency_stop() gửi (0, 0) ngay; close() gọi
-  emergency_stop() và bỏ qua NotImplementedError.
-- cfg phải chứa wheel_radius, wheel_base ĐÃ ĐO; timestamp dùng
-  time.monotonic().
+  read_camera, step(v, w); sensor_ages(), emergency_stop(), close().
+- MuJoCoEnvironment: lớp bọc Simulation (ground truth ở lại Simulation).
+- HardwareEnvironment: khung cho robot thật; 4 hàm driver CHƯA CÀI
+  (NotImplementedError). Đã có: đổi (v, w) sang tốc độ bánh, giữ chu kỳ 0,02 s,
+  tuổi dữ liệu theo timestamp, emergency_stop().
+- main.py điều khiển qua env.step; vẫn giữ tham chiếu Simulation cho phần đánh
+  giá (ground_truth, collided).
 
+----------------------------------------------
+4.8 simulation.py  (B và E: thế giới thật)
+----------------------------------------------
+- Dựng cảnh MuJoCo từ config (sàn, 4 tường, vật cản trụ, panel dock và tag có
+  texture ArUco, robot 3 khớp x, y, yaw, camera trước).
+- Vật cản: random_obstacles() và random_obstacles_hard() (có thể chắn đường và
+  tầm nhìn dock, kiểm tra bằng BFS luôn có đường tới điểm tiếp cận dock và
+  điểm stand-off của tag; hành lang trước dock luôn trống).
+- _sample_world(): thế giới ẩn lệch theo seed (xem 4.1).
+- step(v, w): vùng chết, giới hạn gia tốc, trượt bánh; đặt trực tiếp vận tốc
+  (mô hình động học); encoder đo theo hình học thật nên không thấy trượt.
+- read_lidar(): mj_ray 360 tia, nhiễu tăng theo khoảng cách, rớt tia, trễ.
+- read_camera(): render, mờ khi quay, độ sáng, nhiễu, rớt khung, trễ.
+- render_chessboard_views(): ảnh bàn cờ cho hiệu chuẩn camera (chưa review kỹ).
+- ground_truth() và collided: chỉ để đánh giá.
+Lưu ý: gia tốc bị giới hạn ở cả Simulation.step và SafetyGuard (hai lần);
+  không có động lực học bánh; LiDAR ở độ cao 0,10 m chạm cả panel dock và tag thấp.
+
+----------------------------------------------
+4.9 controller.py  (D. Control, LQR)
+----------------------------------------------
+- LQRTracker: tuyến tính hoá sai số bám tại (v = 0,15; w = 0), giải Riccati rời
+  rạc một lần, K cố định; lệnh = feed-forward + (-K * pose_error), kẹp giới hạn,
+  rồi safe_command phanh theo vật cản phía trước (dừng ở body_radius + 0,05,
+  đủ tốc từ safe_distance + 0,30).
+- segment_reference(): chiếu pose lên đoạn p_start -> p_end, giảm tốc trong 0,4 m
+  cuối, sàn tốc độ 0,03 m/s.
+- Không cho lùi (v < 0 bị kẹp về 0). Lệnh lùi của docking đi đường khác.
+Lưu ý: không có gain scheduling (K thiết kế tại 0,15 m/s); ổn định mang tính thực
+  nghiệm. Lỗi chính tả trong comment ("fown", "obstale").
+
+----------------------------------------------
+4.10 navigation.py  (D. Control, bám waypoint và né vật cản)
+----------------------------------------------
+- Navigator: TRACK (đi thẳng theo đoạn) hoặc AVOID (chọn hướng thoáng gần hướng
+  đích nhất, đi 0,08 m/s), DONE.
+- Hành lang kiểm tra 0,6 m phía trước; vào AVOID với biên 0,05 m, ra với biên
+  0,08 m và phải thoáng liên tục 25 bước (hysteresis, chống lắc).
+- Lưới an toàn HANDOFF: ở waypoint cuối, cách < 1,0 m mà kẹt AVOID > 8 s thì
+  báo finished.
+- Trong main.py chỉ dùng qua go_to() (một waypoint) và trong recovery
+  (GOTO và MAP_GOTO).
+Lưu ý: tránh vật cản thuần phản ứng, có thể kẹt ở vật cản dạng chữ U; panel dock
+  thấp làm LiDAR thấy "vật cản" gần dock (HANDOFF xử lý).
+
+----------------------------------------------
+4.11 docking.py  (E. Integration, visual servoing)
+----------------------------------------------
+Hằng số hiện tại: DOCK_MAX_SPEED 0,12; DOCK_MIN_SPEED 0,03; K_RANGE 1,0; K_BEARING 1,5;
+  K_AXIS 4,0; K_CENTER 2,0; BETA_MAX 0,6; AXIS_TOLERANCE 0,15 (đã nới từ 0,10);
+  DOCK_CONFIRM_FRAMES 2 (từ 3); ALIGN_TIMEOUT 20 s (từ 12); MAX_DOCK_TIME 60 s
+  (từ 40); RETREAT_DELAY 2 s (từ 1); RETREAT_EXTRA 0,40 m (từ 0,15);
+  MEASUREMENT_TIMEOUT 0,5 s; REAL_HOLD_TIME 1,0 s; BLIND_TIMEOUT 8 s.
+Nội dung
+  - is_docked(): range <= 0,60 m, |bearing| <= 0,08, |bearing - view| <= 0,15.
+  - docking_command(): tốc độ theo sai số khoảng cách, giảm khi marker lệch giữa
+    ảnh và khi lệch trục; w = 5,5*bearing - K_AXIS*view (kẹp +-0,8 rad/s);
+    |bearing| >= BETA_MAX thì chỉ quay.
+  - propagate_marker(): cập nhật đo marker bằng odometry giữa các khung camera.
+  - Hai chế độ: (a) không x_est: dùng đo thô, DOCKED chỉ cần MỘT phép đo hợp lệ;
+    (b) có x_est (sau khi dock_refined): đo thật thắng đo dự đoán, DOCKED cần 2
+    khung thật liên tiếp trong ngưỡng.
+  - Lùi ra rồi vào lại khi đúng khoảng cách nhưng lệch trục quá 2 s;
+    BACKOFF khi mất marker ở rất gần.
 Lưu ý
-- MuJoCoEnvironment không ghi đè sensor_ages() nên luôn (0, 0); trễ camera
-  0.15 s và trễ LiDAR của Simulation nằm bên trong read_*() nên không phản
-  ánh qua tuổi dữ liệu. main.py cho phép thử nhánh E-STOP bằng
-  --lidar-fault (cộng 5 s tuổi giả), nhưng chỉ cho LiDAR và không làm mất
-  dữ liệu thật.
-- Giao diện không lộ reset(), collided, time_exceeded, ground_truth(); main
-  vẫn giữ tham chiếu tới Simulation. Đúng với ràng buộc nhưng main chưa
-  hoàn toàn độc lập với MuJoCo.
-- HardwareEnvironment.step() ngủ đến hết control_dt còn Simulation.step()
-  chạy nhanh nhất có thể; mọi thứ phụ thuộc thời gian phải dùng env.time.
-- Thiếu watchdog phía Python (firmware phải có); step() không kiểm tra NaN
-  nên bắt buộc lọc qua SafetyGuard (main.py đã làm); close() chỉ bắt
-  NotImplementedError, driver mất kết nối sẽ ném lỗi lên.
-- read_lidar() không kèm mặt nạ hợp lệ: quy ước tia mất (nan / inf /
-  range_max) phải thống nhất giữa driver và Simulation. read_camera() không
-  ép dtype hay thứ tự màu; camera thật thường là BGR. Encoder thật có thể
-  tràn; cần hiệu chuẩn bằng calibrate_odometry.py (chưa review).
-- Không có __main__ hay môi trường giả (mock) để thử giao diện.
+  - Trong log đã xem, không có dòng "dock re-learned", nên docking chạy ở chế độ
+    (a): DOCKED dựa trên một phép đo camera. Vì thế phải dẫn thêm sai số ĐỘC LẬP
+    đo bằng ground truth (dock_range, dock_lateral, dock_heading).
+  - Các ngưỡng đã nới (xem mục 5).
 
-==================================================
-7. simulation.py  (Phần B và E: thế giới thật, độ bền vững)
-==================================================
-Vai trò
-- Sinh cảnh MuJoCo từ config, mô phỏng robot và cung cấp dữ liệu cảm biến.
-  Đây là "thế giới thật", tách khỏi "niềm tin" của robot.
-
-Nội dung chính
-- Cảnh: build_scene_xml() / write_scene_files() tạo MJCF (sàn, 4 tường,
-  vật cản trụ, panel dock và tag phụ có texture ArUco sinh bằng OpenCV,
-  robot 3 khớp trượt/xoay x, y, yaw, camera "front_cam" ở body_radius +
-  0.01, cao 0.15 m); mesh TurtleBot3 (chỉ hiển thị) nếu có, không thì
-  hình trụ.
-- Bố trí vật cản: cố định theo config; random_obstacles() (lấy mẫu loại
-  bỏ, giữ trống đường đi, tầm nhìn tới dock, hành lang trước dock, điểm
-  stand-off của tag); random_obstacles_hard() (có thể chắn tầm nhìn dock,
-  kiểm tra đường đi bằng BFS lưới obstacles_leave_a_path()).
-- Thế giới ẩn khác niềm tin (_sample_world, theo seed): dock dịch và xoay,
-  FOV thật, offset camera, bán kính bánh và wheel_base thật, độ trượt, độ
-  sáng ảnh.
-- step(v, w): kẹp giới hạn, vùng chết, giới hạn gia tốc, trượt bánh; đặt
-  trực tiếp qvel mỗi bước vật lý (mô hình động học). Encoder đo theo hình
-  học thật nên không thấy trượt; thêm nhiễu encoder.
-- read_lidar(): 360 tia bằng mj_ray (bỏ qua thân robot), nhiễu tăng theo
-  khoảng cách, mất tia ngẫu nhiên, trễ vài bước điều khiển.
-- read_camera(): render, làm xấu ảnh (mờ chuyển động khi quay, độ sáng,
-  nhiễu), rớt khung ngẫu nhiên, trễ 0.15 s.
-- Tiện ích: time, time_exceeded, collided, close() / context manager;
-  ground_truth() chỉ để đánh giá.
-
+----------------------------------------------
+4.12 safety.py  (E. Integration, lớp chặn lệnh cuối)
+----------------------------------------------
+- filter(v, w, scan, dt, lidar_age, sigma_xy) -> (v, w, reason), theo thứ tự:
+  fault chốt; lệnh không hữu hạn; LiDAR cũ > 2,0 s thì E-STOP chốt; LiDAR cũ
+  > 0,5 s hoặc < 30 tia hợp lệ thì dừng tạm; kẹp giới hạn; sigma_xy > 0,30 m thì
+  giảm tốc tuyến tính, >= 1,00 m cấm tịnh tiến; vật trong cung +-60 độ theo
+  hướng chạy gần hơn body_radius + 0,05 m thì v = 0; vật trong cả vòng gần hơn
+  body_radius + 0,01 m thì w = 0; giới hạn gia tốc (phanh không bao giờ bị trễ).
+- Fault chốt làm main.py kết thúc FAILED "safety fault"; chỉ có thể thử bằng
+  --lidar-fault.
 Lưu ý
-- Lệch có chủ đích nên EKF phải chịu sai số hệ thống (odometry scale,
-  dock, FOV): đây là bằng chứng độ bền vững cho tiêu chí E.
-- Panel dock và tag là hộp thấp (0.05-0.25 m) nên tia LiDAR (cao 0.10 m)
-  chạm vào; gần dock đường tới điểm tiếp cận có thể bị coi là bị chắn
-  (liên quan HANDOFF trong navigation.py và guard trong safety.py).
-- reset() đặt robot ở start_pose của config; khung EKF là (0, 0, 0). Phép
-  đổi khung đã có ở main.py (est_to_world); chỉ --lidar-map còn phụ thuộc
-  start_pose = (0, 0, 0).
-- randomize_obstacles dùng self.rng chung (cùng luồng với nhiễu cảm biến);
-  chế độ hard dùng generator riêng.
-- Không có động lực học bánh xe; va chạm chỉ để phát hiện (collided).
+  - Sau estimator.inflate() (sigma_xy ~ 0,71 m) guard chỉ giảm tốc còn khoảng 42 %,
+    chưa chặn hẳn.
+  - Chỉ dựa vào LiDAR một độ cao; là bảo vệ phần mềm, không thay thế E-STOP vật lý.
+
+----------------------------------------------
+4.13 recovery.py  (F. Recovery)
+----------------------------------------------
+- TagRecovery (phiên bản đã rút gọn thời gian) [CHƯA CHẠY]:
+  SPIN (quay nửa vòng, đủ math.pi theo odometry, tốc độ cfg.tags.spin_omega)
+  -> nếu chưa hết lạc: GOTO điểm đứng cách tag 0,9 m (tag chưa ghé, gần nhất;
+  tối đa MAX_TAGS = 1 tag) -> SPIN lại -> MAP_GOTO theo bản đồ tới điểm cách
+  dock 1,0 m -> DONE (arrived_by_map = True) hoặc FAILED (không có dock trong
+  bản đồ). Điều hướng bằng Navigator.
+- Giới hạn thời gian: sau 25 s kể từ start() mà chưa ở MAP_GOTO thì bỏ tìm tag
+  và chuyển thẳng sang MAP_GOTO. Hằng số: MAX_TAGS = 1 (đầu recovery.py),
+  ngưỡng 25 s (trong update()). Pha MAP_GOTO không có giới hạn riêng ngoài của
+  Navigator.
+- DONE khi localized (EKF hết "lạc", tức thấy tag) hoặc tới điểm tiếp cận theo
+  bản đồ.
+- Thời gian tối đa ước tính: <= 25 s tìm tag + thời gian đi tới điểm tiếp cận
+  dock.
+- available = có tag phụ hoặc đã học dock; nếu không có gì thì start() vào
+  FAILED ngay.
+Lưu ý: xem mục 5. Recovery sau khi sửa vẫn CHƯA có log chạy.
+
+----------------------------------------------
+4.14 visualization.py  (E. Integration, ghi và trình bày kết quả)
+----------------------------------------------
+- Bộ ghi thụ động (không gửi lệnh): quỹ đạo EKF (mỗi 0,2 s), điểm LiDAR chiếu bằng
+  pose ước lượng (mỗi 0,5 s, tối đa 25.000 điểm), ảnh xuất phát và ảnh đích
+  (chụp một lần khi marker <= 0,8 m và |bearing| <= 0,25 rad), tag học được.
+- LiveCameraView: cửa sổ camera trực tiếp ở tiến trình riêng (xanh: thấy dock;
+  cam: chỉ thấy tag; đỏ: không thấy marker).
+- finish(): ghi CSV, JPEG, PNG, summary.json. Không ghi video, không phải SLAM.
+- Nếu chưa xác nhận được đích thì ảnh gắn nhãn "Final view (target NOT confirmed)".
+
+----------------------------------------------
+4.15 main.py  (E. Integration, máy trạng thái và đánh giá)
+----------------------------------------------
+- run_pipeline(): vòng điều khiển ở mục 3. run_trials(), run_suite(), plot_run().
+- Hằng số: MAX_RECOVERIES = 1; EXPLORE_SCAN_ANGLE = 2*pi/3; EXPLORE_STEP = 1,0 m.
+- Phần recovery trong run_pipeline: biến recover_from_aim; bước 2a (kích hoạt khi
+  NAVIGATE, recovery.available, n_tag_recoveries < MAX_RECOVERIES, is_lost());
+  bước 2b (RECOVER: cập nhật, ghi log, xử lý DONE / FAILED); nhánh docking hỏng
+  (inflate P rồi recovery).
+- chessboard_demo(): render ảnh bàn cờ, hiện 6 ảnh nhỏ 2 giây (lưu views.png),
+  hiệu chuẩn camera, lưu camera_intrinsics_sim.json.
+- compute_report() / print_report(): RMSE vị trí và hướng, NEES, NIS/dof, số lần
+  gate loại, số cập nhật (dock/tag), thống kê điều khiển, khoảng cách an toàn,
+  sai lệch docking so với dock thật, sai số bản đồ tag, timeline sự kiện, cảnh báo
+  tự động. Nhóm báo cáo: B Sensing, C Estimation, D Control, E Integration,
+  F Recovery (số lần recovery x/MAX_RECOVERIES, số cập nhật tag, thời gian trong
+  recovery).
+- Ground truth chỉ dùng ở: TrialLog.record, RunResult.truth, sim.collided (dừng
+  khi va chạm), dock_errors (so với world_cfg), chấm điểm, vẽ so sánh.
+- Dòng "ground truth used in control: NO" và cờ ground_truth_used_for_control =
+  False là khẳng định thiết kế, không phải kiểm tra tự động.
 
 ==================================================
-8. controller.py  (Phần D: Control, bộ bám quỹ đạo LQR)
+5. HỎI ĐÁP DỰ KIẾN
 ==================================================
-Vai trò
-- Biến pose ước lượng và điểm tham chiếu thành lệnh vận tốc (v, w) cho
-  robot unicycle: LQR rời rạc cộng lớp phanh theo LiDAR phía trước.
-  Không phụ thuộc MuJoCo, không dùng ground truth.
+Q: Robot có biết dock ở đâu không?
+A: Không. Dock và tag được học lúc chạy từ quan sát camera (SURVEY, EXPLORE,
+   rồi học lại từ quan sát gần). Điều duy nhất lấy từ config là số lượng tag phụ.
 
-Nội dung chính
-- Hằng số: DEFAULT_CRUISE_SPEED 0.15 m/s (cũng là điểm thiết kế LQR),
-  MIN_TRACK_SPEED, SLOW_RADIUS, STOP_MARGIN, SLOW_BAND.
-- Reference (dataclass bất biến): (x, y, theta) và vận tốc feed-forward
-  (v, w).
-- lqr_gain(): solve_discrete_are, K = (R + B'PB)^-1 B'PA.
-- limit_command(): kẹp v, w về giới hạn; mặc định không cho lùi, có cờ
-  allow_reverse.
-- safe_command(): nhân v với hệ số tuyến tính trong [0, 1] theo
-  front_range (0 khi <= body_radius + STOP_MARGIN, 1 khi >= safe_distance
-  + SLOW_BAND). Chỉ giảm v, không đụng w.
-- segment_reference(): chiếu pose lên đoạn p_start -> p_end; theta_ref =
-  hướng đoạn, w_ref = 0, v_ref = v_cruise * remaining / slow_radius kẹp
-  trong [MIN_TRACK_SPEED, v_cruise]. Đoạn dài 0: tham chiếu là p1, v = 0.
-- LQRTracker: tuyến tính hoá mô hình sai số tại (v_design, w_design),
-  kiểm tra controllability, K tính một lần; closed_loop_poles();
-  compute(x_est, ref, front_range) = feed-forward + (-K @ pose_error),
-  qua limit_command rồi safe_command. Đầu vào không hợp lệ thì trả (0, 0).
-- __main__: in K, độ lớn cực vòng kín, mô phỏng bám đoạn (0,0)->(2,0) bằng
-  motion_model lý tưởng.
+Q: Ground truth dùng ở đâu?
+A: Chấm điểm (RMSE, NEES, sai số docking so với dock thật), vẽ so sánh, dừng khi
+   va chạm, và làm "thước đo" trong hiệu chuẩn odometry. Không dùng trong EKF,
+   navigation, docking, recovery hay safety.
 
-Lưu ý
-- K thiết kế một lần tại (v = 0.15, w = 0) rồi dùng cố định; khi v_ref
-  giảm về 0.03 hoặc khi quay, mô hình lệch điểm thiết kế (không có gain
-  scheduling), chỉ ổn định thực nghiệm. Tại v = 0 và w = 0 hệ không điều
-  khiển được, __init__ có kiểm tra.
-- MIN_TRACK_SPEED khiến bộ bám luôn trườn >= 0.03 m/s; việc dừng và chuyển
-  waypoint do Navigator quyết định.
-- Không cho lùi nên LQR đòi v âm thì bị kẹp về 0 (robot không tự lùi sửa
-  sai số dọc). Lệnh lùi của docking không đi qua limit_command nên không
-  bị ảnh hưởng.
-- safe_command chia cho (slow - stop); cần safe_distance + SLOW_BAND >
-  body_radius + STOP_MARGIN trong config. Chỉ phanh, không né.
-- Controller tin pose EKF nên sai số hệ thống của EKF đi thẳng vào sai số
-  bám thật; lệnh còn qua vùng chết, giới hạn gia tốc, trượt trong
-  Simulation.step() nên khác mô hình lý tưởng.
-- Test __main__ không nhiễu, không trễ: chỉ là kiểm tra nhanh, không chứng
-  minh độ bền vững. Lỗi chính tả: "fown", "obstale".
+Q: Làm sao biết docking đúng?
+A: Robot tự kết luận bằng camera (range, bearing, lệch trục). Kết quả độc lập là
+   dock_range, dock_lateral, dock_heading đo bằng pose thật so với dock thật.
 
-==================================================
-9. navigation.py  (Phần D: bám waypoint và tránh vật cản)
-==================================================
-Vai trò
-- Máy trạng thái quyết định robot đi đâu và khi nào né: bám lần lượt các
-  waypoint bằng LQRTracker, chuyển sang tránh vật cản khi LiDAR thấy đường
-  tới đích bị chắn, báo finished để bàn giao cho docking.
-- Trong main.py, Navigator được dùng qua go_to() (một waypoint, tối đa
-  1.5 m mỗi lần) ở trạng thái GO của AIM, và trong TagRecovery.
+Q: Vì sao dùng EKF?
+A: Chuyển động và đo (range, bearing) phi tuyến; EKF cho pose và độ bất định P.
+   Odometry nhanh nhưng trôi, marker chậm hơn nhưng không trôi.
 
-Nội dung chính
-- Hằng số: LOOK_DISTANCE 0.6 m, ENTER_MARGIN 0.05, EXIT_MARGIN 0.08,
-  AVOID_SPEED 0.08 m/s, FRONT_HALF_WIDTH 0.4 rad, HEADING_STEP 15 độ,
-  HYSTERESIS 0.8, EXIT_CLEAR_STEPS 25 (0.5 s), HANDOFF_RANGE 1.0 m,
-  HANDOFF_AVOID_TIME 8 s.
-- NavPhase TRACK / AVOID / DONE; NavCommand (dataclass bất biến).
-- free_distance(): điểm LiDAR bị tính là chắn nếu 0 < ahead < look và
-  |lateral| < half_width (hành lang chữ nhật).
-- heading_candidates(), choose_heading(): trong các hướng thông thoáng chọn
-  hướng có cost = |lệch hướng đích| + 0.8 * |lệch hướng trước| nhỏ nhất;
-  không có hướng thông thoáng thì chọn hướng trống nhất, found = False.
-- Navigator.update(x_est, scan): (1) pose không hợp lệ hoặc đã finished
-  thì dừng; (2) qua mọi waypoint đã đạt, bỏ qua waypoint hiện tại nếu
-  waypoint kế gần hơn 0.2 m sau khi né; (3) tính hướng và khoảng cách tới
-  đích; (4) lưới an toàn HANDOFF: ở waypoint cuối, cách < 1.0 m và AVOID
-  quá 8 s thì finished; (5) goal_free bằng hành lang, margin ENTER khi
-  TRACK, EXIT khi AVOID; (6) TRACK với segment_reference, hoặc AVOID với
-  hướng chọn bằng choose_heading; (7) mọi lệnh qua LQRTracker.compute()
-  với front_range = cung trước ±0.4 rad.
-- __main__: bản đồ trống, robot đi tới (1, 1) bằng motion_model lý tưởng.
+Q: NEES, NIS để làm gì?
+A: Kiểm tra bộ lọc có "trung thực". NEES (3 bậc tự do) kỳ vọng khoảng 3; NIS/dof
+   kỳ vọng khoảng 1. Dưới giá trị đó nghĩa là bộ lọc bi quan (R lớn có chủ ý).
 
-Lưu ý
-- Waypoint do bên ngoài cấp (main.py tính từ dock đã học), không lấy từ
-  config. Danh sách rỗng thì update() kết thúc ngay (đây là lý do nhánh
-  NAVIGATE không phải AIM của main.py đứng yên); thuộc tính target trước
-  update đầu tiên sẽ lỗi IndexError.
-- Tránh vật cản thuần phản ứng, không có planner toàn cục, có thể kẹt ở
-  vật cản dạng chữ U; chỉ có lối thoát HANDOFF gần waypoint cuối. Ở nơi
-  khác, found = False làm v_ref = 0 và controller không cho lùi nên robot
-  có thể quay tại chỗ.
-- Vào AVOID xảy ra ngay trong một lần quét, thoát cần 25 bước liên tiếp;
-  LiDAR có nhiễu và mất tia nên một lần quét xấu có thể kích hoạt AVOID
-  sai, và tia mất có thể làm lọt vật cản mỏng.
-- EXIT_CLEAR_STEPS (0.5 s) giả định control_dt = 0.02 s.
-- Panel dock và tag thấp mà LiDAR chạm tới nên điểm tiếp cận trước dock có
-  thể bị coi là bị chắn; HANDOFF là cơ chế xử lý, nhưng cũng làm một lần
-  kẹt bị coi như đã tới.
-- _wrap() trùng wrap_angle(). Test __main__ không kiểm tra nhánh AVOID.
+Q: Hiệu chuẩn odometry có ích không?
+A: [BẢN CŨ] RMSE giảm từ 0,045 xuống 0,023 m trong suite 10 seed. Chạy lại để
+   có số cho bản cuối.
 
-==================================================
-10. docking.py  (Phần E: visual servoing bằng camera)
-==================================================
-Vai trò
-- Giai đoạn cuối: dùng quan sát marker ArUco của dock (range, bearing,
-  view angle) để đưa robot tới đúng khoảng cách, đúng hướng, đúng trục
-  marker, rồi khai báo DOCKED hoặc FAILED. Không dùng ground truth.
+Q: Robot xử lý sai lệch của thế giới thật thế nào?
+A: Hiệu chuẩn (bánh, tiêu cự), R lớn trong EKF, đo thật luôn thắng đo dự đoán
+   trong docking, học lại dock từ quan sát gần, và quan sát chỉ khi đứng yên
+   (ảnh nét, không trễ do quay).
 
-Nội dung chính
-- Hằng số: DOCK_MAX_SPEED 0.12, DOCK_MIN_SPEED 0.03, K_RANGE, K_BEARING,
-  K_AXIS, K_CENTER, BETA_MAX 0.6 rad, AXIS_TOLERANCE 0.10 rad,
-  SEARCH_OMEGA 0.7, DOCK_MAX_TURN 0.8 rad/s; thời gian MEASUREMENT_TIMEOUT
-  0.5 s, REAL_HOLD_TIME 1.0 s, BLIND_TIMEOUT 8 s, ALIGN_TIMEOUT 12 s,
-  MAX_DOCK_TIME 40 s; DOCK_CONFIRM_FRAMES = 3; nhóm lùi RETREAT_* và
-  BACKOFF_SPEED.
-- DockPhase SEARCH / APPROACH / ALIGN / DOCKED / FAILED; DockCommand (kèm
-  axis_angle = bearing - view_angle).
-- propagate_marker(): cập nhật (range, bearing, view_angle) sau khi robot
-  di chuyển (ds, dtheta), cùng giả định điểm giữa với motion_model.
-- marker_from_pose(): đo dự đoán từ pose EKF và dock đã học; None nếu chưa
-  học dock.
-- is_docked(): range <= target_distance + tolerance, |bearing| <=
-  bearing_tolerance, |axis| <= AXIS_TOLERANCE.
-- docking_command(): đã tới range đích thì v = 0, w = K_CENTER * bearing;
-  chưa tới thì v = clip(K_RANGE * (range - target), 0.03, 0.12) nhân hệ số
-  giảm theo |bearing| (quay trước, đi sau) và theo |axis| (sàn 0.3);
-  w = 5.5 * bearing - K_AXIS * clip(view, ±0.5), kẹp ±0.8; khi |bearing| >=
-  BETA_MAX bỏ số hạng view để tránh khử lẫn nhau gây kẹt.
-- DockingController.begin(x_est, landmark, dock_yaw) / set_landmark().
-  _retreating() có hysteresis (lùi khi tới đúng range nhưng lệch trục
-  quá 1 s, dừng khi range >= target + tolerance + RETREAT_EXTRA).
-- update(marker, odometry, x_est=None) có hai chế độ:
-  (a) không x_est: dùng đo marker thô, truyền bằng odometry tối đa 0.5 s;
-      hết hạn thì SEARCH (xoay, hoặc lùi chậm nếu lần cuối còn < 1.5 m);
-  (b) có x_est: _update_estimated() chạy trên đo dự đoán từ EKF; đo THẬT
-      luôn thắng (giữ tối đa 1 s); DOCKED cần 3 đo thật liên tiếp trong
-      ngưỡng; mù quá 8 s thì lùi chậm (nếu đã tới nơi) hoặc SEARCH.
-- main.py chỉ truyền x_est khi dock_use_estimate, đã có dock_lm và
-  dock_refined; trước đó dùng chế độ (a).
+Q: Nếu mất LiDAR?
+A: SafetyGuard dừng khi dữ liệu cũ > 0,5 s và khoá E-STOP khi > 2,0 s (thử bằng
+   --lidar-fault). Camera chưa có cơ chế tương tự.
 
-Lưu ý
-- Lệnh lùi (RETREAT_SPEED, BACKOFF_SPEED) không đi qua limit_command nên
-  không bị kẹp về 0; nó đi qua SafetyGuard (cho phép lùi và kiểm tra cung
-  phía sau). Comment "no LiDAR behind the robot" trong code vì vậy chưa
-  chính xác: robot có LiDAR 360 độ và guard dùng nó.
-- Hai chế độ có tiêu chí DOCKED khác nhau: chế độ (a) chỉ cần MỘT phép đo
-  (kể cả đo truyền bằng odometry tới 0.5 s), chế độ (b) cần 3 đo thật.
-  Nêu rõ trong báo cáo chế độ nào quyết định kết quả cuối.
-- "3 lần đo liên tiếp" nghĩa là 3 lần phát hiện liên tiếp: khung rớt không
-  làm _ok_count về 0, chỉ khung thấy marker mà ngoài ngưỡng mới reset.
-- is_docked() chỉ chặn trên range; "quá gần không thấy marker" được xử lý
-  bằng BACKOFF_SPEED.
-- w = 5.5 * bearing bão hoà ở 0.8 rad/s khi |bearing| chỉ khoảng 0.15 rad
-  (8 độ); gần đích gần như bang-bang, cộng trễ camera 0.15 s có thể gây
-  dao động (DOCK_MAX_TURN chọn để hạn chế overshoot).
-- Đo camera được coi là xảy ra ở thời điểm nhận, nên nếu Sensing không bù
-  trễ 0.15 s thì đo cũ; propagate_marker chỉ bù từ lúc nhận.
-- Chế độ (b) lúc mới bắt đầu có thể đi theo dự đoán từ bản đồ tới 8 s;
-  nếu dock học sai nhiều (dock thật bị dịch) robot có thể đi nhầm hướng
-  cho tới khi có đo thật.
-- Comment DOCK_MIN_SPEED sai (sàn 0.03 được áp trước khi nhân hệ số, tốc
-  độ thực có thể thấp hơn); comment nhắc "CONFIRM_WINDOW" (tên đúng
-  DOCK_CONFIRM_FRAMES). AXIS_TOLERANCE là hằng số trong file, nên đưa vào
-  config.docking.
-- Với target_distance 0.55 m, khoảng cách tới panel lớn hơn nhiều ngưỡng
-  chặn của guard (khoảng body_radius + 0.05); cần xác nhận body_radius
-  thực tế trong config.
-- __main__ đặt điểm bàn giao theo config.env.dock_pose trong khi dock thật
-  bị dịch theo seed, nên là thử độ bền vững; giới hạn 60 s lớn hơn
-  MAX_DOCK_TIME = 40 s; không kiểm tra nhánh _update_estimated().
-- min_visible_range() không được gọi trong file; tham số cfg của
-  marker_from_pose không dùng.
+Q: Recovery hoạt động thế nào và có hiệu quả không?
+A: Khi sigma_xy > 0,15 m (bị lạc), robot quay nửa vòng tìm tag; không thấy thì
+   ghé tối đa 1 tag, rồi theo bản đồ tới điểm tiếp cận dock; tối đa 25 s tìm
+   tag và 1 lần mỗi lần chạy, xong thì quay lại AIM. Đã được cài và sửa để chạy
+   được cả khi đang AIM, nhưng CHƯA có log chạy xác nhận hay số liệu so sánh,
+   nên không khẳng định nó cải thiện kết quả (xem mục 5).
 
-==================================================
-11. safety.py  (Phần E: lớp chặn lệnh cuối cùng)
-==================================================
-Vai trò
-- Lớp phòng thủ cuối giữa các bộ điều khiển (EXPLORE, AIM, docking,
-  recovery) và Simulation.step(): kiểm tra bằng LiDAR, tuổi dữ liệu và độ
-  bất định vị trí, trả lệnh đã giới hạn kèm lý do. Không dùng ground truth.
+Q: Vì sao giới hạn recovery chỉ 1 lần và 25 s?
+A: Để recovery không kéo dài thời gian chạy (giới hạn mô phỏng 180 s) và không
+   lặp vô hạn. Đổi lại, nếu lần đầu thất bại thì không còn lượt thử.
 
-Nội dung chính
-- SafetyConfig (bất biến): max_lidar_age 0.5 s, estop_lidar_age 2.0 s,
-  min_valid_beams 30, forward_half_angle pi/3, translate_margin 0.05 m,
-  rotate_margin 0.01 m, sigma_slow 0.30 m, sigma_stop 1.00 m,
-  max_lin_acc 0.5 m/s^2, max_ang_acc 3.0 rad/s^2.
-- SafetyGuard.reset() xoá lỗi chốt và trạng thái giới hạn gia tốc;
-  _halt() đặt _v = _w = 0; _ramp(): giảm tốc không bao giờ bị trì hoãn,
-  tăng tốc hoặc đổi dấu bị kẹp theo gia tốc tối đa * dt.
-- filter(v, w, scan, dt, lidar_age, sigma_xy) -> (v, w, reason), theo
-  thứ tự: (1) đã có fault chốt thì trả (0, 0, fault); (2) lệnh không hữu
-  hạn thì dừng; (3) lidar_age > 2.0 s thì chốt "E-STOP: LiDAR data lost";
-  (4) lidar_age > 0.5 s hoặc < 30 tia hợp lệ thì dừng nhưng không chốt;
-  (5) kẹp giới hạn robot (cho phép lùi); (6) sigma_xy > 0.30 thì v nhân
-  (1 - sigma) / 0.70 trong [0, 1] (quay vẫn được); (7) tịnh tiến: cung
-  ±60 độ theo hướng chạy, < body_radius + 0.05 thì v = 0; (8) quay: kiểm
-  tra toàn vòng, < body_radius + 0.01 thì w = 0; (9) giới hạn gia tốc.
-
-Lưu ý
-- main.py gọi filter() ở mọi bước, mọi phase, với lidar_age =
-  frame.lidar_age và sigma_xy thật; lo ngại "quên truyền tham số" không
-  xảy ra. Fault chốt làm main.py kết thúc FAILED "safety fault".
-- Xung đột với recovery (xác nhận trong main.py): sau estimator.inflate()
-  sigma_xy tăng, guard giảm tốc hoặc cấm tịnh tiến, GOTO và MAP_GOTO bị
-  chặn. Cần chỉnh chung ngưỡng hoặc cho phép riêng phase RECOVER.
-- Ba lớp an toàn chồng nhau (hành lang của navigation, safe_command của
-  controller, guard): ngưỡng dừng của hai lớp sau gần như trùng, khác bề
-  rộng cung (±0.4 rad so với ±60 độ).
-- Có thể kẹt cứng: vật trong vòng body_radius + 0.01 ở bất kỳ hướng nào thì
-  w = 0; phía trước cũng bị chặn thì chỉ còn lùi, mà Navigator và
-  LQRTracker không ra lệnh lùi.
-- Chỉ dựa vào LiDAR ở một độ cao (0.10 m); ngưỡng 30 tia hợp lệ trên 360
-  khá thấp nên mất một mảng lớn tia phía trước vẫn không bị phát hiện;
-  chưa rõ sector_min_range xử lý tia mất thế nào (cần kiểm tra).
-- Chỉ chốt fault khi mất LiDAR; sigma lớn và va chạm không chốt. Không có
-  bộ đếm số lần can thiệp (chỉ có sự kiện "SAFETY: ..." khi lý do đổi,
-  đếm từ events nếu cần thống kê). Sự kiện "translation blocked" gần dock
-  là dấu hiệu guard chặn docking.
-- Không có test __main__; nên có test đơn vị cho từng nhánh.
-
-==================================================
-12. recovery.py  (Phần F: khôi phục định vị)
-==================================================
-Vai trò
-- Khi EKF báo mất định vị (is_lost) hoặc docking thất bại, điều khiển robot
-  tìm lại tham chiếu: quay tìm tag, đi tới điểm đứng trước từng tag đã
-  học, nếu không thấy tag nào thì đi theo bản đồ học được tới điểm tiếp cận
-  dock. Không dùng ground truth.
-
-Nội dung chính
-- RecoveryPhase IDLE / SPIN / GOTO / MAP_GOTO / DONE / FAILED.
-- TagRecovery(cfg, tracker, tag_map): chỉ lấy bản đồ học được qua
-  landmark_table(); tag_map = None thì bảng rỗng. self.tags (tag phụ),
-  self.dock. Thuộc tính available, active, finished.
-- start(): SPIN nếu available, ngược lại FAILED. standoff_point(),
-  approach_point() (theo pháp tuyến tag/dock đã học).
-- _start_goto(): chọn tag chưa ghé có điểm đứng gần pose ước lượng nhất,
-  tạo Navigator một waypoint; hết tag thì _start_map_follow() (không có
-  dock thì FAILED).
-- update(x_est, scan, localized, dtheta) -> (v, w): localized thì DONE;
-  SPIN cộng |dtheta| đủ 2*pi thì đi tiếp; GOTO / MAP_GOTO chạy Navigator;
-  Navigator finished: MAP_GOTO thì arrived_by_map = True và DONE (main
-  chuyển sang DOCK), GOTO thì quay lại SPIN tại điểm đứng.
-- Thứ tự thử: nhìn quanh -> ghé từng tag (mỗi nơi quay một vòng) -> theo
-  bản đồ tới dock.
-- main.py tạo lại TagRecovery mỗi khi bản đồ tag được cập nhật; tối đa
-  MAX_RECOVERIES = 3 lần mỗi lần chạy.
-
-Lưu ý
-- Với dock_first = True, recovery giữa đường không bao giờ bắt đầu (điều
-  kiện cần not aim_mode). Recovery thực tế chỉ chạy sau docking thất bại,
-  và sau đó đường RELOCALIZED -> resume navigation dẫn tới nhánh NAVIGATE
-  không có lệnh (xem mục 0.4, vấn đề 1). Hai điểm này cần được sửa hoặc
-  nêu rõ trong báo cáo.
-- Xung đột với SafetyGuard sau estimator.inflate() (xem safety.py).
-- Navigator chạy trên chính pose ước lượng đã bị coi là "lạc"; điểm đứng và
-  điểm tiếp cận đạt được theo ước lượng. arrived_by_map = True nghĩa là
-  "tới nơi theo ước lượng", không phải "đã định vị lại".
-- HANDOFF của Navigator có thể báo finished khi chỉ kẹt gần điểm đứng; với
-  MAP_GOTO nó đặt arrived_by_map = True dù robot chưa tới nơi.
-- Không có giới hạn thời gian cho từng pha hay toàn bộ recovery. SPIN dựa
-  trên dtheta từ odometry (wheel_base thật lệch niềm tin) và không kết
-  thúc nếu robot không quay thật (guard chặn, kẹt, trượt).
-- Tag chỉ phát hiện trong tầm max_range và khi ảnh không bị nhoè; camera
-  trễ 0.15 s nên localized đến chậm hơn thực tế.
-- localized do main.py tính từ estimator.is_lost(); một phát hiện sai có
-  thể kết thúc recovery sớm. Sau khi định vị lại pose EKF có thể nhảy, nên
-  dùng Navigator mới (resume_navigator của main.py làm đúng việc này).
-- start(x_est) không dùng x_est; target_id chỉ để log. Không có test.
-
-==================================================
-13. visualization.py  (Phần E: ghi lại và trình bày kết quả)
-==================================================
-Vai trò
-- Bộ ghi thụ động, không gửi lệnh điều khiển: ghi quỹ đạo EKF, điểm LiDAR
-  chiếu bằng pose ước lượng, ảnh camera lúc bắt đầu và lúc tới đích, tag
-  học được; xuất CSV, JPEG, PNG, JSON. Không ghi video, không giữ lịch sử
-  ảnh, không làm SLAM.
-
-Nội dung chính
-- as_rgb(); cửa sổ camera trực tiếp LiveCameraView chạy trong tiến trình
-  riêng (spawn, dùng được với mjpython), cập nhật mỗi 0.10 s, queue 2
-  khung (đầy thì bỏ khung mới, không chặn vòng điều khiển), chú thích
-  xanh / cam / đỏ theo thấy dock / chỉ thấy tag / không thấy marker.
-- RouteVisualizer: path_period 0.20 s, lidar_period 0.50 s, beam_stride 6,
-  max_lidar_points 25 000, target_capture_range 0.80 m, target_max_bearing
-  0.25 rad. set_world() nhận thế giới thật CHỈ để vẽ đối chiếu;
-  set_tag_map(); record() (quỹ đạo, LiDAR chiếu, ảnh từ frame.image, ảnh
-  bắt đầu = khung hợp lệ đầu tiên, ảnh đích chụp một lần khi marker <= 0.80 m
-  và |bearing| <= 0.25 rad); capture_target(); finish() ghi
-  start_camera.jpg, target_camera.jpg (hoặc final_view.jpg nếu chưa xác
-  nhận), estimated_path.csv, route_and_snapshots.png, summary.json.
-- _make_figure(): bản đồ (LiDAR, đường đi EKF, 10 mũi tên hướng, khung
-  phòng, vật cản thật, dock và tag thật, tag học được kèm id) và hai ảnh
-  camera; tiêu đề SUCCESS hoặc NOT CONFIRMED kèm lý do.
-- summary.json ghi cờ ground_truth_used_for_control = False,
-  ground_truth_drawn_for_evaluation = True, phương pháp "không phải SLAM".
-
-Lưu ý
-- main.py gọi đúng: set_world() trước, record(..., frame=frame) với pose
-  đã đổi sang khung thế giới, finish() cuối, và có bảo vệ
-  if __name__ == "__main__" (bắt buộc cho spawn). Docstring đầu file vẫn
-  ghi ví dụ cũ (không có frame=frame, thiếu set_world) nên cần sửa.
-- Nếu không gọi set_world() thì _make_figure() lỗi AttributeError
-  (eval_cfg chưa tạo trong reset()).
-- _last_image gán cả khi khung rớt (toàn 0), nên ảnh "final view" và cửa
-  sổ trực tiếp có thể đen. Ảnh bắt đầu và ảnh đích trễ 0.15 s so với pose.
-- Giới hạn 25 000 điểm là "đến đâu hết đó": khoảng 200 s mô phỏng sẽ đầy,
-  phần sau của lần chạy dài không có điểm LiDAR.
-- record() ném ValueError nếu kích thước ranges, angles, valid không khớp,
-  dừng cả vòng mô phỏng. Chiếu LiDAR giả định cảm biến ở tâm robot và dùng
-  pose EKF nên sai số EKF làm tường nhoè (cũng là cách trực quan kiểm tra
-  EKF).
-- Cờ ground_truth_used_for_control = False là khẳng định viết cứng.
-- Tham số sim ở start(), capture_target(), finish() không dùng; còn sót
-  comment "# NEW".
-
-==================================================
-14. main.py  (Phần E: Integration, máy trạng thái tổng và đánh giá)
-==================================================
-Vai trò
-- Ghép toàn bộ hệ thống thành một vòng điều khiển duy nhất, và là nơi duy
-  nhất đọc ground truth để ghi log và đánh giá. Cung cấp CLI chạy một lần,
-  chạy nhiều seed (--trials), so sánh dead-reckoning (--compare), xuất
-  báo cáo.
-
-Nội dung chính
-- Hằng số: MAX_RECOVERIES = 3, EXPLORE_SCAN_ANGLE = pi, EXPLORE_STEP =
-  1.0 m. Phase: SURVEY, EXPLORE, NAVIGATE, RECOVER, DOCK, DONE, FAILED.
-- Khung toạ độ: est_to_world(), table_to_world() (chỉ log, vẽ, đánh giá);
-  dock_errors() đo range, độ lệch ngang, sai lệch hướng so với dock thật.
-- TrialLog: thời gian, pose thật (chỉ để đánh giá), pose ước lượng ở khung
-  thế giới, sigma, phase, v, w, NEES, số tia LiDAR hợp lệ, số cập nhật
-  marker (tổng và tag), mode.
-- Bảng theo dõi thời gian thực (table_header / table_row / table_footer,
-  8 cột, in pose ƯỚC LƯỢNG trong khung robot), mode_label().
-- Hàm hỗ trợ: resume_navigator(), dock_approach_point(), go_to(),
-  StopGoScan (quay một chút, đứng yên, quan sát; chỉ quan sát khi đứng
-  yên để ảnh nét), freest_direction(), MapView (ẩn dock khỏi EKF cho tới
-  khi học lại từ quan sát gần).
-- Báo cáo: compute_report() (RMSE vị trí và hướng, NEES, sigma cuối, số
-  update, thống kê v và w, tỉ lệ bão hoà, tỉ lệ AVOID, thời gian recovery,
-  khoảng cách tối thiểu tới vật cản và tường); print_report() theo nhóm
-  B/C/D/E/F kèm NIS/dof, gate, LiDAR update, sai số bản đồ tag, timeline
-  sự kiện và cảnh báo tự động; RunResult (metrics, summary).
-- run_pipeline(): mỗi bước điều khiển theo thứ tự (1) đọc cảm biến,
-  predict, update marker (chỉ khi robot không quay), update LiDAR (chỉ
-  với --lidar-map), tính sigma_xy; (2) quyết định lệnh từ pose ƯỚC LƯỢNG:
-  SURVEY (quay stop-go tại chỗ, học tag khi đứng yên), EXPLORE (khi
-  chưa thấy dock, tối đa 90 s), học lại dock từ quan sát gần
-  (range < 1.5 m), học thêm tag khi đang chạy, recovery, AIM (LOOK ->
-  tính điểm tiếp cận từ median -> GO bằng Navigator -> LOOK; chuỗi dự
-  phòng PLAN / FACE / SEARCH, mỗi điểm timeout 25 s; hết điểm thì docking
-  mù hoặc FAILED "dock not found"), DOCK; (3) SafetyGuard.filter cho mọi
-  lệnh; (4) log và đánh giá (chỗ duy nhất đọc ground truth); (5)
-  sim.step(). Cuối lần chạy: visualizer.finish() và diag.
-- plot_run(), _ensure_mjpython() (macOS), run_trials(), build_parser(),
-  main() (seed ngẫu nhiên được in ra để chạy lại; mã thoát 0 khi thành
-  công).
-
-Lưu ý
-- QUAN TRỌNG (lỗi): nhánh "2c) navigation" chỉ gọi nav.update() mà không
-  gán v, w và không xử lý ncmd.finished (xem mục 0.4, vấn đề 1).
-- Recovery giữa đường không chạy khi dock_first = True; chỉ chạy sau
-  docking thất bại (xem recovery.py).
-- Ranh giới ground truth: run_cfg mang vật cản thật; hiện không module điều
-  khiển nào đọc, EKF được tạo với obstacles = (). Nên đặt obstacles = ()
-  cho run_cfg. Comment "EKF LiDAR map must contain the obstacles..." mâu
-  thuẫn với code ngay dưới. Dòng "ground truth used in control: NO" viết
-  cứng.
-- Cờ CLI không có tác dụng: --dock-raw (luôn dock_use_estimate = True),
-  --no-survey (use_survey không dùng), --sigma-px (marker_sigma_px không
-  dùng). Xoá hoặc nối dây.
-- Mã chết: trạng thái AIM "TURN", "MOVE" và khối ap_idle chỉ được vào từ
-  chính nó. Kẹt trong GO hoặc FACE không có cơ chế thoát ngoài timeout
-  8 s của GO.
-- Đo lặp theo bước điều khiển: estimator.update(marker),
-  TagMap.add (SURVEY, EXPLORE, dock_near), ap_obs trong AIM (xem mục
-  0.4, vấn đề 2).
-- Bản đồ học từ pose ước lượng (xem estimator.py); dock bị ẩn khỏi EKF
-  tới khi học lại từ quan sát gần nên phần lớn hành trình EKF chỉ dựa vào
-  odometry và các tag phụ; khi đủ 3 quan sát gần, main ghi đè quan sát
-  dock của tag_map bằng dock_near (truy cập _obs riêng).
-- SURVEY kết thúc ngay khi thấy dock đủ min_obs (dock_first), nên tag phụ
-  có thể chưa được học và recovery có ít tag để dùng.
-- Khi bật recovery sau docking thất bại, estimator.inflate() làm tăng
-  sigma_xy và SafetyGuard nhận sigma_xy ở mọi phase: GOTO và MAP_GOTO bị
-  giảm tốc hoặc chặn. Cần xem sự kiện "SAFETY: position uncertainty high".
-- Thành công do DockingController tuyên bố (camera hoặc EKF), không dựa
-  vào ground truth. Kết quả độc lập là dock_range, dock_lateral,
-  dock_heading từ pose thật so với dock thật (world_cfg); báo cáo cả hai.
-- stop_on_collision = True: một chạm nhẹ (kể cả vào panel dock thấp) kết
-  thúc lần chạy bằng FAILED.
-- Chỉ số "AVOID % of navigation" gần như luôn 0 % (xem mục 0.4, vấn đề 8).
-  --compare không đối chứng cùng quỹ đạo (vấn đề 9).
-- NEES chỉ đúng khi yaw bắt đầu = 0; --lidar-map chỉ đúng khi
-  start_pose = (0, 0, 0). Bảng thời gian thực in pose khung robot, còn log,
-  hình, báo cáo ở khung thế giới (lệch nhau đúng bằng start_pose).
-- EXPLORE (TURN, MOVE) là vòng hở theo odometry, chỉ có SafetyGuard và
-  ngưỡng LiDAR trước 0.6 m bảo vệ; sai số odometry làm góc quay và quãng
-  đường thực khác dự kiến; tốc độ 0.2 m/s cao hơn tốc độ cruise 0.15 m/s.
-- Nhiều "số ma thuật" nên đưa vào config; còn sót "# NEW" và một comment
-  bị lặp ở phần cột bảng.
-- reason mặc định là "timeout" kể cả khi dừng ở phase giữa chừng; có
-  ngoại lệ trong vòng lặp thì visualizer.finish() không được gọi.
-- Độ bền vững được kiểm bằng sai lệch tự sinh của Simulation, --ideal để
-  so sánh và một loại lỗi chèn thêm (--lidar-fault). Chưa có lỗi chèn cho
-  camera hoặc encoder.
-- Viewer: chỉ macOS cần mjpython; Linux hoặc WSL2 cần màn hình ảo hoặc
-  --no-viewer. run_trials không nhận --lidar-fault và --compare.
-
-==================================================
-15. KẾT LUẬN
-==================================================
-- Điểm mạnh: kiến trúc tách bạch (robot_model / simulation / environment),
-  ràng buộc không dùng ground truth được tôn trọng ở mức thiết kế, thế
-  giới thật cố ý lệch niềm tin để kiểm tra độ bền vững, có đánh giá định
-  lượng đầy đủ (RMSE, NEES, NIS, khoảng cách an toàn, sai số bản đồ tag),
-  SURVEY và AIM giúp docking ít phụ thuộc sai số tuyệt đối của EKF.
-- Cần sửa trước khi nộp: nhánh NAVIGATE không phải AIM (vấn đề 1), kiểm
-  tra đo lặp theo bước (2), xung đột guard-recovery (3), cưỡng chế ranh
-  giới ground truth (4), dọn cờ CLI (5), và nêu rõ giới hạn của recovery
-  (6) cùng các giả định ở mục 0.4 trong báo cáo.
-- Điểm yếu chung cần nêu khi báo cáo độ bền vững: bản đồ học từ pose có
-  sai số (EKF dễ quá tự tin), navigation phản ứng thuần (kẹt cục bộ, nhạy
-  nhiễu LiDAR), docking chịu camera trễ và rớt khung, guard chỉ dựa vào
-  LiDAR một độ cao, recovery không có giới hạn thời gian, và các thử
-  nghiệm lỗi hiện mới có LiDAR.
+Q: Có chạy được trên robot thật không?
+A: Chưa. Kiến trúc cho phép đổi bằng HardwareEnvironment, nhưng driver chưa viết,
+   chưa hiệu chuẩn thật, và hardware_ready = False.

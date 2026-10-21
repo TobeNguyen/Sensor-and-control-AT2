@@ -11,7 +11,7 @@ from config import CONFIG, Config
 from navigation import Navigator
 from robot_model import landmark_table
 from sensing import LidarScan
-
+MAX_TAGS = 1   # tags to visit before following the map
 class RecoveryPhase(Enum):
     IDLE = "idle"
     SPIN = "spin"        # rotate in place looking for any known tag
@@ -38,6 +38,7 @@ class TagRecovery:
         self._visited: set = set()
         self._nav: Optional[Navigator] = None
         self._spun = 0.0                      # accumulated rotation during SPIN [rad]
+        self._t = 0.0
 
     @property
     def available(self) -> bool:
@@ -68,7 +69,7 @@ class TagRecovery:
 
     def _start_goto(self, x_est: np.ndarray) -> None:
         todo = [i for i in self.tags if i not in self._visited]
-        if not todo:
+        if not todo or len(self._visited) >= MAX_TAGS:
             self._start_map_follow()
             return
         self.target_id = min(todo, key=lambda i: float(np.hypot(*(self.standoff_point(i) - x_est[:2]))))
@@ -95,11 +96,16 @@ class TagRecovery:
         if localized:                                  # a tag (or the dock) corrected the estimate
             self.phase = RecoveryPhase.DONE
             return 0.0, 0.0
+        self._t += self.cfg.sim.control_dt
+        if self._t > 25.0 and self.phase is not RecoveryPhase.MAP_GOTO:
+            self._start_map_follow()          # stop searching, go straight to the dock approach point
+            if self.phase is RecoveryPhase.FAILED:
+                return 0.0, 0.0
         x = np.asarray(x_est, dtype=float)
 
         if self.phase is RecoveryPhase.SPIN:
             self._spun += abs(dtheta)
-            if self._spun < 2.0 * math.pi:
+            if self._spun < math.pi:
                 return 0.0, self.cfg.tags.spin_omega
             self._start_goto(x)                        # full turn without a tag: next tag, or follow the map
             if self.phase is RecoveryPhase.FAILED:
