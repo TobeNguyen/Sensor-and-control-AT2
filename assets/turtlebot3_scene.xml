@@ -8,6 +8,10 @@
     <asset>
     <texture name="marker_tex" type="2d" file="aruco_marker.png"/>
     <material name="marker_mat" texture="marker_tex" specular="0" shininess="0"/>
+    <texture name="floor_tex" type="2d" builtin="checker" rgb1="0.35 0.35 0.35" rgb2="0.8 0.8 0.8"
+        width="512" height="512"/>
+    <material name="floor_mat" texture="floor_tex" texuniform="true"
+        texrepeat="2.0 2.0" specular="0" shininess="0" reflectance="0"/>
     <texture name="tag_tex_1" type="2d" file="aruco_marker_1.png"/>
     <material name="tag_mat_1" texture="tag_tex_1" specular="0" shininess="0"/>
     <texture name="tag_tex_2" type="2d" file="aruco_marker_2.png"/>
@@ -22,22 +26,22 @@
     <mesh name="tb3_lds" file="lds.stl" scale="0.001 0.001 0.001"/>
     </asset>
     <worldbody>
-    <geom name="floor" type="plane" size="3.0 3.0 0.1" rgba="0.85 0.85 0.85 1"/>
+    <geom name="floor" type="plane" size="3.0 3.0 0.1" material="floor_mat"/>
     <geom name="wall_east" type="box" size="0.05 2.1 0.25" pos="2.05 0 0.25" rgba="0.5 0.5 0.6 1"/>
     <geom name="wall_west" type="box" size="0.05 2.1 0.25" pos="-2.05 0 0.25" rgba="0.5 0.5 0.6 1"/>
     <geom name="wall_north" type="box" size="2.0 0.05 0.25" pos="0 2.05 0.25" rgba="0.5 0.5 0.6 1"/>
     <geom name="wall_south" type="box" size="2.0 0.05 0.25" pos="0 -2.05 0.25" rgba="0.5 0.5 0.6 1"/>
-    <geom name="obstacle_0" type="cylinder" size="0.2 0.25" pos="0.8850204305755891 0.3613580398452625 0.25" rgba="0.8 0.3 0.2 1"/>
-    <geom name="obstacle_1" type="cylinder" size="0.2 0.25" pos="-0.5368503051071912 0.6957979867249666 0.25" rgba="0.8 0.3 0.2 1"/>
-    <geom name="obstacle_2" type="cylinder" size="0.2 0.25" pos="0.3752771227218954 -0.5211871273165961 0.25" rgba="0.8 0.3 0.2 1"/>
+    <geom name="obstacle_0" type="cylinder" size="0.2 0.25" pos="-1.0270773370903437 0.781930568606245 0.25" rgba="0.8 0.3 0.2 1"/>
+    <geom name="obstacle_1" type="cylinder" size="0.2 0.25" pos="-0.5974790094994068 -0.3619058636055904 0.25" rgba="0.8 0.3 0.2 1"/>
+    <geom name="obstacle_2" type="cylinder" size="0.2 0.25" pos="0.45197974273443897 -0.5272728664413464 0.25" rgba="0.8 0.3 0.2 1"/>
     <geom name="dock_marker" type="box" size="0.005 0.09999999999999999 0.09999999999999999"
-        pos="1.8799254350091616 0.9000322525211841 0.15" euler="0 0 3.094690055063815" material="marker_mat"/>
+        pos="1.910419659028115 1.052050513903346 0.15" euler="0 0 3.1691241733098283" material="marker_mat"/>
     <geom name="tag_marker_1" type="box" size="0.005 0.09999999999999999 0.09999999999999999"
-        pos="-1.95 -0.9000322525211841 0.15" euler="0 0 0.0" material="tag_mat_1"/>
+        pos="-1.95 -1.0520505139033463 0.15" euler="0 0 0.0" material="tag_mat_1"/>
     <geom name="tag_marker_2" type="box" size="0.005 0.09999999999999999 0.09999999999999999"
         pos="0.0 1.95 0.15" euler="0 0 -1.5707963267948966" material="tag_mat_2"/>
     <geom name="tag_marker_3" type="box" size="0.005 0.09999999999999999 0.09999999999999999"
-        pos="1.95 -0.9000322525211841 0.15" euler="0 0 3.141592653589793" material="tag_mat_3"/>
+        pos="1.95 -1.0520505139033463 0.15" euler="0 0 3.141592653589793" material="tag_mat_3"/>
     <geom name="tag_marker_4" type="box" size="0.005 0.09999999999999999 0.09999999999999999"
         pos="0.0 -1.95 0.15" euler="0 0 1.5707963267948966" material="tag_mat_4"/>
     <body name="base" pos="0 0 0">
@@ -55,8 +59,8 @@
       <geom name="cam_lens_vis" type="cylinder" size="0.008 0.004" pos="0.207 0 0.15" euler="0 1.5708 0" rgba="0.1 0.3 1.0 1" contype="0" conaffinity="0" density="1"/>
       <geom name="cam_arm_vis" type="box" size="0.0575 0.008 0.006" pos="0.1375 0 0.15" rgba="0.3 0.3 0.3 1" contype="0" conaffinity="0" density="1"/>
       <geom name="cam_post_vis" type="box" size="0.008 0.012 0.05" pos="0.10 0 0.09999999999999999" rgba="0.3 0.3 0.3 1" contype="0" conaffinity="0" density="1"/>
-        <camera name="front_cam" pos="0.2272924135928129 0 0.15"
-            xyaxes="0 -1 0 0 0 1" fovy="61.263081839402815"/>
+        <camera name="front_cam" pos="0.21687162814225355 0 0.15"
+            xyaxes="0 -1 0 0 0 1" fovy="60.96245603962804"/>
     </body>
     </worldbody>
 </mujoco>

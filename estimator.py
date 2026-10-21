@@ -12,6 +12,8 @@ from robot_model import (default_landmark, innovation, jacobian_F, jacobian_G,
                         lidar_jacobian, lidar_range_model, measurement_jacobian,
                         measurement_jacobian_pose, measurement_model, measurement_model_pose,
                         motion_model, wrap_angle, landmark_table)
+from collections import deque
+from dataclasses import is_dataclass, replace
 
 # Normalised Estimation Error Squared: e^T P^-1 e.
 # For a consistent 3-state filter its average is about 3 (chi-square, 3 dof).
@@ -34,7 +36,7 @@ class EKFEstimator:
             use_view: bool = True, R_view: Optional[float] = None,
             use_lidar: bool = True, lidar_noise_scale: float = 2.0,
             lidar_gate: float = 6.63, lidar_stride: int = 30, max_rejects: int = 10,
-            use_marker_cov: bool = False):
+            use_marker_cov: bool = False, camera_delay: float = 0.0):
         self.cfg = cfg
         # Start with NO known markers: poses are learned at run time (TagMap)
         self.landmarks = {}
@@ -49,6 +51,7 @@ class EKFEstimator:
         self.use_marker = use_marker
         self.use_view = use_view
         self.use_marker_cov = use_marker_cov
+        self.camera_delay = float(camera_delay)
         # LiDAR update against the known room map (walls and obstacles)
         self.use_lidar = use_lidar
         self.lidar_noise_scale = lidar_noise_scale   # inflates sigma_lidar to cover map errors
@@ -65,6 +68,7 @@ class EKFEstimator:
 
     # Initialise belief N(x0, P0) and clear the diagnostics
     def reset(self, x0, P0: Optional[np.ndarray] = None) -> None:
+        self._odo = deque(maxlen=64)
         self.x = np.array(x0, dtype=float)
         self.x[2] = wrap_angle(self.x[2])
         self.P = self.cfg.ekf.P0() if P0 is None else np.array(P0, dtype=float)
@@ -82,11 +86,31 @@ class EKFEstimator:
 
     # EKF prediction: propagate the mean through f and the covariance through F and G
     def predict(self, ds: float, dtheta: float) -> None:
+        self._odo.append((float(ds), float(dtheta)))
         F = jacobian_F(self.x, ds, dtheta)
         G = jacobian_G(self.x, ds, dtheta)
         P = F @ self.P @ F.T + G @ self._odom_cov @ G.T + self.q_extra
         self.P = 0.5 * (P + P.T)
         self.x = motion_model(self.x, ds, dtheta)
+
+    # Marker measured `camera_delay` seconds ago, re-expressed from the CURRENT robot pose using the
+    # odometry since then (the landmark is static; over 0.2 s odometry is accurate).
+    def _to_now(self, marker):
+        n = int(round(self.camera_delay / self.cfg.sim.control_dt))
+        if n <= 0 or not self._odo or not is_dataclass(marker):
+            return marker
+        dx = dy = th = 0.0
+        for ds, dth in list(self._odo)[-n:]:
+            mid = th + dth / 2.0
+            dx += ds * math.cos(mid)
+            dy += ds * math.sin(mid)
+            th += dth
+        px, py = marker.range * math.cos(marker.bearing), marker.range * math.sin(marker.bearing)
+        c, s = math.cos(th), math.sin(th)
+        qx = c * (px - dx) + s * (py - dy)
+        qy = -s * (px - dx) + c * (py - dy)
+        return replace(marker, range=math.hypot(qx, qy), bearing=math.atan2(qy, qx),
+                    view_angle=wrap_angle(marker.view_angle - th))
 
     # A usable marker has a known id and finite, positive range
     def _is_valid(self, marker) -> bool:
@@ -117,6 +141,7 @@ class EKFEstimator:
     def update(self, marker) -> bool:
         if not self.use_marker or marker is None or not self._is_valid(marker):
             return False
+        marker = self._to_now(marker)
         marker_id = int(getattr(marker, "marker_id", self.cfg.camera.marker_id))
         landmark, tag_yaw = self.landmarks[marker_id]
 

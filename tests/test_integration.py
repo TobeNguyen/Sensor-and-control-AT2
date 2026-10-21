@@ -305,5 +305,8 @@ def test_lidar_outage_triggers_a_latched_safety_stop(scene_dir):
 
 
 def test_parser_has_recovery_and_lidar_fault_options():
-    args = build_parser().parse_args(["--recovery", "--lidar-fault", "20"])
-    assert args.recovery and args.lidar_fault == 20.0
+    args = build_parser().parse_args(["--lidar-fault", "20"])
+    assert args.lidar_fault == 20.0
+    assert not args.no_recovery and not args.no_calib_odometry
+    off = build_parser().parse_args(["--no-recovery", "--no-calib-odometry"])
+    assert off.no_recovery and off.no_calib_odometry

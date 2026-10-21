@@ -17,6 +17,25 @@ CAMERA_HEIGHT = 0.15   # [m] height of the camera and the marker centre
 WALL_THICKNESS = 0.05  # [m] half thickness of the walls
 WALL_HEIGHT = 0.5      # [m]
 MARKER_FILE = "aruco_marker.png"
+CHESSBOARD_FILE = "chessboard.png"
+CHESSBOARD_PATTERN = (9, 6)   # inner corners (cols, rows)
+CHESSBOARD_SQUARE = 0.04      # [m]
+FLOOR_SQUARE = 0.25   # [m] side of one floor square
+
+# Board position on the floor: near the south-west corner, away from the start and the dock
+def chessboard_pose(cfg: Config = CONFIG) -> tuple[float, float]:
+    hx, hy = cfg.env.room_half_size
+    return (-hx + 0.5, -hy + 0.4)
+
+# Chessboard texture with a 1-square white margin (same layout as render_chessboard_views)
+def generate_chessboard_image(pattern: tuple = CHESSBOARD_PATTERN, px: int = 60) -> np.ndarray:
+    cols, rows = pattern
+    board = np.full(((rows + 3) * px, (cols + 3) * px), 255, dtype=np.uint8)
+    for j in range(rows + 1):
+        for i in range(cols + 1):
+            if (i + j) % 2 == 0:
+                board[(j + 1) * px:(j + 2) * px, (i + 1) * px:(i + 2) * px] = 0
+    return cv2.cvtColor(board, cv2.COLOR_GRAY2BGR)
 
 # TurtleBot3 Waffle visual meshes (STL in millimetres), placed as in the official URDF.
 MESH_SUBDIR = "turtlebot3"
@@ -184,6 +203,7 @@ def random_obstacles_hard(cfg: Config, rng: np.random.Generator,
                         for tid, (tx, ty, tyaw) in cfg.tag_table().items()
                         if tid != cfg.camera.marker_id]
     goals = [(dx + approach_dist * math.cos(dyaw), dy + approach_dist * math.sin(dyaw))] + standoff_pts
+    bx, by = chessboard_pose(cfg)
 
     for _ in range(max_layouts):
         placed: list[tuple] = []
@@ -198,6 +218,8 @@ def random_obstacles_hard(cfg: Config, rng: np.random.Generator,
                 if point_segment_distance(x, y, *front_corridor[0], *front_corridor[1]) < r + robot_r + path_margin:
                     continue
                 if any(math.hypot(x - px, y - py) < r + robot_r + path_margin for px, py in standoff_pts):
+                    continue
+                if math.hypot(x - bx, y - by) < r + 0.4:
                     continue
                 if any(math.hypot(x - ox, y - oy) < r + orad + gap for ox, oy, orad in placed):
                     continue
@@ -295,6 +317,9 @@ def build_scene_xml(cfg: Config = CONFIG, use_meshes: bool = False,
         mesh_assets = body_inertial = visual_geoms = ""
         chassis_rgba = "0.2 0.4 0.8 1"
 
+    # Checkerboard floor: one texture tile holds 2x2 squares, so repeat = 1 / (2 * square) per metre
+    floor_repeat = 1.0 / (2.0 * FLOOR_SQUARE)
+
     return f"""<mujoco model="track_a_scene">
     {compiler}
     <option timestep="{sim.dt}" gravity="0 0 -9.81"/>
@@ -305,11 +330,15 @@ def build_scene_xml(cfg: Config = CONFIG, use_meshes: bool = False,
     <asset>
     <texture name="marker_tex" type="2d" file="{MARKER_FILE}"/>
     <material name="marker_mat" texture="marker_tex" specular="0" shininess="0"/>
+    <texture name="floor_tex" type="2d" builtin="checker" rgb1="0.35 0.35 0.35" rgb2="0.8 0.8 0.8"
+        width="512" height="512"/>
+    <material name="floor_mat" texture="floor_tex" texuniform="true"
+        texrepeat="{floor_repeat} {floor_repeat}" specular="0" shininess="0" reflectance="0"/>
 {tag_assets_xml}
 {mesh_assets}
     </asset>
     <worldbody>
-    <geom name="floor" type="plane" size="{hx + 1} {hy + 1} 0.1" rgba="0.85 0.85 0.85 1"/>
+    <geom name="floor" type="plane" size="{hx + 1} {hy + 1} 0.1" material="floor_mat"/>
     <geom name="wall_east" type="box" size="{t} {hy + 2 * t} {h / 2}" pos="{hx + t} 0 {h / 2}" rgba="0.5 0.5 0.6 1"/>
     <geom name="wall_west" type="box" size="{t} {hy + 2 * t} {h / 2}" pos="{-(hx + t)} 0 {h / 2}" rgba="0.5 0.5 0.6 1"/>
     <geom name="wall_north" type="box" size="{hx} {t} {h / 2}" pos="0 {hy + t} {h / 2}" rgba="0.5 0.5 0.6 1"/>
@@ -341,6 +370,7 @@ def write_scene_files(cfg: Config = CONFIG, directory: Path | None = None,
     directory = _scene_directory(cfg, directory)
     directory.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(directory / MARKER_FILE), generate_marker_image(cfg))
+    cv2.imwrite(str(directory / CHESSBOARD_FILE), generate_chessboard_image())
     for tid in cfg.tag_table():
         if tid != cfg.camera.marker_id:
             cv2.imwrite(str(directory / marker_filename(tid, cfg)),
@@ -565,6 +595,59 @@ class Simulation:
 
     def __exit__(self, *exc) -> None:
         self.close()
+
+# Render views of a chessboard with the simulated camera: the same procedure as on the real
+# robot (hold a board at different distances and tilts in front of the camera).
+def render_chessboard_views(cfg: Config = CONFIG, n_views: int = 20, pattern: tuple = (9, 6),
+                            square: float = 0.04, seed: int = 0) -> list[np.ndarray]:
+    import tempfile
+    cols, rows = pattern
+    nx, ny = cols + 3, rows + 3                  # (cols+1) x (rows+1) squares + 1 white square margin each side
+    px = 60                                      # texture pixels per square
+    board = np.full((ny * px, nx * px), 255, dtype=np.uint8)
+    for j in range(rows + 1):
+        for i in range(cols + 1):
+            if (i + j) % 2 == 0:
+                board[(j + 1) * px:(j + 2) * px, (i + 1) * px:(i + 2) * px] = 0
+    hx, hy = nx * square / 2.0, ny * square / 2.0
+    xml = f"""<mujoco model="chessboard">
+  <compiler texturedir="."/>
+  <visual>
+    <global offwidth="{cfg.camera.width}" offheight="{cfg.camera.height}" fovy="{cfg.camera.fovy_deg}"/>
+    <headlight ambient="0.6 0.6 0.6" diffuse="0.5 0.5 0.5" specular="0 0 0"/>
+  </visual>
+  <asset>
+    <texture name="board_tex" type="2d" file="board.png"/>
+    <material name="board_mat" texture="board_tex" specular="0" shininess="0"/>
+  </asset>
+  <worldbody>
+    <geom name="floor" type="plane" size="3 3 0.1" pos="0 0 -0.01" rgba="0.5 0.5 0.55 1"/>
+    <geom name="board" type="box" size="{hx} {hy} 0.002" material="board_mat"/>
+  </worldbody>
+</mujoco>"""
+    rng = np.random.default_rng(seed)
+    images: list[np.ndarray] = []
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        cv2.imwrite(str(tmp / "board.png"), cv2.cvtColor(board, cv2.COLOR_GRAY2BGR))
+        (tmp / "board.xml").write_text(xml)
+        model = mujoco.MjModel.from_xml_path(str(tmp / "board.xml"))
+        data = mujoco.MjData(model)
+        mujoco.mj_forward(model, data)
+        renderer = mujoco.Renderer(model, height=cfg.camera.height, width=cfg.camera.width)
+        cam = mujoco.MjvCamera()
+        cam.type = mujoco.mjtCamera.mjCAMERA_FREE
+        try:
+            for _ in range(n_views):
+                cam.lookat[:] = [rng.uniform(-0.05, 0.05), rng.uniform(-0.05, 0.05), 0.0]
+                cam.distance = float(rng.uniform(0.6, 1.0))
+                cam.azimuth = float(rng.uniform(0.0, 360.0))
+                cam.elevation = float(rng.uniform(-80.0, -40.0))    # tilt of the board up to 50 deg
+                renderer.update_scene(data, camera=cam)
+                images.append(renderer.render().copy())
+        finally:
+            renderer.close()
+    return images
 
 if __name__ == "__main__":
     # Quick manual check: drive in a circle and print the true pose.

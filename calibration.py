@@ -342,22 +342,35 @@ def calibrate_intrinsics(object_points: Sequence[np.ndarray], image_points: Sequ
 
 # Convenience wrapper: detect the chessboard in every image, then calibrate
 def calibrate_from_images(images: Sequence[np.ndarray], pattern_size: tuple,
-                        square_size: float) -> CameraIntrinsics:
+                        square_size: float, drop_worst: int = 4) -> CameraIntrinsics:
     sizes = {img.shape[:2] for img in images}
     if len(sizes) != 1:
         raise ValueError(f"all calibration images must have the same resolution, got {sizes}")
-    obj_template = chessboard_object_points(pattern_size, square_size)
+    template = chessboard_object_points(pattern_size, square_size)
     obj, img = [], []
     for image in images:
         corners = find_chessboard_corners(image, pattern_size)
         if corners is not None:
-            obj.append(obj_template)
+            obj.append(template)
             img.append(corners)
     if len(obj) < MIN_CALIBRATION_VIEWS:
         raise ValueError(f"chessboard found in only {len(obj)} of {len(images)} images "
                         f"(need {MIN_CALIBRATION_VIEWS})")
     h, w = images[0].shape[:2]
-    return calibrate_intrinsics(obj, img, (w, h))
+    intr = calibrate_intrinsics(obj, img, (w, h))
+    for _ in range(drop_worst):
+        if len(obj) <= MIN_CALIBRATION_VIEWS + 2 or (intr.reprojection_error or 0.0) <= MAX_CALIB_RMS_PX:
+            break
+        errs = []
+        for o, i in zip(obj, img):
+            ok, rv, tv = cv2.solvePnP(o, i, intr.K, intr.dist_coeffs)
+            proj, _ = cv2.projectPoints(o, rv, tv, intr.K, intr.dist_coeffs)
+            errs.append(float(np.sqrt(np.mean(np.sum((proj.reshape(-1, 2) - i) ** 2, axis=1)))))
+        worst = int(np.argmax(errs))
+        print(f"[calib] dropping view {worst} (RMS {errs[worst]:.2f} px)", flush=True)
+        del obj[worst], img[worst]
+        intr = calibrate_intrinsics(obj, img, (w, h))
+    return intr
 
 # Persistence
 def save_intrinsics(intr: CameraIntrinsics, path) -> Path:
@@ -463,6 +476,18 @@ def validate_calibration_image_effect(raw_image: np.ndarray, K: np.ndarray, dist
         "undistorted_image": undistorted_image
     }
 
+# Calibrate the SIMULATED camera like the real one: chessboard views -> corners -> OpenCV calibration.
+# Accepted only with a small reprojection error. `world_cfg` = the world the images come from.
+def calibrate_camera_in_sim(world_cfg: Config, believed_cfg: Config = CONFIG, n_views: int = 20,
+                            pattern: tuple = (9, 6), square: float = 0.04, seed: int = 0) -> Calibration:
+    from simulation import render_chessboard_views     # local import: simulation does not import calibration
+    images = render_chessboard_views(world_cfg, n_views, pattern, square, seed)
+    intr = calibrate_from_images(images, pattern, square)
+    if intr.reprojection_error is None or intr.reprojection_error > MAX_CALIB_RMS_PX:
+        raise ValueError(f"camera calibration rejected: RMS {intr.reprojection_error} px "
+                        f"> {MAX_CALIB_RMS_PX} px")
+    return get_calibration(believed_cfg, intr)
+
 if __name__ == "__main__":
     import argparse
     import glob
@@ -476,6 +501,9 @@ if __name__ == "__main__":
     parser.add_argument("--out", default="results/camera_intrinsics.json")
     parser.add_argument("--check", metavar="INTRINSICS_JSON", default=None,
                         help="load a saved calibration and verify it is usable on hardware")
+    parser.add_argument("--sim", action="store_true",
+                        help="calibrate the simulated camera with rendered chessboard views")
+    parser.add_argument("--seed", type=int, default=None, help="simulation seed (with --sim)")
     args = parser.parse_args()
 
     if args.calibrate:
@@ -488,6 +516,19 @@ if __name__ == "__main__":
         cal = load_calibration(args.check)
         print("Hardware calibration OK | RMS:", round(cal.intrinsics.reprojection_error, 3), "px")
         print("Extrinsics (fwd, lat, yaw):", cal.forward_offset, cal.lateral_offset, cal.yaw)
+    elif args.sim:
+        from simulation import Simulation
+        with Simulation(CONFIG, seed=args.seed) as s:        # hidden world: used for COMPARISON only
+            world = s.world_cfg
+        cal = calibrate_camera_in_sim(world, CONFIG, seed=args.seed or 0)
+        f_nom = float(nominal_intrinsics(CONFIG).K[0, 0])
+        f_true = (world.camera.height / 2.0) / math.tan(math.radians(world.camera.fovy_deg) / 2.0)
+        print(f"RMS reprojection error : {cal.intrinsics.reprojection_error:.3f} px")
+        print(f"focal length  nominal  : {f_nom:.1f} px")
+        print(f"focal length  calibrated: {cal.K[0, 0]:.1f} px")
+        print(f"focal length  hidden true: {f_true:.1f} px (evaluation only)")
+        print("distortion k1, k2      :", np.round(cal.dist_coeffs[:2], 4), "(simulated lens has none)")
+        print("saved:", save_intrinsics(cal.intrinsics, "results/camera_intrinsics_sim.json"))
     else:
         cal = get_calibration()
         print("Source        :", cal.intrinsics.source)
