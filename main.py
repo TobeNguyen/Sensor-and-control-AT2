@@ -28,7 +28,7 @@ from simulation import Simulation, render_chessboard_views
 from visualization import RouteVisualizer
 
 MAX_RECOVERIES = 3   # maximum number of tag recoveries per run (avoid endless retry loops)
-EXPLORE_SCAN_ANGLE = math.pi   # EXPLORE: rotation at every stop [rad] (use math.pi for a faster 180 deg scan)
+EXPLORE_SCAN_ANGLE = 2 * math.pi / 3   # EXPLORE: rotation at every stop [rad] (use math.pi for a faster 180 deg scan)
 EXPLORE_STEP = 1.0                   # EXPLORE: distance driven between two scans [m]
 
 class Phase(Enum):
@@ -242,7 +242,7 @@ class StopGoScan:
 def freest_direction(lidar, half_width: float = 0.4) -> float:
     best, best_score = 0.0, -1e9
     for a in np.linspace(-math.pi, math.pi, 36, endpoint=False):
-        score = sector_min_range(lidar, float(a), half_width) - 0.1 * abs(float(a))
+        score = min(sector_min_range(lidar, float(a), half_width), 1.5) - 0.6 * abs(float(a))
         if score > best_score:
             best, best_score = float(a), score
     return best
@@ -469,6 +469,8 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
     ex_scanned: list = [np.zeros(2)]
     ex_t0 = 0.0
     ex_stall = 0.0
+    ex_bad: list = []
+    ex_dirs: list = []
     dock_near = TagMap(min_obs=3)        # dock observations made from close range only
     dock_refined = False                 # True once the dock pose was re-learned from a close view
     aim_mode = False                     # NAVIGATE driven by "look - turn - move" instead of a fixed waypoint
@@ -591,7 +593,9 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
                     if observe:                      # learn only while standing still
                         for marker in frame.markers:
                             is_dock = int(marker.marker_id) == dock_id
-                            limit = run_cfg.tags.dock_max_range if (first and is_dock) else run_cfg.tags.survey_max_range
+                            limit = run_cfg.tags.dock_max_range if is_dock else run_cfg.tags.survey_max_range
+                            if sigma_xy > 0.12:
+                                limit = min(limit, 2.0)
                             tag_map.add(x_est, marker, max_range=limit)
                     dock_seen = first and tag_map.count(dock_id) >= run_cfg.tags.survey_min_obs
                     angle_limit = run_cfg.tags.survey_angle          # 180 deg maximum
@@ -629,17 +633,26 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
                     if ex_state == "SCAN":                   # rotate-stop-rotate, observe while still
                         w, observe = scan.update(frame.time, frame.odometry.dtheta)
                         if scan.spun >= EXPLORE_SCAN_ANGLE:
+                            ex_dirs.append((float(x_est[0]), float(x_est[1]), float(x_est[2])))
                             ex_state = "PICK"
                     elif ex_state == "PICK":
                         best_a, best_s = None, -1e9
                         for a in np.linspace(-math.pi, math.pi, 36, endpoint=False):
-                            free = sector_min_range(frame.lidar, float(a), 0.4)
-                            if free < 0.6:
+                            free = sector_min_range(frame.lidar, float(a), 0.5)
+                            if free < 0.7:
                                 continue
                             tgt = x_est[:2] + min(free, 1.5) * np.array(
                                 [math.cos(x_est[2] + a), math.sin(x_est[2] + a)])
+                            if any(float(np.hypot(*(tgt - b))) < 0.6 for b in ex_bad):
+                                continue
                             near = min(float(np.hypot(*(tgt - p))) for p in ex_scanned)
                             s = 3.0 * min(near, 2.0) + min(free, 1.5) - 0.2 * abs(float(a))
+                            if near < 0.8:
+                                s -= 4.0
+                            for (qx, qy, _qh) in ex_dirs[-3:]:
+                                back = math.atan2(qy - x_est[1], qx - x_est[0])
+                                if math.hypot(qx - x_est[0], qy - x_est[1]) < 3.0 and abs(wrap_angle(x_est[2] + a - back)) < 0.5:
+                                    s -= 2.0
                             if s > best_s:
                                 best_a, best_s = float(a), s
                         if best_a is None:
@@ -674,18 +687,24 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
                         if abs(err) < 0.1:
                             ex_state, ex_moved, ex_stall = "MOVE", 0.0, 0.0
                         elif frame.time - ex_t0 > 8.0:
-                            ex_scanned.append(x_est[:2].copy())
+                            ex_bad.append(x_est[:2] + 0.8 * np.array([math.cos(ex_target), math.sin(ex_target)]))
                             ex_state = "PICK"
                         else:
                             w = float(np.clip(2.0 * err, -0.6, 0.6))
                     elif ex_state == "MOVE":
                         ex_moved += frame.odometry.ds
                         ex_stall = ex_stall + dt if abs(frame.odometry.ds) < 1e-4 else 0.0
-                        if (ex_moved >= ex_step or ex_stall > 2.0
-                                or sector_min_range(frame.lidar, 0.0, 0.5) < 0.6):
-                            ex_state = "SCAN"
-                            ex_scanned.append(x_est[:2].copy())
-                            scan.reset()
+                        blocked = ex_stall > 2.0 or sector_min_range(frame.lidar, 0.0, 0.5) < 0.6
+                        if blocked and ex_moved < 0.3:
+                            ex_bad.append(x_est[:2] + 0.8 * np.array([math.cos(x_est[2]), math.sin(x_est[2])]))
+                            ex_state = "PICK"
+                        elif ex_moved >= ex_step or blocked:
+                            if sum(1 for p in ex_scanned if float(np.hypot(*(x_est[:2] - p))) < 0.6) >= 2:
+                                ex_state = "PICK"
+                            else:
+                                ex_state = "SCAN"
+                                ex_scanned.append(x_est[:2].copy())
+                                scan.reset()
                         else:
                             v = 0.2
                     if observe:

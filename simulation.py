@@ -178,6 +178,30 @@ def obstacles_leave_a_path(cfg: Config, obstacles: list[tuple], goals: list[tupl
                 todo.append((a, b))
     return all(free[to_cell(g)] and seen[to_cell(g)] for g in goals)
 
+def dock_view_fraction(cfg: Config, obstacles: list[tuple], max_range: float = 3.0,
+                    half_angle: float = math.radians(40), cell: float = 0.2,
+                    margin: float = 0.10) -> float:
+    hx, hy = cfg.env.room_half_size
+    dx, dy, dyaw = cfg.env.dock_pose
+    robot_r = cfg.robot.body_radius
+    xs = np.arange(-hx + robot_r, hx - robot_r + 1e-9, cell)
+    ys = np.arange(-hy + robot_r, hy - robot_r + 1e-9, cell)
+    seen = total = 0
+    for x in xs:
+        for y in ys:
+            if any(math.hypot(x - ox, y - oy) < r + robot_r + margin for ox, oy, r in obstacles):
+                continue
+            total += 1
+            rng = math.hypot(dx - x, dy - y)
+            if rng > max_range or rng < 0.3:
+                continue
+            if abs(wrap_angle(math.atan2(y - dy, x - dx) - dyaw)) > half_angle:
+                continue
+            if any(point_segment_distance(ox, oy, x, y, dx, dy) < r for ox, oy, r in obstacles):
+                continue
+            seen += 1
+    return seen / max(total, 1)
+
 # Harder layout for navigation tests: obstacles may block the direct route and the view of the dock.
 # Still kept free: the start area, the dock area, the final approach in front of the dock and the
 # stand-off points of the extra tags. Every accepted layout has a path from the start to the dock
@@ -185,8 +209,8 @@ def obstacles_leave_a_path(cfg: Config, obstacles: list[tuple], goals: list[tupl
 # obstacle onto the start -> dock sight line, so the dock is hidden at the start.
 def random_obstacles_hard(cfg: Config, rng: np.random.Generator,
                         margin: float = 0.15, path_margin: float = 0.10,
-                        gap: float = 0.60, front_length: float = 1.5,
-                        block_sight: bool = True,
+                        gap: float = 0.60, front_length: float = 2.0,
+                        block_sight: bool = True, min_view: float = 0.18,
                         max_tries: int = 2000, max_layouts: int = 200) -> list[tuple]:
     hx, hy = cfg.env.room_half_size
     sx, sy, _ = cfg.env.start_pose
@@ -230,7 +254,7 @@ def random_obstacles_hard(cfg: Config, rng: np.random.Generator,
             else:
                 break                      # this obstacle could not be placed: start a new layout
         else:
-            if obstacles_leave_a_path(cfg, placed, goals):
+            if obstacles_leave_a_path(cfg, placed, goals) and dock_view_fraction(cfg, placed) >= min_view:
                 return placed
     raise RuntimeError("Could not build a feasible hard layout; reduce the number or radius of obstacles.")
 

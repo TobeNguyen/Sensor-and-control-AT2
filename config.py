@@ -78,7 +78,7 @@ class ControllerConfig:
 class DockingConfig:
     target_distance: float = 0.55   # stop this far from marker [m]
     distance_tolerance: float = 0.05  # [m]
-    bearing_tolerance: float = 0.05   # [rad]
+    bearing_tolerance: float = 0.08   # [rad]
     max_search_time: float = 10.0     # give up if marker not seen [s]
 
 @dataclass(frozen=True)
@@ -113,7 +113,7 @@ class TagConfig:
     survey_max_time: float = 60.0 # [s] stop scanning after this
     approach_dist: float = 1.0    # [m] map-follow target in front of the dock
     dock_first: bool = True      # True: goal = learned dock approach point (no fixed waypoints)
-    dock_max_range: float = 4.5   # [m] max range accepted for the dock observation during the scan
+    dock_max_range: float = 3.0   # [m] max range accepted for the dock observation during the scan
 @lru_cache(maxsize=None)
 def _tag_table(marker_id: int, dock_pose: tuple, room_half: tuple, n_tags: int, inset: float) -> dict:
     table = {marker_id: dock_pose}
