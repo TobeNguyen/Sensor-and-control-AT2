@@ -107,7 +107,7 @@ class TagConfig:
     spin_omega: float = 0.7  # [rad/s] in-place rotation while looking for a tag
     use_survey: bool = True       # learn the tag poses at the start pose instead of reading them from the config
     survey_omega: float = 0.4     # [rad/s] in-place rotation while scanning
-    survey_angle: float = math.pi # [rad] total rotation of the survey (half a turn from the start heading)
+    survey_angle: float = 2.0 * math.pi # [rad] total rotation of the survey (half a turn from the start heading)
     survey_min_obs: int = 3       # observations needed before a tag is added to the learned map
     survey_max_range: float = 2.5 # [m] ignore tag observations farther than this (too noisy for the map)
     survey_max_time: float = 60.0 # [s] stop scanning after this

@@ -213,6 +213,7 @@ def go_to(nav: Navigator, cfg: Config, x_est, tx: float, ty: float, max_step: fl
 class StopGoScan:
     def __init__(self, omega: float = 0.8, step: float = 0.5, hold: float = 0.7, settle: float = 0.3):
         self.omega, self.step, self.hold, self.settle = omega, step, hold, settle
+        self.sign = 1
         self.reset()
 
     def reset(self) -> None:
@@ -635,6 +636,7 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
                         w, observe = scan.update(frame.time, frame.odometry.dtheta)
                         if scan.spun >= EXPLORE_SCAN_ANGLE:
                             ex_dirs.append((float(x_est[0]), float(x_est[1]), float(x_est[2])))
+                            scan.sign *= -1
                             ex_state = "PICK"
                     elif ex_state == "PICK":
                         best_a, best_s = None, -1e9

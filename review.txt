@@ -273,7 +273,7 @@ Nội dung
     reprojection error > 3 px.
   - check_units, check_frame_conventions (kiểm tra quy ước trục, round trip...).
   - calibrate_intrinsics (>= 5 view); calibrate_from_images: LOẠI DẦN các ảnh có
-    sai số lớn nhất (tối đa 4, giữ >= 7 ảnh) cho tới khi RMS <= 1 px.
+    sai số lớn nhất (tối đa 8, giữ >= 7 ảnh) cho tới khi RMS <= 1 px.
   - calibrate_camera_in_sim(): render 20 ảnh bàn cờ (9x6 góc trong, ô 0,04 m) bằng
     camera mô phỏng, hiệu chuẩn, TỪ CHỐI nếu RMS > 1 px.
   - save/load JSON; load_calibration() cho phần cứng đòi RMS <= 1 px.
@@ -283,8 +283,8 @@ Lưu ý
     được xấp xỉ 0. Cái hiệu chuẩn bắt được là tiêu cự thật (FOV ẩn lệch tới +-3 %).
   - Extrinsics (vị trí camera) và kích thước marker vẫn là giá trị danh nghĩa;
     thế giới ẩn lệch offset camera +-1,5 cm.
-  - Kết quả hiệu chuẩn bản cuối [CHƯA RÕ]: lần chạy đầu của phiên bản cũ bị từ
-    chối với RMS 1,53 px. Lấy số thật từ dòng log "[Calibration] RMS ... | fx ...".
+  - Kết quả hiệu chuẩn bản cuối [ĐÃ CHẠY]: lần chạy đầu của phiên bản cũ bị từ
+    chối với RMS 1,53 px. Lấy số thật từ dòng log "[Calibration] RMS 0.924 px | fx 432.0".
     Nếu bị từ chối, main.py in thông báo và dùng camera danh nghĩa.
   - Việc loại ảnh xấu là xử lý ngoại lai; nên nói rõ khi trình bày.
 

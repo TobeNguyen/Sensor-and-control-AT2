@@ -6,14 +6,13 @@ import numpy as np
 import pytest
 
 from config import CONFIG
-from recovery import RecoveryPhase, TagRecovery
+from recovery import MAX_TAGS, RecoveryPhase, TagRecovery
 from robot_model import TagMap, measurement_model_pose
 from sensing import MarkerMeasurement, make_lidar_scan
-
+TWO_PI = 2 * math.pi
 DOCK_ID = CONFIG.camera.marker_id
-TWO_PI = 2.0 * math.pi
 OMEGA = CONFIG.tags.spin_omega
-
+HALF_TURN = math.pi
 class ConfigTagMap:
     # Test helper: pretends the config poses were "learned" at run time
     def __init__(self, cfg=CONFIG):
@@ -96,7 +95,7 @@ def test_spin_rotates_in_place_at_the_configured_speed():
     assert rec.phase is RecoveryPhase.SPIN
 
 
-def test_spin_lasts_one_full_turn_before_driving_to_a_tag():
+def test_spin_lasts_half_a_turn_before_driving_to_a_tag():
     rec, scan, step = make_recovery(), free_scan(), 0.05
     rec.start()
     turned = 0.0
@@ -106,7 +105,7 @@ def test_spin_lasts_one_full_turn_before_driving_to_a_tag():
         if rec.phase is not RecoveryPhase.SPIN:
             break
     assert rec.phase is RecoveryPhase.GOTO
-    assert turned >= TWO_PI - 1e-9 and turned - step < TWO_PI
+    assert turned >= HALF_TURN - 1e-9 and turned - step < HALF_TURN
     assert rec.target_id in rec.tags
 
 
@@ -163,20 +162,21 @@ def test_localized_during_goto_finishes_recovery():
     assert rec.phase is RecoveryPhase.DONE
 
 
-def test_each_tag_is_visited_once_then_the_map_is_followed():
+def test_only_max_tags_are_visited_then_the_map_is_followed():
     rec, scan = make_recovery(), free_scan()
     rec.start()
     x = np.zeros(3)
     targets = []
-    for _ in range(len(rec.tags)):
-        rec.update(x, scan, False, TWO_PI)                 # full turn without a tag -> next tag
+    for _ in range(min(MAX_TAGS, len(rec.tags))):
+        rec.update(x, scan, False, TWO_PI)                 # half turn without a tag -> next tag
         assert rec.phase is RecoveryPhase.GOTO
         targets.append(rec.target_id)
         x = np.append(rec.standoff_point(rec.target_id), 0.0)
         rec.update(x, scan, False, 0.0)                    # arrived -> look around again
         assert rec.phase is RecoveryPhase.SPIN
-    assert sorted(targets) == sorted(rec.tags)             # no tag twice
-    v, w = rec.update(x, scan, False, TWO_PI)              # nothing left: follow the learned map
+    assert len(set(targets)) == len(targets)               # no tag twice
+    assert len(targets) == min(MAX_TAGS, len(rec.tags))
+    v, w = rec.update(x, scan, False, TWO_PI)              # tag limit reached: follow the learned map
     assert rec.phase is RecoveryPhase.MAP_GOTO and rec.target_id == DOCK_ID
     assert (v, w) != (0.0, 0.0)
     assert rec.active and not rec.finished

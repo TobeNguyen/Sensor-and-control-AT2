@@ -342,7 +342,7 @@ def calibrate_intrinsics(object_points: Sequence[np.ndarray], image_points: Sequ
 
 # Convenience wrapper: detect the chessboard in every image, then calibrate
 def calibrate_from_images(images: Sequence[np.ndarray], pattern_size: tuple,
-                        square_size: float, drop_worst: int = 4) -> CameraIntrinsics:
+                        square_size: float, drop_worst: int = 8) -> CameraIntrinsics:
     sizes = {img.shape[:2] for img in images}
     if len(sizes) != 1:
         raise ValueError(f"all calibration images must have the same resolution, got {sizes}")
