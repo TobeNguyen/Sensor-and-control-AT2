@@ -74,190 +74,6 @@ def generate_marker_image(cfg: Config = CONFIG, px_per_module: int = 20,
 def marker_filename(marker_id: int, cfg: Config = CONFIG) -> str:
     return MARKER_FILE if marker_id == cfg.camera.marker_id else f"aruco_marker_{marker_id}.png"
 
-# Distance from point (px, py) to the segment A-B
-def point_segment_distance(px: float, py: float, ax: float, ay: float,
-                        bx: float, by: float) -> float:
-    abx, aby = bx - ax, by - ay
-    length2 = abx * abx + aby * aby
-    t = 0.0 if length2 == 0.0 else max(0.0, min(1.0, ((px - ax) * abx + (py - ay) * aby) / length2))
-    return math.hypot(px - (ax + t * abx), py - (ay + t * aby))
-
-# Randomly place obstacles (same count and radii as cfg.env.obstacles) using rejection sampling.
-# The planned path (start -> waypoints -> dock) and the recovery stand-off points of the extra
-# tags are kept free, like the fixed config layout.
-def random_obstacles(cfg: Config, rng: np.random.Generator,
-                    margin: float = 0.15, path_margin: float = 0.10,
-                    max_tries: int = 2000) -> list[tuple]:
-    hx, hy = cfg.env.room_half_size
-    sx, sy, _ = cfg.env.start_pose
-    dx, dy, dyaw = cfg.env.dock_pose
-    robot_r = cfg.robot.body_radius
-    robot_d = 2.0 * robot_r                    # robot diameter
-    path = ([(sx, sy)]
-            + [(float(w[0]), float(w[1])) for w in getattr(cfg.env, "waypoints", ())]
-            + [(dx, dy)])
-    # Keep the dock visible and reachable: the sight line from the start pose to the dock,
-    # and the corridor in front of the dock (along the tag normal).
-    dock_front = (dx + 1.8 * math.cos(dyaw), dy + 1.8 * math.sin(dyaw))
-    sight_line = ((sx, sy), (dx, dy))
-    front_corridor = ((dx, dy), dock_front)
-    # Stand-off points in front of the extra tags (the robot drives there during recovery)
-    # Configs without a tag table (e.g. minimal test stubs) simply have no stand-off points.
-    standoff_pts = []
-    if hasattr(cfg, "tag_table") and hasattr(cfg, "tags") and hasattr(cfg, "camera"):
-        standoff_pts = [(tx + cfg.tags.standoff * math.cos(tyaw),
-                         ty + cfg.tags.standoff * math.sin(tyaw))
-                        for tid, (tx, ty, tyaw) in cfg.tag_table().items()
-                        if tid != cfg.camera.marker_id]
-    placed: list[tuple] = []
-
-    for _, _, r in cfg.env.obstacles:
-        for _ in range(max_tries):
-            # keep a robot-wide gap to the walls so the robot can pass behind the obstacle
-            x = rng.uniform(-hx + r + robot_d, hx - r - robot_d)
-            y = rng.uniform(-hy + r + robot_d, hy - r - robot_d)
-
-            # keep the start pose and the dock area free
-            if math.hypot(x - sx, y - sy) < r + robot_d + margin:
-                continue
-            if math.hypot(x - dx, y - dy) < r + robot_d + margin:
-                continue
-            # keep the waypoint path free (the robot must fit between path and obstacle)
-            if any(point_segment_distance(x, y, *a, *b) < r + robot_r + path_margin
-                for a, b in zip(path[:-1], path[1:])):
-                continue
-            # keep the dock visible from the start pose
-            if point_segment_distance(x, y, *sight_line[0], *sight_line[1]) < r + 0.15:
-                continue
-            # keep the corridor in front of the dock free for the approach
-            if point_segment_distance(x, y, *front_corridor[0], *front_corridor[1]) < r + robot_r + path_margin:
-                continue
-            # keep the recovery stand-off points free
-            if any(math.hypot(x - px, y - py) < r + robot_r + path_margin
-                for px, py in standoff_pts):
-                continue
-            # keep a robot-wide gap between obstacles
-            if any(math.hypot(x - ox, y - oy) < r + orad + robot_d
-                for ox, oy, orad in placed):
-                continue
-
-            placed.append((float(x), float(y), r))
-            break
-        else:
-            raise RuntimeError("Could not place all obstacles; reduce their number or radius.")
-    return placed
-
-# True when every goal can be reached from the start pose through the free space of the room.
-# Grid BFS: obstacles are inflated by the robot radius plus a margin, the walls by the robot radius.
-def obstacles_leave_a_path(cfg: Config, obstacles: list[tuple], goals: list[tuple],
-                        cell: float = 0.1, margin: float = 0.10) -> bool:
-    hx, hy = cfg.env.room_half_size
-    robot_r = cfg.robot.body_radius
-    nx, ny = int(round(2.0 * hx / cell)) + 1, int(round(2.0 * hy / cell)) + 1
-    gx, gy = np.meshgrid(-hx + cell * np.arange(nx), -hy + cell * np.arange(ny), indexing="ij")
-    free = (np.abs(gx) <= hx - robot_r) & (np.abs(gy) <= hy - robot_r)
-    for ox, oy, r in obstacles:
-        free &= np.hypot(gx - ox, gy - oy) > r + robot_r + margin
-
-    def to_cell(p):
-        return (int(np.clip(round((p[0] + hx) / cell), 0, nx - 1)),
-                int(np.clip(round((p[1] + hy) / cell), 0, ny - 1)))
-
-    start = to_cell(cfg.env.start_pose)
-    if not free[start]:
-        return False
-    seen = np.zeros_like(free)
-    seen[start] = True
-    todo = deque([start])
-    while todo:
-        i, j = todo.popleft()
-        for di, dj in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-            a, b = i + di, j + dj
-            if 0 <= a < nx and 0 <= b < ny and free[a, b] and not seen[a, b]:
-                seen[a, b] = True
-                todo.append((a, b))
-    return all(free[to_cell(g)] and seen[to_cell(g)] for g in goals)
-
-def dock_view_fraction(cfg: Config, obstacles: list[tuple], max_range: float = 3.0,
-                    half_angle: float = math.radians(40), cell: float = 0.2,
-                    margin: float = 0.10) -> float:
-    hx, hy = cfg.env.room_half_size
-    dx, dy, dyaw = cfg.env.dock_pose
-    robot_r = cfg.robot.body_radius
-    xs = np.arange(-hx + robot_r, hx - robot_r + 1e-9, cell)
-    ys = np.arange(-hy + robot_r, hy - robot_r + 1e-9, cell)
-    seen = total = 0
-    for x in xs:
-        for y in ys:
-            if any(math.hypot(x - ox, y - oy) < r + robot_r + margin for ox, oy, r in obstacles):
-                continue
-            total += 1
-            rng = math.hypot(dx - x, dy - y)
-            if rng > max_range or rng < 0.3:
-                continue
-            if abs(wrap_angle(math.atan2(y - dy, x - dx) - dyaw)) > half_angle:
-                continue
-            if any(point_segment_distance(ox, oy, x, y, dx, dy) < r for ox, oy, r in obstacles):
-                continue
-            seen += 1
-    return seen / max(total, 1)
-
-# Harder layout for navigation tests: obstacles may block the direct route and the view of the dock.
-# Still kept free: the start area, the dock area, the final approach in front of the dock and the
-# stand-off points of the extra tags. Every accepted layout has a path from the start to the dock
-# approach point and to every stand-off point (grid BFS). block_sight=True forces the first
-# obstacle onto the start -> dock sight line, so the dock is hidden at the start.
-def random_obstacles_hard(cfg: Config, rng: np.random.Generator,
-                        margin: float = 0.15, path_margin: float = 0.10,
-                        gap: float = 0.60, front_length: float = 2.0,
-                        block_sight: bool = True, min_view: float = 0.18,
-                        max_tries: int = 2000, max_layouts: int = 200) -> list[tuple]:
-    hx, hy = cfg.env.room_half_size
-    sx, sy, _ = cfg.env.start_pose
-    dx, dy, dyaw = cfg.env.dock_pose
-    robot_r = cfg.robot.body_radius
-    robot_d = 2.0 * robot_r
-    tags = getattr(cfg, "tags", None)
-    approach_dist = tags.approach_dist if tags is not None else 1.0
-    sight_line = ((sx, sy), (dx, dy))
-    front_corridor = ((dx, dy), (dx + front_length * math.cos(dyaw), dy + front_length * math.sin(dyaw)))
-    standoff_pts = []
-    if hasattr(cfg, "tag_table") and tags is not None and hasattr(cfg, "camera"):
-        standoff_pts = [(tx + tags.standoff * math.cos(tyaw), ty + tags.standoff * math.sin(tyaw))
-                        for tid, (tx, ty, tyaw) in cfg.tag_table().items()
-                        if tid != cfg.camera.marker_id]
-    goals = [(dx + approach_dist * math.cos(dyaw), dy + approach_dist * math.sin(dyaw))] + standoff_pts
-    bx, by = chessboard_pose(cfg)
-
-    for _ in range(max_layouts):
-        placed: list[tuple] = []
-        for k, (_, _, r) in enumerate(cfg.env.obstacles):
-            for _ in range(max_tries):
-                x = rng.uniform(-hx + r + robot_d, hx - r - robot_d)
-                y = rng.uniform(-hy + r + robot_d, hy - r - robot_d)
-                if math.hypot(x - sx, y - sy) < r + robot_d + margin:
-                    continue
-                if math.hypot(x - dx, y - dy) < r + robot_d + margin:
-                    continue
-                if point_segment_distance(x, y, *front_corridor[0], *front_corridor[1]) < r + robot_r + path_margin:
-                    continue
-                if any(math.hypot(x - px, y - py) < r + robot_r + path_margin for px, py in standoff_pts):
-                    continue
-                if math.hypot(x - bx, y - by) < r + 0.4:
-                    continue
-                if any(math.hypot(x - ox, y - oy) < r + orad + gap for ox, oy, orad in placed):
-                    continue
-                if block_sight and k == 0 and point_segment_distance(x, y, *sight_line[0], *sight_line[1]) > r + 0.10:
-                    continue
-                placed.append((float(x), float(y), r))
-                break
-            else:
-                break                      # this obstacle could not be placed: start a new layout
-        else:
-            if obstacles_leave_a_path(cfg, placed, goals) and dock_view_fraction(cfg, placed) >= min_view:
-                return placed
-    raise RuntimeError("Could not build a feasible hard layout; reduce the number or radius of obstacles.")
-
 def _scene_directory(cfg: Config, directory: Path | None) -> Path:
     return Path(directory) if directory is not None else cfg.sim.model_path.parent
 
@@ -405,8 +221,7 @@ def write_scene_files(cfg: Config = CONFIG, directory: Path | None = None,
 
 class Simulation:
     def __init__(self, cfg: Config = CONFIG, seed: int | None = None,
-                scene_dir: Path | None = None, randomize_obstacles: bool = False,
-                hard_obstacles: bool = False, block_sight: bool = True):
+                scene_dir: Path | None = None):
         self.cfg = cfg
         rl = cfg.realism
         self.real = rl.enabled
@@ -416,15 +231,8 @@ class Simulation:
         # Hidden world (what is REALLY there) vs the config (what the robot believes)
         self.world_cfg, self.cam_offset = self._sample_world(np.random.default_rng(base_seed + 7919))
 
-        # Obstacles: random layout (reproducible with the same seed) or the fixed config layout
-        # hard layouts use their own generator, so the sensor noise stream is not affected
-        if randomize_obstacles and hard_obstacles:
-            self.obstacles = random_obstacles_hard(self.world_cfg, np.random.default_rng(base_seed + 104729),
-                                                block_sight=block_sight)
-        elif randomize_obstacles:
-            self.obstacles = random_obstacles(self.world_cfg, self.rng)
-        else:
-            self.obstacles = list(cfg.env.obstacles)
+        # Obstacles: the 3 fixed obstacles from the config (the robot only sees them through the LiDAR)
+        self.obstacles = list(cfg.env.obstacles)
 
         # Use the TurtleBot3 meshes (visual only) when available; fall back to the cylinder.
         use_meshes = meshes_available(_scene_directory(cfg, scene_dir))

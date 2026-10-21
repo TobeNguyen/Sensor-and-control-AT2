@@ -64,7 +64,7 @@ def test_start_begins_with_a_spin():
 
 
 def test_start_without_extra_tags_but_with_the_dock_still_spins():
-    cfg = replace(CONFIG, tags=replace(CONFIG.tags, n_tags=0))
+    cfg = replace(CONFIG, tags=replace(CONFIG.tags, fixed_tags=()))
     rec = make_recovery(cfg)
     assert rec.tags == {} and rec.dock is not None and rec.available
     rec.start()

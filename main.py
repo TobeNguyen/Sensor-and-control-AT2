@@ -28,8 +28,8 @@ from simulation import Simulation, render_chessboard_views
 from visualization import RouteVisualizer
 
 MAX_RECOVERIES = 1   # maximum number of tag recoveries per run (avoid endless retry loops)
-EXPLORE_SCAN_ANGLE = 2 * math.pi / 3   # EXPLORE: rotation at every stop [rad] (use math.pi for a faster 180 deg scan)
-EXPLORE_STEP = 1.0                   # EXPLORE: distance driven between two scans [m]
+EXPLORE_SCAN_ANGLE = math.pi   # EXPLORE: rotation at every stop [rad]
+EXPLORE_STEP = 1.5                   # EXPLORE: distance driven between two scans [m]
 
 class Phase(Enum):
     SURVEY = "survey"
@@ -231,13 +231,13 @@ class StopGoScan:
         if self.hold_t0 is not None:
             if t - self.hold_t0 >= self.hold:
                 self.hold_t0, self.step_spun = None, 0.0
-                return self.omega, False
+                return self.sign * self.omega, False
             return 0.0, t - self.hold_t0 >= self.settle
         self.step_spun += abs(dtheta)
         if self.step_spun >= self.step:
             self.hold_t0 = t
             return 0.0, False
-        return self.omega, False
+        return self.sign * self.omega, False
 
 # Direction (robot frame) with the most free space, with a small preference for straight ahead
 def freest_direction(lidar, half_width: float = 0.4) -> float:
@@ -436,11 +436,10 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
                 dock_use_estimate: bool = False, marker_sigma_px: float = 0.5,
                 use_marker_cov: bool = False,
                 visualizer: Optional[RouteVisualizer] = None,
-                randomize_obstacles: bool = False,
                 use_recovery: bool = False,
                 use_survey: Optional[bool] = None,
                 use_lidar_map: bool = False, calibration=None, lidar_fault_at: Optional[float] = None,
-                hard_obstacles: bool = False, block_sight: bool = True, calib_odometry: bool = False,
+                calib_odometry: bool = False,
                 calib_camera: bool = False, camera_delay: float = 0.0) -> RunResult:
     log = TrialLog()
     phase, reason = Phase.NAVIGATE, "timeout"
@@ -461,7 +460,7 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
     survey_t0: Optional[float] = None
     explore_t0: Optional[float] = None   # start time of the EXPLORE phase
     spun = 0.0                           # rotation accumulated during SURVEY [rad]
-    scan = StopGoScan()         # SURVEY / EXPLORE: rotate a little, stop, observe
+    scan = StopGoScan(step=0.8)         # SURVEY / EXPLORE: rotate a little, stop, observe
     ex_state = "PICK"                    # EXPLORE: PICK -> TURN -> MOVE -> SCAN -> PICK ...
     ex_target = 0.0                      # EXPLORE: heading to turn to [rad]
     ex_moved = 0.0                       # EXPLORE: distance driven in the current MOVE [m]
@@ -494,6 +493,7 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
     ap_go_t0 = 0.0                       # time when the current GO (Navigator) segment started
     ap_seen_pt = None                    # last observed dock position (estimator frame)
     dock_retries = 0
+    dock_t0 = None
     dock_fail_t = -99.0
     obstacles = list(cfg.env.obstacles)
     world_cfg = cfg
@@ -512,13 +512,11 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
         r_cal, b_cal = calibrate_odometry(cfg, seed=seed)
         soft_cfg = apply_odometry(cfg, r_cal, b_cal)
         note(0.0, f"odometry calibrated: wheel_radius {r_cal:.4f} m, wheel_base {b_cal:.4f} m")
-    with Simulation(cfg, seed=seed, scene_dir=scene_dir,
-                    randomize_obstacles=randomize_obstacles,
-                    hard_obstacles=hard_obstacles, block_sight=block_sight) as sim:
+    with Simulation(cfg, seed=seed, scene_dir=scene_dir) as sim:
         # Effective config: the obstacles that are really in the scene (random or fixed)
         obstacles = list(sim.obstacles)
         world_cfg = sim.world_cfg
-        run_cfg = replace(soft_cfg, env=replace(cfg.env, obstacles=tuple(obstacles)))
+        run_cfg = replace(soft_cfg, env=replace(cfg.env, obstacles=()))
         nav, dock = Navigator(run_cfg), DockingController(run_cfg)
         recovery = TagRecovery(run_cfg, tracker=nav.tracker)
 
@@ -634,11 +632,16 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
                     observe = False
                     if ex_state == "SCAN":                   # rotate-stop-rotate, observe while still
                         w, observe = scan.update(frame.time, frame.odometry.dtheta)
+                        if frame.marker is not None and tag_map.count(dock_id) < run_cfg.tags.survey_min_obs:
+                            w = 0.0
                         if scan.spun >= EXPLORE_SCAN_ANGLE:
                             ex_dirs.append((float(x_est[0]), float(x_est[1]), float(x_est[2])))
                             scan.sign *= -1
                             ex_state = "PICK"
                     elif ex_state == "PICK":
+                        if sigma_xy > 0.1:
+                            ex_state = "SCAN"
+                            scan.reset()
                         best_a, best_s = None, -1e9
                         for a in np.linspace(-math.pi, math.pi, 36, endpoint=False):
                             free = sector_min_range(frame.lidar, float(a), 0.5)
@@ -649,7 +652,7 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
                             if any(float(np.hypot(*(tgt - b))) < 0.6 for b in ex_bad):
                                 continue
                             near = min(float(np.hypot(*(tgt - p))) for p in ex_scanned)
-                            s = 3.0 * min(near, 2.0) + min(free, 1.5) - 0.2 * abs(float(a))
+                            s = 1.5 * min(near, 1.0) + min(free, 1.5) - 0.5 * abs(float(a)) + 0.5
                             if near < 0.8:
                                 s -= 4.0
                             for (qx, qy, _qh) in ex_dirs[-3:]:
@@ -697,7 +700,7 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
                     elif ex_state == "MOVE":
                         ex_moved += frame.odometry.ds
                         ex_stall = ex_stall + dt if abs(frame.odometry.ds) < 1e-4 else 0.0
-                        blocked = ex_stall > 2.0 or sector_min_range(frame.lidar, 0.0, 0.5) < 0.6
+                        blocked = ex_stall > 2.0 or sector_min_range(frame.lidar, 0.0, 0.5) < 0.6 or sigma_xy > 0.1
                         if blocked and ex_moved < 0.3:
                             ex_bad.append(x_est[:2] + 0.8 * np.array([math.cos(x_est[2]), math.sin(x_est[2])]))
                             ex_state = "PICK"
@@ -714,7 +717,8 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
                         for marker in frame.markers:
                             is_dock = int(marker.marker_id) == dock_id
                             limit = run_cfg.tags.dock_max_range if is_dock else run_cfg.tags.survey_max_range
-                            tag_map.add(x_est, marker, max_range=limit)
+                            if sigma_xy < 0.08:
+                                tag_map.add(x_est, marker, max_range=limit if is_dock else min(limit, 2.0))
                     if tag_map.count(dock_id) >= run_cfg.tags.survey_min_obs:
                         learned = tag_map.table()
                         estimator.set_tag_map(map_view)
@@ -815,9 +819,9 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
                         v = w = 0.0
 
                 if (phase is Phase.NAVIGATE and aim_mode and dock_lm is not None
-                        and frame.marker is not None and frame.marker.range < 1.8
-                        and abs(frame.marker.bearing) < 0.6
-                        and abs(wrap_angle(frame.marker.bearing - frame.marker.view_angle)) < 0.4
+                        and frame.marker is not None and frame.marker.range < 2.2 and frame.marker.range > 0.9
+                        and abs(frame.marker.bearing) < 0.3
+                        and abs(wrap_angle(frame.marker.bearing - frame.marker.view_angle)) < 0.35
                         and frame.time - last_rot_t >= 0.3 and frame.time - dock_fail_t > 5.0):
                     aim_mode = False
                     phase, nav_time = Phase.DOCK, frame.time
@@ -954,7 +958,7 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
                     elif ap_state == "MOVE":
                         ap_moved += frame.odometry.ds
                         ap_stall = ap_stall + dt if abs(frame.odometry.ds) < 1e-4 else 0.0
-                        if ap_stall > 2.0:
+                        if ap_stall > 1.0:
                             ap_stall, ap_goal_pt, ap_state = 0.0, None, "PLAN"
                             note(frame.time, "AIM: MOVE stalled -> replanning with obstacle avoidance")
                         elif sector_min_range(frame.lidar, 0.0, 0.5) < 0.6:
@@ -966,7 +970,7 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
                             v = 0.2
                     if ap_state in ("TURN", "MOVE") and abs(v) < 1e-6 and abs(w) < 1e-6:
                         ap_idle += dt
-                        if ap_idle > 1.0:
+                        if ap_idle > 0.5:
                             ap_stuck_n = ap_stuck_n + 1 if frame.time - ap_stuck_t < 15.0 else 1
                             ap_stuck_t = frame.time
                             if ap_stuck_n >= 2:
@@ -989,6 +993,15 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
 
                 # 2d) docking (a failed docking widens P and starts the tag recovery)
                 if phase is Phase.DOCK:
+                    dock_t0 = frame.time if dock_t0 is None else dock_t0
+                    if frame.time - dock_t0 > 20.0 and dock_retries < 3:
+                        dock_t0, dock_fail_t = None, frame.time
+                        dock_retries += 1
+                        aim_mode, ap_state, ap_t0 = True, "LOOK", None
+                        phase = Phase.NAVIGATE
+                        note(frame.time, "docking too long -> back to AIM")
+                    else:
+                        dock_t0 = None
                     dcmd = dock.update(frame.marker, frame.odometry, x_est if (dock_use_estimate and dock_lm is not None and dock_refined) else None)
                     if dcmd.finished:
                         if dcmd.docked:
@@ -1154,8 +1167,8 @@ def _ensure_mjpython() -> None:
 # Repeated trials with different noise seeds: success rate and mean +- std of the key metrics
 def run_trials(n: int, seed0: int = 0, cfg: Config = CONFIG, use_marker_cov: bool = False,
             marker_sigma_px: float = 0.5, scene_dir: Optional[Path] = None,
-            randomize_obstacles: bool = False, use_lidar_map: bool = False, use_recovery: bool = False,
-            hard_obstacles: bool = False, block_sight: bool = True, calib_odometry: bool = False) -> int:
+            use_lidar_map: bool = False, use_recovery: bool = False,
+            block_sight: bool = True, calib_odometry: bool = False) -> int:
     rows = []
     print(f"marker R: {'per-measurement' if use_marker_cov else 'fixed'} | sigma_px {marker_sigma_px}")
     print(f"{'seed':>5} {'result':>7} {'reason':>15} {'time':>6} {'pos RMSE':>9} "
@@ -1164,8 +1177,7 @@ def run_trials(n: int, seed0: int = 0, cfg: Config = CONFIG, use_marker_cov: boo
         res = run_pipeline(cfg, seed=seed0 + i, scene_dir=scene_dir,
                         dock_use_estimate=True, calib_odometry=calib_odometry,
                         marker_sigma_px=marker_sigma_px, use_marker_cov=use_marker_cov,
-                        randomize_obstacles=randomize_obstacles, use_lidar_map=use_lidar_map, use_recovery=use_recovery,
-                        hard_obstacles=hard_obstacles, block_sight=block_sight)
+                        use_lidar_map=use_lidar_map, use_recovery=use_recovery)
         rep = compute_report(res, cfg)
         n_cam, n_det = res.camera_stats
         row = {"ok": res.success, "reason": res.reason, "time": res.time,
@@ -1199,9 +1211,8 @@ def run_trials(n: int, seed0: int = 0, cfg: Config = CONFIG, use_marker_cov: boo
 
 # Configurations compared by a plain `python main.py` (edit this list to add / remove variants)
 SUITE = (
-    ("Final system",             dict(calib_odometry=True,  use_recovery=True, hard_obstacles=True, block_sight=False)),
-    ("Ablation: no calibration", dict(calib_odometry=False, use_recovery=True, hard_obstacles=True, block_sight=False)),
-    ("Stress: dock hidden",      dict(calib_odometry=True,  use_recovery=True, hard_obstacles=True, block_sight=True)),
+    ("Final system",             dict(calib_odometry=True,  use_recovery=True)),
+    ("Ablation: no calibration", dict(calib_odometry=False, use_recovery=True)),
 )
 
 # Run every configuration in SUITE for n seeds (headless) and print one comparison table
@@ -1212,8 +1223,7 @@ def run_suite(n: int, seed0: int = 0, cfg: Config = CONFIG) -> int:
         print(f"\n=== {name} | {n} trials ===", flush=True)
         rows, fails = [], {}
         for i in range(n):
-            res = run_pipeline(cfg, seed=seed0 + i, dock_use_estimate=True,
-                               randomize_obstacles=True, **kw)
+            res = run_pipeline(cfg, seed=seed0 + i, dock_use_estimate=True, **kw)
             rep = compute_report(res, cfg)
             lat = res.metrics(res.world_cfg or cfg)["dock_lateral"]
             rows.append((float(res.success), res.time, rep.get("position_rmse", nan),
@@ -1255,8 +1265,6 @@ def build_parser() -> argparse.ArgumentParser:
                         help="do not save the route picture / snapshots")
     parser.add_argument("--no-live-camera", action="store_true",
                         help="do not open the live camera window")
-    parser.add_argument("--fixed-obstacles", action="store_true",
-                        help="use the fixed obstacle layout from config instead of a random one")
     parser.add_argument("--no-survey", action="store_true",
                         help="skip the start-pose survey and use the tag poses written in the config")
     parser.add_argument("--ideal", action="store_true",
@@ -1271,8 +1279,6 @@ def build_parser() -> argparse.ArgumentParser:
                         help="run the comparison suite (many seeds, headless) instead of one live run")
     parser.add_argument("--no-recovery", action="store_true", help="disable the tag recovery")
     parser.add_argument("--no-calib-odometry", action="store_true", help="skip the odometry calibration")
-    parser.add_argument("--hide-dock", action="store_true",
-                        help="stress layout: force an obstacle between the start and the dock")
     parser.add_argument("--no-plot", action="store_true", help="do not save results/run.png")
     parser.add_argument("--no-calib-camera", action="store_true", help="skip camera calibration")
     parser.add_argument("--camera-delay", type=float, default=0.0,
@@ -1285,29 +1291,20 @@ def main(argv=None) -> int:
     # Final system by default: recovery + odometry calibration + one merged obstacle layout
     args.recovery = not args.no_recovery
     args.calib_odometry = not args.no_calib_odometry
-    args.hard_obstacles = True
-    args.keep_sight = not args.hide_dock         # default: the dock is NOT forced to be hidden
     args.plot = not args.no_plot
     cfg = replace(CONFIG, realism=RealismConfig(enabled=False)) if args.ideal else CONFIG
-    randomize = not args.fixed_obstacles
 
     if args.suite:
         return run_suite(args.suite_trials, args.seed or 0, cfg)
 
     # A random layout needs a random seed; it is printed so the run can be reproduced
     seed = args.seed
-    if randomize and seed is None:
-        seed = int.from_bytes(os.urandom(4), "little")
-    if randomize:
-        extra = " --hide-dock" if args.hide_dock else ""
-        print(f"Random obstacles | seed {seed} (replay with: python main.py --seed {seed}{extra})")
 
     if args.trials > 0:
         return run_trials(args.trials, seed or 0, cfg,
                         use_marker_cov=args.marker_cov, marker_sigma_px=args.sigma_px,
-                        randomize_obstacles=randomize, use_lidar_map=args.lidar_map,
-                        use_recovery=args.recovery, hard_obstacles=args.hard_obstacles,
-                        block_sight=not args.keep_sight, calib_odometry=args.calib_odometry)
+                        use_lidar_map=args.lidar_map, use_recovery=args.recovery,
+                        calib_odometry=args.calib_odometry)
     use_viewer = not args.no_viewer
     if use_viewer:
         _ensure_mjpython()
@@ -1324,19 +1321,18 @@ def main(argv=None) -> int:
     result = run_pipeline(cfg, seed=seed, viewer=use_viewer, verbose=True,
                         dock_use_estimate=True,
                         marker_sigma_px=args.sigma_px, use_marker_cov=args.marker_cov,
-                        visualizer=viz, randomize_obstacles=randomize,
+                        visualizer=viz,
                         use_lidar_map=args.lidar_map, use_recovery=args.recovery,
-                        lidar_fault_at=args.lidar_fault, hard_obstacles=args.hard_obstacles,
-                        block_sight=not args.keep_sight, calib_odometry=args.calib_odometry, calib_camera=args.calib_camera, camera_delay=args.camera_delay,  calibration=calibration)
+                        lidar_fault_at=args.lidar_fault,
+                        calib_odometry=args.calib_odometry, calib_camera=args.calib_camera,
+                        camera_delay=args.camera_delay, calibration=calibration)
     ecfg = result.world_cfg or cfg          # the real world, for evaluation only
 
     dr_rmse = None
     if args.compare:
         # Same seed -> same obstacle layout as the main run
         baseline = run_pipeline(cfg, seed=seed,
-                                estimator=EKFEstimator(cfg, use_marker=False, use_lidar=False),
-                                randomize_obstacles=randomize, hard_obstacles=args.hard_obstacles,
-                                block_sight=not args.keep_sight)
+                                estimator=EKFEstimator(cfg, use_marker=False, use_lidar=False))
         dr_rmse = compute_report(baseline, ecfg).get("position_rmse")
 
     print()

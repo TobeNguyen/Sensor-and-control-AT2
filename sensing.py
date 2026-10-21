@@ -53,7 +53,7 @@ class SensorFrame:
 def detect_markers(rgb, cfg: Config = CONFIG, time: float = 0.0,
                 max_view_angle: float = math.radians(70.0), K=None) -> list[MarkerMeasurement]:
     first = int(cfg.camera.marker_id)
-    known = range(first, first + int(cfg.tags.n_tags) + 1)
+    known = set(cfg.tag_table())
     name = cfg.camera.aruco_dict.replace("DICT_", "").lower()      # "4x4_50"
     out = []
     try:
@@ -61,7 +61,6 @@ def detect_markers(rgb, cfg: Config = CONFIG, time: float = 0.0,
             name, K=camera_matrix(cfg) if K is None else K, side=cfg.camera.marker_size)
     except ValueError:                     # toolbox crashes when PnP returns NaN on a bad frame
         return []                          # treat it like a dropped frame
-    out = []
     for f in fiducials:
         if int(f.id) not in known or f.pose is None or not np.all(np.isfinite(f.pose.A)):
             continue

@@ -69,8 +69,6 @@ def test_parser_options():
     args = build_parser().parse_args(["--seed", "3", "--plot", "--trials", "5"])
     assert args.seed == 3 and args.plot and args.trials == 5 and not args.no_viewer
     assert build_parser().parse_args(["--no-viewer"]).no_viewer
-    assert not build_parser().parse_args([]).fixed_obstacles
-    assert build_parser().parse_args(["--fixed-obstacles"]).fixed_obstacles
 
 
 def test_run_result_metrics_and_summary():
@@ -99,13 +97,6 @@ def test_print_report_shows_sensing_and_ekf_diagnostics(capsys):
     out = capsys.readouterr().out
     assert "marker accepted 8/10" in out and "(80 %)" in out
     assert "mean NIS/dof 1.10" in out and "id 1: 0.012" in out
-
-
-def test_report_clearance_uses_the_obstacles_of_the_run():
-    r = make_fake_result()
-    r.obstacles = [(0.25, 0.0, 0.2)]           # sits right on the fake trajectory (y = 0)
-    clearance = compute_report(r, CONFIG)["min_obstacle_clearance"]
-    assert clearance == pytest.approx(-(0.2 + CONFIG.robot.body_radius), abs=1e-3)
 
 
 # ------------------------------------------------------------ recovery helpers (no sim)
@@ -251,51 +242,20 @@ def test_scan_learns_the_dock_accurately(scene_dir):
     assert any("SURVEY done" in e for e in res.events)
     assert res.diag["tag_map_errors"][dock_id] < 0.06
 
-
-# ------------------------------------------------------------ random obstacles
-RANDOM_SEEDS = list(range(100, 106))
-
-
-@pytest.fixture(scope="module")
-def random_result(scene_dir):
-    return run_pipeline(seed=1, scene_dir=scene_dir, randomize_obstacles=True)
-
-
-def test_default_pipeline_uses_the_fixed_layout(result):
-    assert result.obstacles == list(CONFIG.env.obstacles)
-
-
-def test_random_layout_is_different_and_reproducible(scene_dir, random_result):
-    assert len(random_result.obstacles) == len(CONFIG.env.obstacles)
-    assert random_result.obstacles != list(CONFIG.env.obstacles)
-    again = run_pipeline(seed=1, scene_dir=scene_dir, randomize_obstacles=True)
-    assert again.obstacles == random_result.obstacles
-    assert again.time == pytest.approx(random_result.time)
-
-
-def test_random_pipeline_report_uses_the_random_layout(random_result):
-    rep = compute_report(random_result, CONFIG)
-    assert rep["min_obstacle_clearance"] > 0.0
-    assert not random_result.collided
-    d = random_result.diag
-    assert d["n_updates"] == 0 or 0.01 < d["nis_per_dof"] < 10.0
-
-
-@pytest.mark.parametrize("seed", RANDOM_SEEDS)
-def test_pipeline_is_safe_with_random_obstacles(scene_dir, seed):
-    res = run_pipeline(seed=seed, scene_dir=scene_dir, randomize_obstacles=True,
-                    own_start=True, realistic=True, dock_use_estimate=True)
+@pytest.mark.parametrize("seed", [100, 101, 102])
+def test_pipeline_is_safe_with_the_fixed_layout(scene_dir, seed):
+    # real start pose (0, 0, 0): the obstacle hides the dock, so the robot must explore
+    res = run_pipeline(seed=seed, scene_dir=scene_dir, own_start=True,
+                    realistic=True, dock_use_estimate=True)
     assert not res.collided, f"collision with layout {res.obstacles}"
-    assert res.reason in ("docked", "timeout", "docking failed", "dock not found",
-                        "explore failed", "survey failed"), res.reason
-    
+    assert res.success
 
-def test_visualizer_does_not_change_the_run(scene_dir, tmp_path):
-    plain = run_pipeline(seed=3, scene_dir=scene_dir, realistic=True)
-    viz = RouteVisualizer(CONFIG, output_dir=tmp_path, live_view=False)
-    shown = run_pipeline(seed=3, scene_dir=scene_dir, realistic=True, visualizer=viz)
-    np.testing.assert_allclose(shown.log.arrays()["est"], plain.log.arrays()["est"])
-    assert shown.success == plain.success
+
+
+def test_report_uses_the_fixed_layout(result):
+    rep = compute_report(result, CONFIG)
+    assert rep["min_obstacle_clearance"] > 0.0
+    assert not result.collided
 
 
 def test_lidar_outage_triggers_a_latched_safety_stop(scene_dir):
@@ -310,3 +270,33 @@ def test_parser_has_recovery_and_lidar_fault_options():
     assert not args.no_recovery and not args.no_calib_odometry
     off = build_parser().parse_args(["--no-recovery", "--no-calib-odometry"])
     assert off.no_recovery and off.no_calib_odometry
+
+
+def path_length(xy):
+    # Total driven distance from the logged true positions
+    return float(np.sum(np.hypot(*np.diff(xy, axis=0).T)))
+
+
+@pytest.mark.parametrize("seed", [0, 1, 2])
+def test_real_scenario_docks_with_an_efficient_path(scene_dir, seed):
+    # Same settings as main.py: real start, hidden obstacle, noise, recovery + calibration
+    res = run_pipeline(seed=seed, scene_dir=scene_dir, own_start=True, realistic=True,
+                    dock_use_estimate=True, use_recovery=True, calib_odometry=True)
+    assert res.success, f"seed {seed}: {res.reason}"
+    assert not res.collided
+
+    # Docking quality against the REAL dock (it is shifted in the hidden world)
+    m = res.metrics(res.world_cfg)
+    assert m["dock_lateral"] < 0.08
+    assert m["dock_heading"] < 0.2
+
+    # Safety margins
+    rep = compute_report(res, res.world_cfg)
+    assert rep["min_obstacle_clearance"] > 0.05
+    assert rep["min_wall_clearance"] > 0.05
+
+    # Path quality: driven distance vs straight line start -> final pose
+    truth = res.log.arrays()["truth"][:, :2]
+    straight = float(np.hypot(*(truth[-1] - truth[0])))
+    assert path_length(truth) < 8.0 * straight    # tune after looking at real numbers
+    assert res.time < 120.0

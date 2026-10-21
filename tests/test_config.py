@@ -90,99 +90,73 @@ def test_aruco_dictionary_exists_in_opencv():
     cv2 = pytest.importorskip("cv2")
     assert hasattr(cv2.aruco, CONFIG.camera.aruco_dict)
 
-def test_waypoint_segments_are_clear_of_obstacles():
-    pts = [np.array(CONFIG.env.start_pose[:2])] + [np.array(w) for w in CONFIG.env.waypoints]
-    need = CONFIG.robot.body_radius
-    for a, b in zip(pts[:-1], pts[1:]):
-        ab = b - a
-        for ox, oy, r in CONFIG.env.obstacles:
-            t = np.clip(np.dot(np.array([ox, oy]) - a, ab) / np.dot(ab, ab), 0.0, 1.0)
-            d = np.linalg.norm(a + t * ab - np.array([ox, oy]))
-            assert d > r + need, f"segment {a}->{b} passes {d:.2f} m from obstacle ({ox}, {oy})"
 
-# ------------------------------------------------- extra checkpoint tags
-def _tag_config(n_tags):
-    return replace(CONFIG, tags=replace(CONFIG.tags, n_tags=n_tags))
+# ------------------------------------------------- fixed checkpoint tags
+WALL_INSET = 0.05   # [m] tag panels sit this far from the wall
+TAGS = CONFIG.tags.fixed_tags
 
 
-def test_zero_tags_leaves_only_the_dock():
-    table = _tag_config(0).tag_table()
+def _seg_dist(px, py, ax, ay, bx, by):
+    abx, aby = bx - ax, by - ay
+    t = max(0.0, min(1.0, ((px - ax) * abx + (py - ay) * aby) / (abx * abx + aby * aby)))
+    return math.hypot(px - (ax + t * abx), py - (ay + t * aby))
+
+
+def test_no_tags_leaves_only_the_dock():
+    cfg = replace(CONFIG, tags=replace(CONFIG.tags, fixed_tags=()))
+    table = cfg.tag_table()
     assert list(table) == [CONFIG.camera.marker_id]
     assert table[CONFIG.camera.marker_id] == pytest.approx(CONFIG.env.dock_pose)
 
 
-@pytest.mark.parametrize("n", [1, 2, 4, 8])
-def test_tag_ids_are_consecutive_and_unique(n):
-    table = _tag_config(n).tag_table()
+def test_tag_ids_are_consecutive_and_unique():
+    table = CONFIG.tag_table()
     mid = CONFIG.camera.marker_id
-    assert len(table) == n + 1
-    assert sorted(table) == list(range(mid, mid + n + 1))
+    assert len(table) == len(TAGS) + 1
+    assert sorted(table) == list(range(mid, mid + len(TAGS) + 1))
+    assert mid + len(TAGS) <= 49            # DICT_4X4_50 has ids 0..49
 
 
-@pytest.mark.parametrize("n", [1, 2, 4, 8])
-def test_tags_sit_on_the_walls_and_face_into_the_room(n):
-    cfg = _tag_config(n)
-    hx, hy = cfg.env.room_half_size
-    for tid, (x, y, yaw) in cfg.tag_table().items():
-        if tid == cfg.camera.marker_id:
-            continue
+def test_tags_sit_on_the_walls_and_face_into_the_room():
+    hx, hy = CONFIG.env.room_half_size
+    for x, y, yaw in TAGS:
         assert abs(x) <= hx and abs(y) <= hy
-        on_wall = (math.isclose(abs(x), hx - cfg.tags.inset, abs_tol=1e-9)
-                or math.isclose(abs(y), hy - cfg.tags.inset, abs_tol=1e-9))
-        assert on_wall
-        # a point 0.5 m in front of the tag is inside the room and closer to the centre
+        assert (math.isclose(abs(x), hx - WALL_INSET, abs_tol=1e-9)
+                or math.isclose(abs(y), hy - WALL_INSET, abs_tol=1e-9))
         fx, fy = x + 0.5 * math.cos(yaw), y + 0.5 * math.sin(yaw)
         assert abs(fx) < hx and abs(fy) < hy
         assert math.hypot(fx, fy) < math.hypot(x, y)
 
 
-@pytest.mark.parametrize("n", [1, 2, 4, 8])
-def test_tags_do_not_overlap_the_dock(n):
-    cfg = _tag_config(n)
-    dx, dy, _ = cfg.env.dock_pose
-    for tid, (x, y, _) in cfg.tag_table().items():
-        if tid != cfg.camera.marker_id:
-            assert math.hypot(x - dx, y - dy) > 0.3
-
-
-def test_too_many_tags_raise_value_error():
-    with pytest.raises(ValueError):
-        _tag_config(50).tag_table()
+def test_tags_keep_clear_of_the_dock():
+    dx, dy, _ = CONFIG.env.dock_pose
+    for x, y, _ in TAGS:
+        assert math.hypot(x - dx, y - dy) >= 0.55
 
 
 def test_default_tag_table_is_a_copy():
     table = CONFIG.tag_table()
     table.clear()
-    assert len(CONFIG.tag_table()) == CONFIG.tags.n_tags + 1
+    assert len(CONFIG.tag_table()) == len(TAGS) + 1
 
 
-def test_tags_are_on_the_wall_opposite_to_the_dock():
-    cfg = _tag_config(1)
-    dx, dy, _ = cfg.env.dock_pose
-    tx, ty, _ = cfg.tag_table()[CONFIG.camera.marker_id + 1]
-    assert tx * dx < 0                       # opposite side of the room in x
-    assert ty * dy < 0                       # staggered: other half in y
-    assert tx == pytest.approx(-(dx - math.copysign(cfg.tags.inset, dx) * 0) , abs=0.2)
+def test_tag_standoff_points_are_clear_of_obstacles():
+    s = CONFIG.tags.standoff
+    for x, y, yaw in TAGS:
+        px, py = x + s * math.cos(yaw), y + s * math.sin(yaw)
+        for ox, oy, r in CONFIG.env.obstacles:
+            assert math.hypot(px - ox, py - oy) > r + CONFIG.robot.body_radius
 
 
-def test_first_tag_is_staggered_on_the_opposite_wall():
-    cfg = _tag_config(1)
-    dx, dy, _ = cfg.env.dock_pose
-    tx, ty, _ = cfg.tag_table()[CONFIG.camera.marker_id + 1]
-    assert tx * dx < 0 and ty * dy < 0
+def test_obstacle_hides_the_dock_from_the_start_pose():
+    sx, sy, _ = CONFIG.env.start_pose
+    dx, dy, _ = CONFIG.env.dock_pose
+    assert any(_seg_dist(ox, oy, sx, sy, dx, dy) < r for ox, oy, r in CONFIG.env.obstacles)
 
 
-def test_four_tags_use_four_different_walls():
-    cfg = _tag_config(4)
-    yaws = {round(yaw, 3) for tid, (_, _, yaw) in cfg.tag_table().items()
-            if tid != CONFIG.camera.marker_id}
-    assert len(yaws) == 4
-
-
-@pytest.mark.parametrize("n", [1, 2, 4, 8])
-def test_tags_keep_clear_of_the_dock(n):
-    cfg = _tag_config(n)
-    dx, dy, _ = cfg.env.dock_pose
-    for tid, (x, y, _) in cfg.tag_table().items():
-        if tid != cfg.camera.marker_id:
-            assert math.hypot(x - dx, y - dy) >= 0.55
+def test_obstacles_do_not_block_the_dock_front():
+    dx, dy, dyaw = CONFIG.env.dock_pose
+    front = (dx + CONFIG.tags.approach_dist * math.cos(dyaw),
+             dy + CONFIG.tags.approach_dist * math.sin(dyaw))
+    for ox, oy, r in CONFIG.env.obstacles:
+        assert _seg_dist(ox, oy, dx, dy, *front) > r + CONFIG.robot.body_radius

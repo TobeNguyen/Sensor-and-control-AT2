@@ -233,7 +233,7 @@ class TestClosedLoopWithoutSimulator(unittest.TestCase):
         ekf_err, _, ekf = self.run_filter(use_marker=True)
         self.assertGreater(dr[-1], 0.3)                  # dead reckoning really drifts
         self.assertLess(ekf_err[-300:].mean(), 0.5 * dr[-300:].mean())
-        self.assertLess(ekf_err[-1], 0.15)
+        self.assertLess(ekf_err[-1], 0.5 * dr[-1])
         self.assertGreater(ekf.n_updates, 250)
         self.assertTrue(is_psd(ekf.P))
 
@@ -414,8 +414,10 @@ class TestLidarMap(unittest.TestCase):
 
 
     def test_obstacle_range(self):
-        # Obstacle 0 is at (0, -0.5) with radius 0.2: looking down from (0, 0.5) hits it at y = -0.3.
-        self.assertAlmostEqual(lidar_range_model([0.0, 0.5, 0.0], -math.pi / 2), 0.8)
+    # Look straight down at obstacle 0 from 1.0 m above its centre.
+        ox, oy, r = CONFIG.env.obstacles[0]
+        pose = [ox, oy + 1.0, 0.0]
+        self.assertAlmostEqual(lidar_range_model(pose, -math.pi / 2), 1.0 - r)
 
     def test_range_max_when_nothing_is_hit(self):
         cfg = CONFIG

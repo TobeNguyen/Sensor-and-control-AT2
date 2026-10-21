@@ -6,7 +6,7 @@ Môn 41014 - phiên bản mã nguồn sau cùng (sau các chỉnh sửa gần nh
 ==================================================
 - Mục 1: pitch 1 phút. Mục 2: lệnh chạy demo và cách đọc log.
 - Mục 3: luồng hệ thống. Mục 4: từng file (vai trò, số quan trọng, lưu ý).
-- Mục 5: giới hạn nên tự nói trước. Mục 6: hỏi đáp dự kiến. Mục 7: số liệu có sẵn.
+- Mục 5: hỏi đáp dự kiến.
 - Nhãn bằng chứng dùng xuyên suốt:
   [ĐÃ CHẠY]  đã thấy kết quả trong log.
   [BẢN CŨ]   đã chạy nhưng trên phiên bản code trước các chỉnh sửa gần nhất.
@@ -39,32 +39,13 @@ Môn 41014 - phiên bản mã nguồn sau cùng (sau các chỉnh sửa gần nh
 ==================================================
 2.1 Lệnh
   python main.py                      Một lần chạy trực tiếp có cửa sổ MuJoCo và
-                                      camera. Seed ngẫu nhiên, in ra để chạy lại.
+                                      camera. Seed mặc định = 42 (cfg.sim.seed).
                                       Mặc định BẬT: hiệu chuẩn camera, hiệu chuẩn
-                                      odometry, recovery, bố cục vật cản "hard"
-                                      (dock KHÔNG bị ép che lúc xuất phát), lưu run.png.
-  python main.py --seed N             Chạy lại đúng lần đó (seed quyết định cả thế
-                                      giới ẩn lẫn vật cản). Nên dùng seed đã thành công.
-  python main.py --hide-dock          Chế độ khó: ép một vật cản chắn tầm nhìn tới dock.
-  python main.py --no-viewer          Không mở cửa sổ MuJoCo (nhanh hơn).
-  python main.py --compare            Chạy thêm baseline dead-reckoning (xem mục 5).
-  python main.py --ideal              Tắt mọi sai lệch ẩn, trễ, nhiễu (để so sánh).
-  python main.py --lidar-fault T      Giả lập mất dữ liệu LiDAR từ giây T (thử E-STOP).
-  python main.py --no-calib-camera / --no-calib-odometry / --no-recovery
-  python main.py --camera-delay 0.2   Bù trễ camera trong EKF (mặc định 0 = tắt).
-  python main.py --suite [--seed 100 --suite-trials 30]
-                                      Bộ so sánh nhiều seed, không viewer, 3 cấu hình:
-                                      Final system / Ablation: no calibration /
-                                      Stress: dock hidden.
-  python main.py --trials N           N lần chạy một cấu hình, in thống kê.
-- LƯU Ý QUAN TRỌNG: --suite và --trials KHÔNG chạy hiệu chuẩn camera
-  (run_trials và SUITE không truyền calib_camera), còn lần chạy trực tiếp thì có.
-  Hai cấu hình này khác nhau; số liệu suite là của camera danh nghĩa.
-- Thời gian: có viewer thì mô phỏng chạy theo thời gian thực (khoảng 1,5 đến
-  2 phút cho một lần thành công) cộng vài giây hiệu chuẩn.
-- Muốn so sánh có/không recovery: chạy cùng seed với và không có --no-recovery
-  (dùng --no-viewer cho nhanh). Recovery chỉ có tác dụng khi robot bị lạc, nên
-  hai kết quả có thể giống hệt nhau nếu không có lần lạc nào.
+                                      odometry, recovery, lưu run.png. Bố cục vật cản
+                                      CỐ ĐỊNH (không đổi theo seed).
+  python main.py --seed N             Đổi seed: chỉ đổi thế giới ẩn (dock, FOV, bánh xe...)
+                                      và nhiễu, KHÔNG đổi vị trí vật cản.
+  Đóng cửa sổ MuJoCo khi đang chạy cho kết quả FAILURE (viewer closed).
 
 2.2 Đầu ra
   results/run.png                                  quỹ đạo thật và ước lượng, sai số và 2 sigma
@@ -199,11 +180,14 @@ Số quan trọng
   EKF: P0 = 0,05^2; LQR: Q = diag(10, 10, 1), R = diag(1, 1).
   Docking: dừng cách marker 0,55 m, sai số 0,05 m, |bearing| <= 0,08 rad
            (đã nới từ 0,05), tìm tối đa 10 s.
-  Môi trường: phòng +-2 m; start (-1,5; -1,5; 0); dock (1,9; 1,0; pi);
-              4 tag phụ trên tường.
+  Môi trường: phòng +-2 m; start (0; 0; 0); dock (1,9; 1,0; pi); 3 vật cản trụ CỐ ĐỊNH
+              bán kính 0,2 m tại (0,8; 0,42), (-0,9; 0,6), (-0,6; -0,9). Vật cản
+              (0,8; 0,42) che dock khỏi tầm nhìn lúc xuất phát (có test kiểm tra), nên
+              robot phải EXPLORE. 3 tag phụ (id 1, 2, 3) trên tường tại (-1,95; -1,0),
+              (0; 1,95), (1,95; -1,0). Waypoints trong config không dùng ở đường chạy chính.
   Tag: standoff 0,9 m; lost_std 0,15 m; approach_dist 1,0 m; survey_min_obs 3;
-       dock_max_range 3,0 m (đã đổi từ 4,5); spin_omega (tốc độ quay của recovery,
-       nên giữ khoảng 0,6-0,8 rad/s).
+       survey_angle 2*pi (360 độ; comment "half a turn" trong config.py là sai);
+       dock_max_range 3,0 m; spin_omega 0,7 rad/s.
   Realism (thế giới ẩn, lấy mẫu theo seed): dock dịch +-0,03 m (x) và +-0,25 m (y),
        xoay +-5 độ; FOV +-3 %; offset camera +-1,5 cm; bán kính bánh và wheel_base
        +-2 %; trượt thẳng <= 2 %, trượt quay <= 5 %; camera trễ 0,15 s (thực tế
@@ -216,7 +200,7 @@ Lưu ý
     từ cfg.tag_table() làm tri thức có trước (xem mục 5).
   - EKFConfig.process_noise_std (Q) không được dùng trong predict.
   - TagConfig.use_survey không có tác dụng; SURVEY luôn chạy.
-  - start_pose khác (0, 0, 0) nên --lidar-map (cần bản đồ tuyệt đối) không đúng.
+  - start_pose = (0, 0, 0) nên khung robot trùng khung thế giới; --lidar-map chưa được thử, và bản đồ LiDAR của EKF không chứa vật cản nên các cập nhật sẽ bị gate loại.
   - Tăng tags.lost_std thì recovery khó kích hoạt hơn (ít chạy, đỡ tốn thời gian,
     nhưng chịu lạc lâu hơn).
 
@@ -351,9 +335,8 @@ Lưu ý
 ----------------------------------------------
 - Dựng cảnh MuJoCo từ config (sàn, 4 tường, vật cản trụ, panel dock và tag có
   texture ArUco, robot 3 khớp x, y, yaw, camera trước).
-- Vật cản: random_obstacles() và random_obstacles_hard() (có thể chắn đường và
-  tầm nhìn dock, kiểm tra bằng BFS luôn có đường tới điểm tiếp cận dock và
-  điểm stand-off của tag; hành lang trước dock luôn trống).
+- - Vật cản: lấy từ config (3 trụ cố định). Không có random_obstacles / BFS trong bản này;
+  seed không đổi bố cục vật cản.
 - _sample_world(): thế giới ẩn lệch theo seed (xem 4.1).
 - step(v, w): vùng chết, giới hạn gia tốc, trượt bánh; đặt trực tiếp vận tốc
   (mô hình động học); encoder đo theo hình học thật nên không thấy trượt.
