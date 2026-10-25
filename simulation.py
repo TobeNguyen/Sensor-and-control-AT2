@@ -9,6 +9,10 @@ from dataclasses import replace
 import mujoco
 import numpy as np
 import cv2
+import os
+import sys
+from contextlib import contextmanager
+from typing import Optional
 
 from config import CONFIG, Config
 
@@ -480,6 +484,116 @@ def render_chessboard_views(cfg: Config = CONFIG, n_views: int = 20, pattern: tu
         finally:
             renderer.close()
     return images
+
+# Live MuJoCo viewer (or nothing when disabled)
+@contextmanager
+def _viewer(sim: Simulation, enabled: bool):
+    if not enabled:
+        yield None
+        return
+    import mujoco.viewer
+    with mujoco.viewer.launch_passive(sim.model, sim.data) as handle:
+        handle.cam.lookat[:] = [0.0, 0.0, 0.0]
+        handle.cam.distance = 6.5
+        handle.cam.azimuth = 90.0
+        handle.cam.elevation = -75.0
+        yield handle
+
+# On macOS the live viewer needs mjpython; re-run this script under it
+def _ensure_mjpython() -> None:
+    if sys.platform != "darwin" or os.environ.get("_MJ_RELAUNCHED"):
+        return
+    mjpython = Path(sys.executable).parent / "mjpython"
+    if not mjpython.exists():
+        return
+    os.environ["_MJ_RELAUNCHED"] = "1"
+    # Launch via python so a broken shebang (spaces in the path) is bypassed
+    os.execv(sys.executable, [sys.executable, str(mjpython), *sys.argv])
+
+# Repeated trials with different noise seeds: success rate and mean +- std of the key metrics.
+# run_fn = run_pipeline from main.py
+def run_trials(run_fn, n: int, seed0: int = 0, cfg: Config = CONFIG, use_marker_cov: bool = False,
+            marker_sigma_px: float = 0.5, scene_dir: Optional[Path] = None,
+            use_lidar_map: bool = False, use_recovery: bool = False,
+            block_sight: bool = True, calib_odometry: bool = False) -> int:
+    from visualization import compute_report
+    rows = []
+    print(f"marker R: {'per-measurement' if use_marker_cov else 'fixed'} | sigma_px {marker_sigma_px}")
+    print(f"{'seed':>5} {'result':>7} {'reason':>15} {'time':>6} {'pos RMSE':>9} "
+        f"{'NEES':>6} {'NIS/dof':>8} {'det %':>6} {'rej':>4} {'rec':>4} {'dock lat':>9}")
+    for i in range(n):
+        res = run_fn(cfg, seed=seed0 + i, scene_dir=scene_dir,
+                    dock_use_estimate=True, calib_odometry=calib_odometry,
+                    marker_sigma_px=marker_sigma_px, use_marker_cov=use_marker_cov,
+                    use_lidar_map=use_lidar_map, use_recovery=use_recovery)
+        rep = compute_report(res, cfg)
+        n_cam, n_det = res.camera_stats
+        row = {"ok": res.success, "reason": res.reason, "time": res.time,
+            "rmse": rep.get("position_rmse", float("nan")),
+            "nees": rep.get("mean_nees", float("nan")),
+            "nis": res.diag.get("nis_per_dof", float("nan")),
+            "det": 100.0 * n_det / max(1, n_cam),
+            "rej": res.diag.get("n_rejected", 0),
+            "rec": res.diag.get("n_tag_recoveries", 0),
+            "lat": res.metrics(res.world_cfg or cfg)["dock_lateral"]}
+        rows.append(row)
+        print(f"{seed0 + i:>5} {'OK' if res.success else 'FAIL':>7} {res.reason:>15} {row['time']:>6.1f} "
+            f"{row['rmse']:>9.3f} {row['nees']:>6.2f} {row['nis']:>8.2f} {row['det']:>6.0f} "
+            f"{row['rej']:>4} {row['rec']:>4} {row['lat']:>9.3f}", flush=True)
+
+    ok = np.array([r["ok"] for r in rows])
+    print(f"\nSuccess rate : {int(ok.sum())}/{n} ({100 * ok.mean():.0f} %)")
+    for label, key in (("Position RMSE [m]", "rmse"), ("Mean NEES (~3)", "nees"),
+                    ("Mean NIS/dof (~1)", "nis"), ("Marker accepted [%]", "det"),
+                    ("Gate rejections", "rej"), ("Tag recoveries", "rec"),
+                    ("Dock lateral [m]", "lat")):
+        v = np.array([r[key] for r in rows], dtype=float)
+        print(f"{label:<20}: {np.nanmean(v):.3f} +- {np.nanstd(v):.3f}")
+    failures = {}
+    for r in rows:
+        if not r["ok"]:
+            failures[r["reason"]] = failures.get(r["reason"], 0) + 1
+    if failures:
+        print("Failure causes:", failures)
+    return 0 if ok.all() else 1
+
+# Configurations compared by a plain `python main.py --suite` (edit this list to add / remove variants)
+SUITE = (
+    ("Final system",             dict(calib_odometry=True,  use_recovery=True)),
+    ("Ablation: no calibration", dict(calib_odometry=False, use_recovery=True)),
+)
+
+# Run every configuration in SUITE for n seeds (headless) and print one comparison table.
+# run_fn = run_pipeline from main.py
+def run_suite(run_fn, n: int, seed0: int = 0, cfg: Config = CONFIG) -> int:
+    from visualization import compute_report
+    nan = float("nan")
+    results = []
+    for name, kw in SUITE:
+        print(f"\n=== {name} | {n} trials ===", flush=True)
+        rows, fails = [], {}
+        for i in range(n):
+            res = run_fn(cfg, seed=seed0 + i, dock_use_estimate=True, **kw)
+            rep = compute_report(res, cfg)
+            lat = res.metrics(res.world_cfg or cfg)["dock_lateral"]
+            rows.append((float(res.success), res.time, rep.get("position_rmse", nan),
+                        rep.get("mean_nees", nan), lat))
+            if not res.success:
+                fails[res.reason] = fails.get(res.reason, 0) + 1
+            print(f"  seed {seed0 + i:>4}: {'OK  ' if res.success else 'FAIL'} {res.reason:<14} "
+                f"t={res.time:6.1f}s  rmse={rows[-1][2]:.3f} m", flush=True)
+        results.append((name, np.array(rows, dtype=float), fails))
+
+    print("\n" + "=" * 86)
+    print(f"{'configuration':<28}{'success':>9}{'time [s]':>10}{'RMSE [m]':>10}{'NEES (~3)':>11}{'dock lat [m]':>14}")
+    print("-" * 86)
+    for name, a, fails in results:
+        print(f"{name:<28}{100 * a[:, 0].mean():>8.0f}%{np.nanmean(a[:, 1]):>10.1f}"
+            f"{np.nanmean(a[:, 2]):>10.3f}{np.nanmean(a[:, 3]):>11.2f}{np.nanmean(a[:, 4]):>14.3f}")
+        if fails:
+            print(f"{'':<28}failures: {fails}")
+    print("=" * 86)
+    return 0
 
 if __name__ == "__main__":
     # Quick manual check: drive in a circle and print the true pose.

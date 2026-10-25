@@ -9,14 +9,13 @@ pytest.importorskip("cv2")
 from config import CONFIG, RealismConfig
 from estimator import EKFEstimator
 import main as main_module
-from main import (
-    Phase, RunResult, TrialLog, build_parser, compute_report, dock_errors,
-    mode_label, plot_run, print_report, resume_navigator, run_trials,
-)
-from navigation import Navigator
+from main import build_parser
+from navigation import Navigator, resume_navigator
 from recovery import RecoveryPhase
-from robot_model import wrap_angle
-from visualization import RouteVisualizer
+from robot_model import Phase, RunResult, dock_errors, wrap_angle
+from simulation import run_trials
+from visualization import (RouteVisualizer, TrialLog, compute_report, mode_label,
+                        plot_run, print_report)
 
 DOCK_X, DOCK_Y, DOCK_YAW = CONFIG.env.dock_pose
 HEAD_ON = wrap_angle(DOCK_YAW - math.pi)
@@ -221,7 +220,7 @@ def test_recovery_can_be_switched_off(scene_dir):
 
 
 def test_run_trials_prints_statistics(scene_dir, capsys):
-    code = run_trials(2, seed0=0, cfg=NO_SURVEY_CFG, scene_dir=scene_dir)
+    code = run_trials(run_pipeline, 2, seed0=0, cfg=NO_SURVEY_CFG, scene_dir=scene_dir)
     out = capsys.readouterr().out
     assert code in (0, 1)
     assert "Success rate" in out and "Mean NEES" in out

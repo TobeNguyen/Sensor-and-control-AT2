@@ -1,12 +1,16 @@
 # Including libraries
 from __future__ import annotations
 from typing import Optional
+from dataclasses import dataclass, field
+from enum import Enum
 import math
 
 import numpy as np
 
 from config import CONFIG, Config
-
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from visualization import TrialLog
 N_STATE = 3
 
 # Wrap an angle to [-pi, pi]
@@ -215,6 +219,77 @@ def analyse_model(x, v: float, w: float, landmark=None, cfg: Config = CONFIG) ->
         "observability_rank_with_view": int(np.linalg.matrix_rank(observability_matrix(F, H3))),
         "n_states": N_STATE,
     }
+
+class Phase(Enum):
+    SURVEY = "survey"
+    EXPLORE = "explore"
+    NAVIGATE = "navigate"
+    RECOVER = "recover"
+    DOCK = "dock"
+    DONE = "done"
+    FAILED = "failed"
+
+# Docking quality of a pose relative to the dock
+def dock_errors(pose, cfg: Config = CONFIG) -> dict:
+    dx, dy, yaw = cfg.env.dock_pose
+    x, y, theta = pose
+    return {
+        "dock_range": math.hypot(dx - x, dy - y),
+        "dock_lateral": abs(math.cos(yaw) * (y - dy) - math.sin(yaw) * (x - dx)),
+        "dock_heading": abs(wrap_angle(theta - (yaw - math.pi))),
+    }
+
+# Pose / tag poses from the estimator frame (origin = robot start) to the world frame.
+# EVALUATION and DISPLAY only: the controller never sees the world frame.
+def est_to_world(pose_local, start) -> np.ndarray:
+    sx, sy, sth = (float(v) for v in start)
+    x, y, th = (float(v) for v in pose_local)
+    c, s = math.cos(sth), math.sin(sth)
+    return np.array([sx + c * x - s * y, sy + s * x + c * y, wrap_angle(th + sth)])
+
+def table_to_world(table: dict, start) -> dict:
+    out = {}
+    for i, (p, yaw) in table.items():
+        w = est_to_world((p[0], p[1], yaw), start)
+        out[int(i)] = (w[:2], float(w[2]))
+    return out
+
+@dataclass
+class RunResult:
+    success: bool
+    reason: str                 # docked | docking failed | collision | timeout | viewer closed
+    time: float                 # simulated seconds
+    nav_time: Optional[float]   # time when navigation handed over to docking
+    collided: bool
+    phase: Phase
+    estimate: np.ndarray        # final estimated pose
+    truth: np.ndarray           # final true pose (EVALUATION ONLY)
+    log: "TrialLog"
+    camera_stats: tuple = (0, 0)                # (camera frames processed, accepted detections)
+    diag: dict = field(default_factory=dict)    # EKF counters + NIS (evaluation/diagnostics)
+    obstacles: Optional[list] = None            # obstacle layout used in the run (None = config layout)
+    events: list = field(default_factory=list)  # timeline of LOST / RELOCALIZED / docking events
+    world_cfg: Optional[Config] = None          # the REAL world (dock moved, ...): EVALUATION ONLY
+
+    def metrics(self, cfg: Config = CONFIG) -> dict:
+        err = self.estimate - self.truth
+        out = {"position_error": math.hypot(err[0], err[1]),
+            "heading_error": abs(wrap_angle(err[2]))}
+        out.update(dock_errors(self.truth, cfg))
+        return out
+
+    def summary(self, cfg: Config = CONFIG) -> str:
+        m = self.metrics(cfg)
+        nav = "n/a" if self.nav_time is None else f"{self.nav_time:.1f} s"
+        return "\n".join([
+            f"Result            : {'SUCCESS' if self.success else 'FAILURE'} ({self.reason})",
+            f"Total time        : {self.time:.1f} s (navigation finished at {nav})",
+            f"Collision         : {self.collided}",
+            f"Estimate error    : {m['position_error']:.3f} m, {m['heading_error']:.3f} rad",
+            f"Dock range        : {m['dock_range']:.3f} m",
+            f"Dock lateral error: {m['dock_lateral']:.3f} m",
+            f"Dock heading error: {m['dock_heading']:.3f} rad",
+        ])
 
 if __name__ == "__main__":
     print("Moving  :", analyse_model(np.array([0.0, 0.0, 0.3]), 0.2, 0.0))

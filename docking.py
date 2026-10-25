@@ -11,7 +11,7 @@ import numpy as np
 from config import CONFIG, Config
 from calibration import camera_forward_offset
 from controller import limit_command
-from robot_model import measurement_model, view_angle_model, wrap_angle
+from robot_model import TagMap, measurement_model, view_angle_model, wrap_angle
 from sensing import MarkerMeasurement, OdometryIncrement, Sensing
 
 DOCK_MAX_SPEED = 0.12        # [m/s]
@@ -321,7 +321,27 @@ class DockingController:
             return self._command(RETREAT_SPEED, 0.0, meas)
         v, w = docking_command(rng, bearing, view, self.cfg)
         return self._command(v, w, meas)
-    
+
+# Re-learn the dock pose from CLOSE observations only (accurate), then the EKF may use it.
+# update() returns None, or (dock_lm, dock_yaw, first_time) when the dock pose was (re)learned.
+class DockRelearner:
+    def __init__(self, dock_id: int):
+        self.dock_id = int(dock_id)
+        self.near = TagMap(min_obs=3)      # dock observations made from close range only
+        self.refined = False               # True once the dock pose was re-learned from a close view
+
+    def update(self, x_est, marker, tag_map):
+        if marker.range >= 1.5 or abs(marker.view_angle) >= 0.6:
+            return None
+        self.near.add(x_est, marker, max_range=1.5)
+        if self.near.count(self.dock_id) < 3:
+            return None
+        tag_map._obs[self.dock_id] = list(self.near._obs[self.dock_id])
+        lm, yaw = self.near.table()[self.dock_id]
+        first = not self.refined
+        self.refined = True
+        return lm, yaw, first
+
 if __name__ == "__main__":
     from simulation import Simulation
     with Simulation() as sim:

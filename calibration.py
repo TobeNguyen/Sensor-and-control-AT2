@@ -488,6 +488,32 @@ def calibrate_camera_in_sim(world_cfg: Config, believed_cfg: Config = CONFIG, n_
                         f"> {MAX_CALIB_RMS_PX} px")
     return get_calibration(believed_cfg, intr)
 
+# Render chessboard views of the hidden world, save a preview grid, then calibrate the camera
+def chessboard_demo(cfg: Config, seed: int = 0, show: bool = True) -> Calibration:
+    from config import RESULTS_DIR
+    from simulation import Simulation, render_chessboard_views   # local import: simulation does not import calibration
+    with Simulation(cfg, seed=seed) as s:
+        world = s.world_cfg                      # same hidden world as the main run
+    images = render_chessboard_views(world, 20, (9, 6), 0.04, seed)
+    out = RESULTS_DIR / "chessboard"
+    out.mkdir(parents=True, exist_ok=True)
+
+    if show:
+        try:
+            tiles = [cv2.resize(cv2.cvtColor(im, cv2.COLOR_RGB2BGR), (320, 240)) for im in images[:6]]
+            grid = np.vstack([np.hstack(tiles[:3]), np.hstack(tiles[3:6])])
+            cv2.imwrite(str(out / "views.png"), grid)
+            cv2.imshow("Chessboard views (calibration)", grid)
+            cv2.waitKey(2000)
+            cv2.destroyAllWindows()
+        except cv2.error:
+            pass                                 # headless: the image is still saved
+
+    cal = calibrate_camera_in_sim(world, cfg, seed=seed)
+    save_intrinsics(cal.intrinsics, RESULTS_DIR / "camera_intrinsics_sim.json")
+    print(f"[Calibration] RMS {cal.intrinsics.reprojection_error:.3f} px | fx {cal.K[0, 0]:.1f}")
+    return cal
+
 if __name__ == "__main__":
     import argparse
     import glob
