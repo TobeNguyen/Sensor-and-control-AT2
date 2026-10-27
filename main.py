@@ -21,6 +21,8 @@ from recovery import RecoveryPhase, TagRecovery, StopGoScan, MapView, Explorer
 from robot_model import Phase, RunResult, TagMap, est_to_world, table_to_world, wrap_angle
 from sensing import Sensing
 from simulation import Simulation, run_trials, run_suite, _viewer, _ensure_mjpython
+from extrinsic_selfcal import ExtrinsicSelfCal, apply_extrinsics      # NEW
+from calibration import camera_forward_offset                          # NEW
 from visualization import (RouteVisualizer, MAX_RECOVERIES, TrialLog, table_header,
                         table_footer, table_row, mode_label, obstacles_text,
                         compute_report, print_report, plot_run)
@@ -110,6 +112,7 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
                 note(0.0, f"CAMERA CALIBRATION FAILED ({exc}) -> using nominal intrinsics")
                 calibration = None
         sensing = Sensing(env, soft_cfg, calibration=calibration)
+        selfcal = ExtrinsicSelfCal(camera_forward_offset(soft_cfg), lat_fixed=0.0)   # NEW
         safety = SafetyGuard(run_cfg)
         last_guard = ""
         estimator.reset((0.0, 0.0, 0.0))     # the robot's own frame: origin = start pose
@@ -158,10 +161,12 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
                 if phase is Phase.SURVEY:
                     if survey_t0 is None:
                         survey_t0 = frame.time
+                        scan.step = 0.25                                          # NEW: dense stops while surveying
                         note(frame.time, "SURVEY: scanning 180 deg at the start pose to learn the tag map")
                     first = run_cfg.tags.dock_first
                     w_scan, observe = scan.update(frame.time, frame.odometry.dtheta)
                     if observe:                      # learn only while standing still
+                        selfcal.add(x_est, frame.markers)                         # NEW
                         for marker in frame.markers:
                             is_dock = int(marker.marker_id) == dock_id
                             limit = run_cfg.tags.dock_max_range if is_dock else run_cfg.tags.survey_max_range
@@ -170,7 +175,26 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
                             tag_map.add(x_est, marker, max_range=limit)
                     dock_seen = first and tag_map.count(dock_id) >= run_cfg.tags.survey_min_obs
                     angle_limit = run_cfg.tags.survey_angle          # 180 deg maximum
-                    if dock_seen or scan.spun >= angle_limit or frame.time - survey_t0 > run_cfg.tags.survey_max_time:
+                    if scan.spun >= angle_limit or frame.time - survey_t0 > run_cfg.tags.survey_max_time:   # NEW: always a full turn
+                        # ---- NEW: camera extrinsic self-calibration from the spin ----
+                        scan.step = 0.8                                  # back to the normal step for EXPLORE / AIM
+                        res = selfcal.solve()
+                        if (res and 0.10 < res["fwd"] < 0.40 and abs(res["yaw"]) < math.radians(10)
+                                and res["std_fwd"] < 0.01 and res["std_yaw"] < math.radians(1.0)):
+                            soft_cfg = apply_extrinsics(soft_cfg, res["fwd"], res["lat"], res["yaw"])
+                            sensing.cfg = soft_cfg                       # every later detection uses the new mounting
+                            tag_map.clear()                              # same object: map_view / explorer keep it
+                            for xo, mo in selfcal.corrected(res["fwd"], res["yaw"]):
+                                is_dock = int(mo.marker_id) == dock_id
+                                tag_map.add(xo, mo, max_range=run_cfg.tags.dock_max_range if is_dock
+                                            else run_cfg.tags.survey_max_range)
+                            note(frame.time, f"camera self-calibrated: fwd {res['fwd']:.3f} m "
+                                             f"(±{1000 * res['std_fwd']:.0f} mm), yaw {math.degrees(res['yaw']):+.2f} deg "
+                                             f"(±{math.degrees(res['std_yaw']):.2f}), {res['n_obs']} obs, tags {res['tags']}")
+                        else:
+                            note(frame.time, "camera self-calibration rejected -> keeping nominal extrinsics"
+                                             + ("" if res is None else f" (fwd {res['fwd']:.3f}, std {1000 * res['std_fwd']:.0f} mm)"))
+                        # ---- end NEW ----
                         learned = tag_map.table()
                         estimator.set_tag_map(map_view)
                         recovery = TagRecovery(run_cfg, tracker=nav.tracker, tag_map=tag_map)
