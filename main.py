@@ -110,9 +110,9 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
                 note(0.0, f"CAMERA CALIBRATION FAILED ({exc}) -> using nominal intrinsics")
                 calibration = None
         if calib_camera:
-            from calibration_extrinsic import calibrate_in_sim, apply_extrinsics
+            from calibration import calibrate_extrinsics_in_sim, apply_extrinsics
             try:
-                fwd, lat, yaw, rep = calibrate_in_sim(cfg, seed=seed, calibration=calibration)
+                fwd, lat, yaw, rep = calibrate_extrinsics_in_sim(cfg, seed=seed, calibration=calibration)
                 soft_cfg = apply_extrinsics(soft_cfg, fwd, lat, yaw)
                 note(0.0, f"camera extrinsics: fwd {fwd:.3f} m, lat {lat:+.3f} m, yaw {math.degrees(yaw):+.2f} deg "
                           f"({rep['n']} placements, RMS {rep['pos_rms_mm']:.1f} mm)")
