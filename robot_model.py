@@ -43,9 +43,6 @@ class TagMap:
     def count(self, marker_id: int) -> int:
         return len(self._obs.get(int(marker_id), []))
 
-    def clear(self) -> None:
-        self._obs.clear()
-
     # Weighted mean pose of every tag with at least min_obs observations (yaw averaged on the circle)
     def table(self) -> dict:
         out = {}

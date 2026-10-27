@@ -198,6 +198,7 @@ class Explorer:
             if sigma_xy > 0.1:
                 self.state = "SCAN"
                 scan.reset()
+                return 0.0, 0.0
             best_a, best_s = None, -1e9
             for a in np.linspace(-math.pi, math.pi, 36, endpoint=False):
                 free = sector_min_range(frame.lidar, float(a), 0.5)

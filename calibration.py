@@ -342,7 +342,8 @@ def calibrate_intrinsics(object_points: Sequence[np.ndarray], image_points: Sequ
 
 # Convenience wrapper: detect the chessboard in every image, then calibrate
 def calibrate_from_images(images: Sequence[np.ndarray], pattern_size: tuple,
-                        square_size: float, drop_worst: int = 8) -> CameraIntrinsics:
+                        square_size: float, drop_worst: int = 8,
+                        flags: int = cv2.CALIB_ZERO_TANGENT_DIST | cv2.CALIB_FIX_K3) -> CameraIntrinsics:
     sizes = {img.shape[:2] for img in images}
     if len(sizes) != 1:
         raise ValueError(f"all calibration images must have the same resolution, got {sizes}")
@@ -357,7 +358,7 @@ def calibrate_from_images(images: Sequence[np.ndarray], pattern_size: tuple,
         raise ValueError(f"chessboard found in only {len(obj)} of {len(images)} images "
                         f"(need {MIN_CALIBRATION_VIEWS})")
     h, w = images[0].shape[:2]
-    intr = calibrate_intrinsics(obj, img, (w, h))
+    intr = calibrate_intrinsics(obj, img, (w, h), flags)
     for _ in range(drop_worst):
         if len(obj) <= MIN_CALIBRATION_VIEWS + 2 or (intr.reprojection_error or 0.0) <= MAX_CALIB_RMS_PX:
             break
@@ -369,7 +370,7 @@ def calibrate_from_images(images: Sequence[np.ndarray], pattern_size: tuple,
         worst = int(np.argmax(errs))
         print(f"[calib] dropping view {worst} (RMS {errs[worst]:.2f} px)", flush=True)
         del obj[worst], img[worst]
-        intr = calibrate_intrinsics(obj, img, (w, h))
+        intr = calibrate_intrinsics(obj, img, (w, h), flags)
     return intr
 
 # Persistence
@@ -482,7 +483,9 @@ def calibrate_camera_in_sim(world_cfg: Config, believed_cfg: Config = CONFIG, n_
                             pattern: tuple = (9, 6), square: float = 0.04, seed: int = 0) -> Calibration:
     from simulation import render_chessboard_views     # local import: simulation does not import calibration
     images = render_chessboard_views(world_cfg, n_views, pattern, square, seed)
-    intr = calibrate_from_images(images, pattern, square)
+    sim_flags = (cv2.CALIB_ZERO_TANGENT_DIST | cv2.CALIB_FIX_K1 | cv2.CALIB_FIX_K2
+                 | cv2.CALIB_FIX_K3)                       # simulated lens has no distortion
+    intr = calibrate_from_images(images, pattern, square, flags=sim_flags)
     if intr.reprojection_error is None or intr.reprojection_error > MAX_CALIB_RMS_PX:
         raise ValueError(f"camera calibration rejected: RMS {intr.reprojection_error} px "
                         f"> {MAX_CALIB_RMS_PX} px")

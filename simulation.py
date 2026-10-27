@@ -24,6 +24,9 @@ MARKER_FILE = "aruco_marker.png"
 CHESSBOARD_FILE = "chessboard.png"
 CHESSBOARD_PATTERN = (9, 6)   # inner corners (cols, rows)
 CHESSBOARD_SQUARE = 0.04      # [m]
+CALIB_BOARD_FILE = 'calib_board.png'
+CALIB_BOARD_PATTERN = (7, 7)
+CALIB_BOARD_Z = 0.21
 FLOOR_SQUARE = 0.25   # [m] side of one floor square
 
 # Board position on the floor: near the south-west corner, away from the start and the dock
@@ -115,7 +118,8 @@ def _waffle_visual_geoms(cfg: Config) -> str:
 # Build the MJCF scene string from the configuration
 def build_scene_xml(cfg: Config = CONFIG, use_meshes: bool = False,
                     obstacles: list[tuple] | None = None,
-                    cam_offset: float | None = None) -> str:
+                    cam_offset: float | None = None,
+                    board: tuple | None = None) -> str:          # NEW
     env, rob, cam, sim = cfg.env, cfg.robot, cfg.camera, cfg.sim
     cam_x = rob.body_radius + 0.01 if cam_offset is None else cam_offset
     hx, hy = env.room_half_size
@@ -146,6 +150,14 @@ def build_scene_xml(cfg: Config = CONFIG, use_meshes: bool = False,
             f'        pos="{tx} {ty} {CAMERA_HEIGHT}" euler="0 0 {tyaw}" material="tag_mat_{tid}"/>')
     tag_assets_xml = "\n".join(tag_assets)
     tag_geoms_xml = "\n".join(tag_geoms)
+    board_asset = board_geom = ''
+    if board is not None:
+        bx, by, byaw = board
+        half = (CALIB_BOARD_PATTERN[0] + 3) * CHESSBOARD_SQUARE / 2.0
+        board_asset = (f'    <texture name="calib_board_tex" type="2d" file="{CALIB_BOARD_FILE}"/>\n'
+                       f'    <material name="calib_board_mat" texture="calib_board_tex" specular="0" shininess="0"/>')
+        board_geom = (f'    <geom name="calib_board" type="box" size="0.005 {half} {half}" '
+                      f'pos="{bx} {by} {CALIB_BOARD_Z}" euler="0 0 {byaw}" material="calib_board_mat"/>')
 
     if use_meshes:
         compiler = f'<compiler angle="radian" texturedir="." meshdir="{MESH_SUBDIR}"/>'
@@ -179,6 +191,7 @@ def build_scene_xml(cfg: Config = CONFIG, use_meshes: bool = False,
     <material name="floor_mat" texture="floor_tex" texuniform="true"
         texrepeat="{floor_repeat} {floor_repeat}" specular="0" shininess="0" reflectance="0"/>
 {tag_assets_xml}
+{board_asset}          
 {mesh_assets}
     </asset>
     <worldbody>
@@ -191,6 +204,7 @@ def build_scene_xml(cfg: Config = CONFIG, use_meshes: bool = False,
     <geom name="dock_marker" type="box" size="0.005 {panel_half} {panel_half}"
         pos="{dx} {dy} {CAMERA_HEIGHT}" euler="0 0 {dyaw}" material="marker_mat"/>
 {tag_geoms_xml}
+{board_geom}           
     <body name="base" pos="0 0 0">
         {body_inertial}
         <joint name="x" type="slide" axis="1 0 0"/>
@@ -210,7 +224,7 @@ def build_scene_xml(cfg: Config = CONFIG, use_meshes: bool = False,
 def write_scene_files(cfg: Config = CONFIG, directory: Path | None = None,
                     use_meshes: bool = False,
                     obstacles: list[tuple] | None = None,
-                    cam_offset: float | None = None) -> Path:
+                    cam_offset: float | None = None, board: tuple | None = None) -> Path:   # NEW
     directory = _scene_directory(cfg, directory)
     directory.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(directory / MARKER_FILE), generate_marker_image(cfg))
@@ -219,13 +233,15 @@ def write_scene_files(cfg: Config = CONFIG, directory: Path | None = None,
         if tid != cfg.camera.marker_id:
             cv2.imwrite(str(directory / marker_filename(tid, cfg)),
                         generate_marker_image(cfg, marker_id=tid))
+    if board is not None:                                                                   # NEW
+        cv2.imwrite(str(directory / CALIB_BOARD_FILE), generate_chessboard_image(CALIB_BOARD_PATTERN))
     xml_path = directory / cfg.sim.model_path.name
-    xml_path.write_text(build_scene_xml(cfg, use_meshes, obstacles, cam_offset))
+    xml_path.write_text(build_scene_xml(cfg, use_meshes, obstacles, cam_offset, board))    # NEW: board
     return xml_path
 
 class Simulation:
     def __init__(self, cfg: Config = CONFIG, seed: int | None = None,
-                scene_dir: Path | None = None):
+                scene_dir: Path | None = None, calib_board: tuple | None = None):   # NEW
         self.cfg = cfg
         rl = cfg.realism
         self.real = rl.enabled
@@ -241,7 +257,7 @@ class Simulation:
         # Use the TurtleBot3 meshes (visual only) when available; fall back to the cylinder.
         use_meshes = meshes_available(_scene_directory(cfg, scene_dir))
         self.model_path = write_scene_files(self.world_cfg, scene_dir, use_meshes,
-                                            self.obstacles, self.cam_offset)
+                                        self.obstacles, self.cam_offset, board=calib_board)   # NEW
         try:
             self.model = mujoco.MjModel.from_xml_path(str(self.model_path))
         except ValueError as exc:
@@ -250,7 +266,7 @@ class Simulation:
             print(f"Warning: TurtleBot3 meshes could not be loaded ({exc}); using the cylinder.")
             use_meshes = False
             self.model_path = write_scene_files(self.world_cfg, scene_dir, False,
-                                                self.obstacles, self.cam_offset)
+                                            self.obstacles, self.cam_offset, board=calib_board)   # NEW
             self.model = mujoco.MjModel.from_xml_path(str(self.model_path))
         self.uses_meshes = use_meshes
 
