@@ -10,11 +10,11 @@ from contextlib import contextmanager, nullcontext
 from dataclasses import replace
 import time
 import numpy as np
-
+from controller import LQRTracker, limit_command, safe_command
 from config import CONFIG, RESULTS_DIR
 from estimator import EKFEstimator
-from robot_model import (analyse_model, default_landmark, jacobian_F, jacobian_G,
-                        measurement_jacobian, measurement_model, motion_model, wrap_angle)
+from robot_model import (analyse_model, default_landmark, jacobian_F, jacobian_G, innovation,
+                        measurement_jacobian, measurement_jacobian_pose, measurement_model, measurement_model_pose, motion_model, wrap_angle, pose_error)
 from visualization import compute_report
 
 OUT = RESULTS_DIR / "evaluation"
@@ -29,6 +29,8 @@ METRICS = ["time", "pos_rmse", "heading_rmse", "mean_nees", "mean_nis", "dock_la
         "dock_heading", "obs_clear", "mean_v", "mean_abs_w", "sat_frac", "avoid_frac",
         "path_ratio", "effort"]
 
+ROW_FIELDS += ["xte_rmse", "xte_max", "hdg_err_rmse"]
+METRICS += ["xte_rmse", "xte_max", "hdg_err_rmse"]
 def _num(x):
     try:
         return float(x)
@@ -42,12 +44,74 @@ def _json(o):
         return o.tolist()
     return str(o)
 
+class UKFEstimator(EKFEstimator):
+    # Same filter as the EKF (same predict, gating, bookkeeping); the marker correction uses the unscented transform
+    def _ut(self, h, z, R):
+        n, lam = 3, 1.0
+        L = np.linalg.cholesky((n + lam) * self.P)
+        X = [self.x] + [self.x + L[:, i] for i in range(n)] + [self.x - L[:, i] for i in range(n)]
+        wm = np.full(2 * n + 1, 0.5 / (n + lam)); wm[0] = lam / (n + lam)
+        wc = wm.copy(); wc[0] += 2.0                       # beta = 2, alpha = 1
+        Z = [h(s) for s in X]
+        dZ = np.array([innovation(zi, Z[0]) for zi in Z])  # wrapped residuals
+        z_pred = Z[0] + wm @ dZ
+        dz = dZ - wm @ dZ
+        dX = np.array([s - self.x for s in X])
+        dX[:, 2] = [wrap_angle(a) for a in dX[:, 2]]
+        S = dz.T @ (wc[:, None] * dz) + R
+        Pxz = dX.T @ (wc[:, None] * dz)
+        return innovation(z, z_pred), S, Pxz
+
+    def update(self, marker) -> bool:
+        if not self.use_marker or marker is None or not self._is_valid(marker):
+            return False
+        marker = self._to_now(marker)
+        mid = int(getattr(marker, "marker_id", self.cfg.camera.marker_id))
+        lm, tag_yaw = self.landmarks[mid]
+        view = getattr(marker, "view_angle", None)
+        if self.use_view and view is not None and math.isfinite(view):
+            z = np.array([marker.range, marker.bearing, view], dtype=float)
+            R = np.zeros((3, 3)); R[:2, :2] = self.R; R[2, 2] = self.R_view
+            h = lambda s: measurement_model_pose(s, lm, tag_yaw)
+        else:
+            z = np.array([marker.range, marker.bearing], dtype=float)
+            R = self.R
+            h = lambda s: measurement_model(s, lm)
+        try:
+            y, S, Pxz = self._ut(h, z, R)
+            nis = float(y @ np.linalg.solve(S, y))
+            self.last_innovation, self.last_nis = y, nis
+            gate = self._gate_for(len(z))
+            if gate is not None and nis > gate:
+                self.n_rejected += 1
+                self._reject_run += 1
+                if self._reject_run < self.max_rejects:
+                    return False
+                self.P = self.P * (nis / gate)             # lock-out recovery, same rule as the EKF
+                y, S, Pxz = self._ut(h, z, R)
+                nis = float(y @ np.linalg.solve(S, y))
+                self.n_recovered += 1
+        except (np.linalg.LinAlgError, ValueError):
+            return False
+        self._reject_run = 0
+        K = Pxz @ np.linalg.inv(S)
+        self.x = self.x + K @ y
+        self.x[2] = wrap_angle(self.x[2])
+        P = self.P - K @ S @ K.T
+        self.P = 0.5 * (P + P.T)
+        self.nis_history.append(nis); self.nis_dof.append(len(z))
+        self.n_updates += 1
+        if mid != int(self.cfg.camera.marker_id):
+            self.n_tag_updates += 1
+        return True
+
 # Helpers
 # Same EKF by default with tunable noise
 def make_ekf(cfg, r_scale=1.0, gate=9.21, odom_scale=1.0, use_marker=True, use_lidar=False,
-            camera_delay=0.2):
+            camera_delay=0.2, kind="ekf"):
     ekf_cfg = replace(cfg, env=replace(cfg.env, obstacles=()))
-    return EKFEstimator(ekf_cfg, gate=gate, odom_cov_scale=odom_scale, camera_delay=camera_delay,
+    cls = UKFEstimator if kind == "ukf" else EKFEstimator
+    return cls(ekf_cfg, gate=gate, odom_cov_scale=odom_scale, camera_delay=camera_delay,
                         R=np.diag([0.15 ** 2, 0.05 ** 2]) * r_scale, R_view=(0.15 ** 2) * r_scale,
                         use_marker=use_marker, use_lidar=use_lidar)
 
@@ -69,14 +133,85 @@ def lqr_scaled(q_scale: float, r_scale: float):
     finally:
         navigation.LQRTracker = orig
 
-def run_once(exp, label, level, cfg, seed, kw=None, ekf=None, lqr=None) -> dict:
+ERR_LOG: list = []   # [e_along, e_cross, e_heading] per compute() call (estimated pose)
+
+def _log_error(x_est, ref):
+    x = np.asarray(x_est, dtype=float)
+    if x.shape == (3,) and np.all(np.isfinite(x)) and np.all(np.isfinite(ref.pose)):
+        e = np.array(pose_error(x, ref.pose), dtype=float)
+        ERR_LOG.append(e)
+        return e
+    return None
+
+class LoggedLQR(LQRTracker):
+    # Same LQR as the pipeline, only records the tracking error
+    def compute(self, x_est, ref, front_range=None):
+        _log_error(x_est, ref)
+        return super().compute(x_est, ref, front_range)
+
+class StanleyTracker(LQRTracker):
+    # Baseline: proportional law on the same tracking error
+    kx, ky, kth = 1.0, 1.0, 1.0
+    def compute(self, x_est, ref, front_range=None):
+        e = _log_error(x_est, ref)
+        if e is None:
+            return 0.0, 0.0
+        v, w = limit_command(ref.v + self.kx * e[0],
+                             ref.w + ref.v * self.ky * e[1] + self.kth * e[2], self.cfg)
+        if front_range is not None:
+            v, w = safe_command(v, w, front_range, self.cfg)
+        return v, w
+
+@contextmanager
+def tracker_swapped(cls):
+    import navigation
+    orig = navigation.LQRTracker
+    navigation.LQRTracker = cls
+    try:
+        yield
+    finally:
+        navigation.LQRTracker = orig
+
+@contextmanager
+def cruise_speed(v, redesign):
+    import main, navigation
+    o_nav, o_main, o_trk = navigation.Navigator, main.Navigator, navigation.LQRTracker
+
+    class Fast(o_nav):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            self.v_cruise = v
+
+    class Redesigned(o_trk):
+        def __init__(self, cfg=CONFIG, **k):
+            super().__init__(cfg, v_design=v)
+
+    navigation.Navigator = main.Navigator = Fast
+    if redesign:
+        navigation.LQRTracker = Redesigned
+    try:
+        yield
+    finally:
+        navigation.Navigator, main.Navigator, navigation.LQRTracker = o_nav, o_main, o_trk
+
+def track_errors() -> dict:
+    E = np.array(ERR_LOG, dtype=float)
+    if E.ndim != 2 or len(E) == 0:
+        return {}
+    return dict(xte_rmse=float(np.sqrt(np.mean(E[:, 1] ** 2))),
+                xte_max=float(np.max(np.abs(E[:, 1]))),
+                hdg_err_rmse=float(np.sqrt(np.mean(E[:, 2] ** 2))))
+
+def run_once(exp, label, level, cfg, seed, kw=None, ekf=None, lqr=None, tracker=None, speed=None) -> dict:
     import main
     kw = {**BASE_KW, **(kw or {})}
     row = {k: float("nan") for k in ROW_FIELDS}
     row.update(experiment=exp, label=label, level=str(level), seed=seed, success=0, reason="exception")
     try:
+        ERR_LOG.clear()
         est = make_ekf(cfg, **ekf) if ekf is not None else None
-        with (lqr_scaled(*lqr) if lqr else nullcontext()):
+        with tracker_swapped(tracker or LoggedLQR), (lqr_scaled(*lqr) if lqr else nullcontext()), \
+            (cruise_speed(*speed) if speed else nullcontext()):
             res = main.run_pipeline(cfg, seed=seed, estimator=est, **kw)
         wcfg = res.world_cfg or cfg
         rep = compute_report(res, wcfg)
@@ -100,6 +235,7 @@ def run_once(exp, label, level, cfg, seed, kw=None, ekf=None, lqr=None) -> dict:
             sat_frac=rep.get("saturated_fraction", float("nan")),
             avoid_frac=rep.get("avoid_fraction", float("nan")),
             path_ratio=path / max(straight, 1e-6), effort=float(np.sum(a["v"] ** 2 + a["w"] ** 2) * dt))
+        row.update(track_errors())
     except Exception as exc:                                  # a crashed run counts as a failure
         import traceback
         row["reason"] = f"exception: {type(exc).__name__}"
@@ -130,6 +266,19 @@ def fd_jacobian(f, x, wrap_rows=(), eps=1e-6):
         cols.append(diff / (2 * eps))
     return np.array(cols).T
 
+def gramian_min_eig(x0, v, w, landmark, cfg, steps=100, with_view=True):
+    # Smallest eigenvalue of the empirical observability Gramian along a trajectory (0 = unobservable direction)
+    dt, cam = cfg.sim.control_dt, cfg.camera
+    sig = [cam.range_noise_std, cam.bearing_noise_std] + ([cam.view_noise_std] if with_view else [])
+    Rinv = np.diag(1.0 / np.square(sig))
+    x, Phi, W = np.array(x0, dtype=float), np.eye(3), np.zeros((3, 3))
+    for _ in range(steps):
+        H = measurement_jacobian_pose(x, landmark) if with_view else measurement_jacobian(x, landmark)
+        W += (H @ Phi).T @ Rinv @ (H @ Phi)
+        Phi = jacobian_F(x, v * dt, w * dt) @ Phi
+        x = motion_model(x, v * dt, w * dt)
+    return float(np.linalg.eigvalsh(W)[0])
+
 def exp_model(args) -> None:
     cfg, dt = CONFIG, CONFIG.sim.control_dt
     x = np.array([0.3, 0.2, 0.3])
@@ -156,6 +305,9 @@ def exp_model(args) -> None:
     out = {"operating_points": rows, "jacobian_max_abs_error": errs,
         "lqr_gain_K": tr.K, "lqr_pole_magnitudes": np.abs(tr.closed_loop_poles()),
         "lqr_stable": bool(np.all(np.abs(tr.closed_loop_poles()) < 1.0))}
+    out["gramian_min_eig"] = {f"{n} | {'with' if wv else 'without'} view":
+                            gramian_min_eig(x, v, w, lm_near, cfg, with_view=wv)
+                            for n, v, w in points for wv in (False, True)}
     OUT.mkdir(parents=True, exist_ok=True)
     (OUT / "modelling.json").write_text(json.dumps(out, indent=2, default=_json), encoding="utf-8")
     with (OUT / "modelling.csv").open("w", newline="", encoding="utf-8") as f:
@@ -224,6 +376,20 @@ def exp_sensing(args, n_frames: int = 300, warmup: int = 15) -> None:
     a2.set_xlabel("true range [m]"); a2.set_ylabel("bearing std [rad]"); a2.legend(fontsize=7)
     fig.tight_layout(); fig.savefig(OUT / "sensing_marker_noise.png", dpi=140)
     print("B. sensing saved: bias before vs after calibration, std vs cfg.R_camera().")
+    exp_lidar(args)
+
+def exp_lidar(args, n=200):
+    from simulation import Simulation
+    hx, rows = CONFIG.env.room_half_size[0], []
+    with Simulation(CONFIG, seed=args.seed0) as sim:
+        for d in (0.5, 1.0, 1.5, 2.0, 3.0):
+            sim.reset((hx - d, 0.0, 0.0))              # facing the east wall, beam 0 = straight ahead
+            r = np.array([sim.read_lidar()[0] for _ in range(n)])
+            r = r[r < CONFIG.lidar.range_max - 1e-6]   # drop dropped beams
+            rows.append({"true_range_m": d, "range_bias_m": float(r.mean() - d), "range_std_m": float(r.std())})
+    OUT.mkdir(parents=True, exist_ok=True)
+    with (OUT / "lidar_noise.csv").open("w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=list(rows[0])); w.writeheader(); w.writerows(rows)
 
 # C.Estimation
 def exp_estimation(args) -> None:
@@ -231,8 +397,11 @@ def exp_estimation(args) -> None:
     variants = [("pipeline default", None),
                 ("dead reckoning", dict(use_marker=False)),
                 ("camera only", dict()),
-                ("camera + LiDAR", dict(use_lidar=True))]
-    sweeps = [("R x", [0.25, 0.5, 2, 4], "r_scale"),
+                ("camera + LiDAR", dict(use_lidar=True)),
+                ("EKF tuned R", dict(r_scale=0.03)),
+                ("UKF", dict(kind="ukf")),
+                ("UKF tuned R", dict(kind="ukf", r_scale=0.03))]
+    sweeps = [("R x", [0.01, 0.03, 0.1, 0.25, 0.5, 2, 4], "r_scale"),
             ("gate", [6.0, 13.8, None], "gate"),
             ("odom cov x", [0.5, 2, 5], "odom_scale")]
     for seed in seeds_of(args):
@@ -251,6 +420,10 @@ def exp_control(args) -> None:
     for seed in seeds_of(args):
         for name, lqr in gains:
             rows.append(run_once("control", name, "-", CONFIG, seed, lqr=lqr))
+        rows.append(run_once("control", "Stanley (baseline)", "-", CONFIG, seed, tracker=StanleyTracker))
+        for v in (0.10, 0.22):
+            rows.append(run_once("control", "LQR design 0.15", v, CONFIG, seed, speed=(v, False)))
+            rows.append(run_once("control", "LQR redesigned", v, CONFIG, seed, speed=(v, True)))
     save_runs("control", rows)
 
 # E.Robustness
@@ -268,6 +441,10 @@ ROBUST = {   # name: (levels, cfg modifier(cfg, level), extra run kwargs(level))
         c.realism, dock_shift_xy=tuple(v * k for v in c.realism.dock_shift_xy))), None),
     "wheel slip x": ([0.0, 1, 2, 3], lambda c, k: replace(c, realism=replace(
         c.realism, slip_v=c.realism.slip_v * k, slip_w=c.realism.slip_w * k)), None),
+    "combined noise x": ([1, 2, 3], lambda c, k: replace(
+        c, robot=replace(c.robot, encoder_noise_std=c.robot.encoder_noise_std * k),
+        lidar=replace(c.lidar, noise_std=c.lidar.noise_std * k),
+        realism=replace(c.realism, frame_drop=min(0.05 * k, 0.5), lidar_dropout=min(0.03 * k, 0.3))), None),
 }
 
 def exp_robust(args) -> None:
@@ -310,12 +487,14 @@ def summarize(rows: list) -> list:
         d = {"experiment": e, "label": l, "level": lv, "n": len(g),
             "success_rate": float(np.mean([_num(x["success"]) for x in g]))}
         for m in METRICS:
-            v = np.array([_num(x[m]) for x in g], dtype=float)
+            v = np.array([_num(x.get(m)) for x in g], dtype=float)
             v = v[np.isfinite(v)]
             d[m] = float(v.mean()) if len(v) else float("nan")
             d[m + "_std"] = float(v.std()) if len(v) else float("nan")
         d["collisions"] = int(sum(_num(x["collided"]) == 1 for x in g))
         d["failures"] = json.dumps(dict(Counter(x["reason"] for x in g if _num(x["success"]) != 1)))
+        p = d["success_rate"]
+        d["success_ci95"] = float(1.96 * math.sqrt(p * (1 - p) / len(g)))
         out.append(d)
     return out
 
@@ -326,11 +505,13 @@ def write_summary(summary: list) -> None:
         w = csv.DictWriter(f, fieldnames=list(summary[0]))
         w.writeheader()
         w.writerows(summary)
-    lines = ["| experiment | setting | level | n | success | time [s] | RMSE [m] | NEES (~3) | NIS/dof (~1) | dock lat [m] | failures |",
-            "|---|---|---|---|---|---|---|---|---|---|---|"]
+    lines = ["| experiment | setting | level | n | success ±95% | time [s] | RMSE [m] | XTE rms [m] | XTE max [m] | hdg rms [rad] | NEES (~3) | NIS/dof (~1) | dock lat [m] | failures |",
+            "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for d in summary:
-        lines.append(f"| {d['experiment']} | {d['label']} | {d['level']} | {d['n']} | {100 * d['success_rate']:.0f}% | "
-                    f"{d['time']:.1f} | {d['pos_rmse']:.3f} | {d['mean_nees']:.2f} | {d['mean_nis']:.2f} | "
+        lines.append(f"| {d['experiment']} | {d['label']} | {d['level']} | {d['n']} | "
+                     f"{100 * d['success_rate']:.0f}±{100 * d['success_ci95']:.0f}% | "
+                    f"{d['time']:.1f} | {d['pos_rmse']:.3f} | {d['xte_rmse']:.3f} | {d['xte_max']:.3f} | "
+                    f"{d['hdg_err_rmse']:.3f} | {d['mean_nees']:.2f} | {d['mean_nis']:.2f} | "
                     f"{d['dock_lateral']:.3f} | {d['failures']} |")
     (OUT / "summary.md").write_text("\n".join(lines), encoding="utf-8")
 
@@ -369,11 +550,11 @@ def make_figures(summary: list) -> None:
         if not g:
             continue
         keys = [("success_rate", "success rate"), ("dock_lateral", "dock lateral [m]"),
-                ("effort", "control effort"), ("time", "time [s]")]
+                ("effort", "control effort"), ("time", "time [s]"), ("xte_rmse", "cross-track RMS [m]")]
         fig = Figure(figsize=(14, 4)); axes = fig.subplots(1, len(keys))
         for ax, (k, title) in zip(axes, keys):
             ax.bar(range(len(g)), [d[k] for d in g])
-            ax.set_xticks(range(len(g))); ax.set_xticklabels([d["label"] for d in g], rotation=60, ha="right", fontsize=7)
+            ax.set_xticklabels([d["label"] + ("" if d["level"] == "-" else f" {d['level']}") for d in g], rotation=60, ha="right", fontsize=7)
             ax.set_title(title, fontsize=9)
         fig.tight_layout(); fig.savefig(OUT / fname, dpi=140)
 

@@ -103,5 +103,15 @@
     0.9839062451921308,
     0.988373971627501
   ],
-  "lqr_stable": true
+  "lqr_stable": true,
+  "gramian_min_eig": {
+    "stopped | without view": -2.136794674864678e-10,
+    "stopped | with view": 85642.29522076258,
+    "straight | without view": -5.222965223612473e-10,
+    "straight | with view": 85907.78743148563,
+    "turn in place | without view": -2.136794674864678e-10,
+    "turn in place | with view": 85642.29522076258,
+    "arc | without view": -4.0765892836916866e-10,
+    "arc | with view": 85794.03866731901
+  }
 }
