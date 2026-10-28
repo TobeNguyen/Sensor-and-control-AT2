@@ -1,0 +1,38 @@
+{
+  "success": true,
+  "reason": "docked",
+  "sim_time_s": 94.19999999996186,
+  "target_confirmed": true,
+  "camera_target_label": "Docked at charging station",
+  "estimated_path_samples": 472,
+  "lidar_map_points": 10402,
+  "learned_tag_ids": [
+    0,
+    1,
+    2,
+    3,
+    4
+  ],
+  "method": "EKF trajectory + LiDAR projected with estimated pose; not SLAM",
+  "ground_truth_used_for_control": false,
+  "ground_truth_drawn_for_evaluation": true,
+  "video_recorded": false,
+  "seed": 2474167473,
+  "calibration_source": "nominal_mujoco",
+  "validation": {
+    "simulation": true,
+    "hardware_ready": false,
+    "hardware_verified": false
+  },
+  "events": [
+    "[t=0.0s] odometry calibrated: wheel_radius 0.0320 m, wheel_base 0.2810 m",
+    "[t=0.0s] CAMERA CALIBRATION FAILED (Invalid intrinsics: fx and fy differ by more than 5 % (non-square pixels?)) -> using nominal intrinsics",
+    "[t=0.0s] SURVEY: scanning 180 deg at the start pose to learn the tag map",
+    "[t=15.8s] SURVEY: dock not seen -> EXPLORE (move, stop, scan)",
+    "[t=73.1s] EXPLORE done: dock learned, ids [0, 1, 3, 4]",
+    "[t=74.3s] AIM: dock 1.26 m -> approach point 1.22 m away",
+    "[t=78.7s] map updated while navigating: learned ids [0, 1, 2, 3, 4]",
+    "[t=86.0s] dock seen at 0.95 m -> docking",
+    "[t=94.2s] DOCKED"
+  ]
+}

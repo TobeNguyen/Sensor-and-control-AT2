@@ -35,7 +35,7 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
                 use_survey: Optional[bool] = None,
                 use_lidar_map: bool = False, calibration=None, lidar_fault_at: Optional[float] = None,
                 calib_odometry: bool = False,
-                calib_camera: bool = False, camera_delay: float = 0.0) -> RunResult:
+                calib_camera: bool = False, camera_delay: float = 0.0, calib_extrinsics: bool = True) -> RunResult:
     from calibrate_odometry import calibrate_odometry, apply_odometry
     log = TrialLog()
     phase, reason = Phase.NAVIGATE, "timeout"
@@ -109,13 +109,13 @@ def run_pipeline(cfg: Config = CONFIG, seed: Optional[int] = None, estimator=Non
             except ValueError as exc:
                 note(0.0, f"CAMERA CALIBRATION FAILED ({exc}) -> using nominal intrinsics")
                 calibration = None
-        if calib_camera:
+        if calib_camera and calib_extrinsics:
             from calibration import calibrate_extrinsics_in_sim, apply_extrinsics
             try:
                 fwd, lat, yaw, rep = calibrate_extrinsics_in_sim(cfg, seed=seed, calibration=calibration)
                 soft_cfg = apply_extrinsics(soft_cfg, fwd, lat, yaw)
                 note(0.0, f"camera extrinsics: fwd {fwd:.3f} m, lat {lat:+.3f} m, yaw {math.degrees(yaw):+.2f} deg "
-                          f"({rep['n']} placements, RMS {rep['pos_rms_mm']:.1f} mm)")
+                        f"({rep['n']} placements, RMS {rep['pos_rms_mm']:.1f} mm)")
             except ValueError as exc:
                 note(0.0, f"CAMERA EXTRINSIC CALIBRATION FAILED ({exc}) -> using nominal mounting")
         sensing = Sensing(env, soft_cfg, calibration=calibration)

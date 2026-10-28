@@ -614,6 +614,109 @@ def save_extrinsics(fwd: float, lat: float, yaw: float, rep: dict, path=None) ->
                                indent=2, default=float))
     return path
 
+def load_extrinsics(path) -> tuple[float, float, float]:
+    d = json.loads(Path(path).read_text())
+    return float(d["forward_offset"]), float(d["lateral_offset"]), float(d["yaw"])
+
+
+def calibrate_hardware(cfg: Config = CONFIG,
+                    images_glob: str = "calib_images/*.jpg",
+                    extr_csv: str = "extr_images/poses.csv",
+                    pattern: tuple = (9, 6), square: float = 0.025,
+                    force: bool = False):
+    """Intrinsics + extrinsics for the real camera. Reuses saved files unless force=True.
+    Returns (Calibration, cfg_with_extrinsics)."""
+    import glob
+    intr_path = RESULTS_DIR / "camera_intrinsics.json"
+    extr_path = RESULTS_DIR / "camera_extrinsics.json"
+
+    if force or not (intr_path.exists() and extr_path.exists()):
+        paths = sorted(glob.glob(images_glob))
+        images = [cv2.cvtColor(im, cv2.COLOR_BGR2RGB)
+                for im in (cv2.imread(p) for p in paths) if im is not None]
+        if not images:
+            raise FileNotFoundError(f"No calibration images found for '{images_glob}'")
+        if not Path(extr_csv).exists():
+            raise FileNotFoundError(f"Missing extrinsic pose file: {extr_csv}")
+
+        intr = calibrate_from_images(images, pattern, square)
+        save_intrinsics(intr, intr_path)
+        print(f"[hw-calib] intrinsics: RMS {intr.reprojection_error:.3f} px | fx {intr.K[0, 0]:.1f}")
+        if intr.reprojection_error > MAX_CALIB_RMS_PX:
+            raise ValueError(f"RMS {intr.reprojection_error:.3f} px > {MAX_CALIB_RMS_PX} px: "
+                            "remove blurry images and retake")
+
+        fwd, lat, yaw, rep = extrinsics_from_csv(extr_csv, intr, pattern, square)
+        save_extrinsics(fwd, lat, yaw, rep, extr_path)
+        print(f"[hw-calib] extrinsics: fwd {fwd:.4f} m | lat {lat:+.4f} m | yaw {math.degrees(yaw):+.2f} deg "
+            f"({rep['n']} placements, RMS {rep['pos_rms_mm']:.1f} mm)")
+    else:
+        print("[hw-calib] using saved calibration files")
+
+    intr = load_intrinsics(intr_path)
+    fwd, lat, yaw = load_extrinsics(extr_path)
+    cfg_hw = apply_extrinsics(cfg, fwd, lat, yaw)
+    cal = get_calibration(cfg_hw, intr, require_calibrated=True)
+    return cal, cfg_hw
+
+# ---------------------------------------------------------------- capture images from the real camera
+def capture_calib_images(get_frame, out_dir="calib_images", pattern=(9, 6),
+                         n_target=20, min_shift_px=40.0, timeout=600.0):
+    """Intrinsics: auto-save an image whenever the chessboard appears in a view
+    different enough from the last saved one. get_frame() -> RGB image from the robot camera."""
+    import time
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    for old in out.glob("calib_*.jpg"):
+        old.unlink()                                  # avoid mixing old and new images
+    print(f"Hold the chessboard tilted/rotated, near/far, and move it into the frame corners. "
+          f"Need {n_target} images.")
+    last, saved, t0 = None, 0, time.time()
+    while saved < n_target:
+        if time.time() - t0 > timeout:
+            raise TimeoutError(f"Timed out: only {saved}/{n_target} images saved")
+        img = get_frame()
+        corners = find_chessboard_corners(img, pattern)
+        if corners is not None and (last is None or np.abs(corners - last).mean() > min_shift_px):
+            cv2.imwrite(str(out / f"calib_{saved:02d}.jpg"), cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
+            last, saved = corners, saved + 1
+            print(f"  saved {saved}/{n_target}", flush=True)
+        time.sleep(0.3)
+
+
+def capture_extrinsic_images(get_frame, out_dir="extr_images", pattern=(9, 6)):
+    """Extrinsics: for each placement, type 'x y normal_deg' (robot frame);
+    the code grabs a frame and writes poses.csv."""
+    import time
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    rows = []
+    print("Place the chessboard in front of the robot and measure its centre (x forward, y left) "
+          "and normal_deg.")
+    print("A board facing the robot head-on has normal_deg = 180.")
+    while True:
+        s = input(f"Placement {len(rows) + 1}: enter 'x y normal_deg' (empty = done): ").strip()
+        if not s:
+            break
+        try:
+            x, y, n = (float(v) for v in s.split())
+        except ValueError:
+            print("  need exactly 3 numbers separated by spaces")
+            continue
+        for _ in range(3):                            # skip a few stale frames
+            img = get_frame()
+            time.sleep(0.2)
+        if find_chessboard_corners(img, pattern) is None:
+            print("  chessboard not found, adjust it and re-enter")
+            continue
+        name = f"extr_{len(rows):02d}.jpg"
+        cv2.imwrite(str(out / name), cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
+        rows.append(f"{name},{x},{y},{n}")
+        print(f"  saved {name}")
+    if len(rows) < 3:
+        raise ValueError(f"only {len(rows)} placements (need >= 3, better >= 5)")
+    (out / "poses.csv").write_text("file,x,y,normal_deg\n" + "\n".join(rows) + "\n")
+
 if __name__ == "__main__":
     import argparse
     import glob
@@ -636,6 +739,13 @@ if __name__ == "__main__":
                         help="hardware: CSV file,x,y,normal_deg of the board in the ROBOT frame")
     parser.add_argument("--intrinsics", default=str(RESULTS_DIR / "camera_intrinsics.json"),
                         help="intrinsics JSON used with --extrinsic-poses")
+    parser.add_argument("--images", default="calib_images/*.jpg",
+                        help="chessboard images for the intrinsic calibration (default mode)")
+    parser.add_argument("--extr-csv", default="extr_images/poses.csv",
+                        help="CSV file,x,y,normal_deg for the extrinsic calibration (default mode)")
+    parser.add_argument("--capture", action="store_true",
+                        help="capture chessboard images from the real robot camera, then calibrate")
+    parser.add_argument("--ip", default=None, help="robot IP (used with --capture)")
     args = parser.parse_args()
     if args.extrinsic_sim or args.extrinsic_poses:
         if args.extrinsic_sim:
@@ -647,7 +757,7 @@ if __name__ == "__main__":
             fwd, lat, yaw, rep = calibrate_extrinsics_in_sim(CONFIG, args.seed, calibration=cal)
         else:
             fwd, lat, yaw, rep = extrinsics_from_csv(args.extrinsic_poses, load_intrinsics(args.intrinsics),
-                                                     tuple(args.pattern), args.square)
+                                                    tuple(args.pattern), args.square)
         print(f"forward {fwd:.4f} m | lateral {lat:+.4f} m | yaw {math.degrees(yaw):+.2f} deg")
         print(f"{rep['n']} placements | position RMS {rep['pos_rms_mm']:.1f} mm | yaw std {rep['yaw_std_deg']:.2f} deg")
         if rep.get("hidden_forward") is not None:
@@ -677,8 +787,36 @@ if __name__ == "__main__":
         print("distortion k1, k2      :", np.round(cal.dist_coeffs[:2], 4), "(simulated lens has none)")
         print("saved:", save_intrinsics(cal.intrinsics, "results/camera_intrinsics_sim.json"))
     else:
-        cal = get_calibration()
-        print("Source        :", cal.intrinsics.source)
-        print("K             :\n", np.round(cal.K, 2))
-        print("Forward offset:", round(cal.forward_offset, 3), "m")
-        print("Convention check:", check_frame_conventions() or "OK")
+        if args.capture:
+            from hardware import ROBOT_IP, RosbridgeEnvironment
+            from rosbridge_api import RosbridgeRobot
+            with RosbridgeRobot(args.ip or ROBOT_IP) as robot:
+                env = RosbridgeEnvironment(robot, CONFIG)
+                try:
+                    capture_calib_images(env.read_camera, Path(args.images).parent,
+                                        tuple(args.pattern))
+                    input("Intrinsic images done. Set up the board for the extrinsic step, press Enter... ")
+                    capture_extrinsic_images(env.read_camera, Path(args.extr_csv).parent,
+                                            tuple(args.pattern))
+                finally:
+                    env.emergency_stop()
+        # Default mode: calibrate EVERYTHING from the saved images
+        paths = sorted(glob.glob(args.images))
+        images = [cv2.cvtColor(im, cv2.COLOR_BGR2RGB)
+                for im in (cv2.imread(p) for p in paths) if im is not None]
+        if not images:
+            raise SystemExit(f"No images found for '{args.images}'")
+        pattern = tuple(args.pattern)
+
+        # 1) intrinsics
+        intr = calibrate_from_images(images, pattern, args.square)
+        save_intrinsics(intr, args.out)
+        print(f"[1/2] Intrinsics saved: {args.out} | RMS {intr.reprojection_error:.3f} px | fx {intr.K[0, 0]:.1f}")
+        if intr.reprojection_error > MAX_CALIB_RMS_PX:
+            print(f"  !! RMS > {MAX_CALIB_RMS_PX} px: hardware.py will reject this file. Remove blurry images and rerun.")
+
+        # 2) extrinsics (needs the measured board poses in the CSV)
+        fwd, lat, yaw, rep = extrinsics_from_csv(args.extr_csv, intr, pattern, args.square)
+        print(f"[2/2] Extrinsics: forward {fwd:.4f} m | lateral {lat:+.4f} m | yaw {math.degrees(yaw):+.2f} deg")
+        print(f"      {rep['n']} placements | position RMS {rep['pos_rms_mm']:.1f} mm | yaw std {rep['yaw_std_deg']:.2f} deg")
+        print("      saved:", save_extrinsics(fwd, lat, yaw, rep))

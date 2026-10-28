@@ -1,0 +1,107 @@
+{
+  "operating_points": [
+    {
+      "operating_point": "stopped",
+      "v": 0.0,
+      "w": 0.0,
+      "landmark": "near",
+      "controllability_rank": 2,
+      "observability_rank": 2,
+      "observability_rank_with_view": 3,
+      "n_states": 3
+    },
+    {
+      "operating_point": "stopped",
+      "v": 0.0,
+      "w": 0.0,
+      "landmark": "far",
+      "controllability_rank": 2,
+      "observability_rank": 2,
+      "observability_rank_with_view": 3,
+      "n_states": 3
+    },
+    {
+      "operating_point": "straight",
+      "v": 0.2,
+      "w": 0.0,
+      "landmark": "near",
+      "controllability_rank": 3,
+      "observability_rank": 3,
+      "observability_rank_with_view": 3,
+      "n_states": 3
+    },
+    {
+      "operating_point": "straight",
+      "v": 0.2,
+      "w": 0.0,
+      "landmark": "far",
+      "controllability_rank": 3,
+      "observability_rank": 3,
+      "observability_rank_with_view": 3,
+      "n_states": 3
+    },
+    {
+      "operating_point": "turn in place",
+      "v": 0.0,
+      "w": 0.5,
+      "landmark": "near",
+      "controllability_rank": 3,
+      "observability_rank": 2,
+      "observability_rank_with_view": 3,
+      "n_states": 3
+    },
+    {
+      "operating_point": "turn in place",
+      "v": 0.0,
+      "w": 0.5,
+      "landmark": "far",
+      "controllability_rank": 3,
+      "observability_rank": 2,
+      "observability_rank_with_view": 3,
+      "n_states": 3
+    },
+    {
+      "operating_point": "arc",
+      "v": 0.15,
+      "w": 0.4,
+      "landmark": "near",
+      "controllability_rank": 3,
+      "observability_rank": 3,
+      "observability_rank_with_view": 3,
+      "n_states": 3
+    },
+    {
+      "operating_point": "arc",
+      "v": 0.15,
+      "w": 0.4,
+      "landmark": "far",
+      "controllability_rank": 3,
+      "observability_rank": 3,
+      "observability_rank_with_view": 3,
+      "n_states": 3
+    }
+  ],
+  "jacobian_max_abs_error": {
+    "F": 8.22666379463044e-11,
+    "G": 8.22666379463044e-11,
+    "H": 1.1171208402771526e-10
+  },
+  "lqr_gain_K": [
+    [
+      -3.063858403911278,
+      3.1003228351074477e-15,
+      -5.997008153474953e-17
+    ],
+    [
+      -6.927105004007188e-17,
+      -3.118440833605501,
+      -1.3859891590184141
+    ]
+  ],
+  "lqr_pole_magnitudes": [
+    0.9387228319217744,
+    0.9839062451921308,
+    0.988373971627501
+  ],
+  "lqr_stable": true
+}

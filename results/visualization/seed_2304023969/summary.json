@@ -1,0 +1,35 @@
+{
+  "success": false,
+  "reason": "viewer closed",
+  "sim_time_s": 58.6400000000257,
+  "target_confirmed": false,
+  "camera_target_label": "Final view (target NOT confirmed)",
+  "estimated_path_samples": 294,
+  "lidar_map_points": 6382,
+  "learned_tag_ids": [
+    0,
+    1,
+    3
+  ],
+  "method": "EKF trajectory + LiDAR projected with estimated pose; not SLAM",
+  "ground_truth_used_for_control": false,
+  "ground_truth_drawn_for_evaluation": true,
+  "video_recorded": false,
+  "seed": 2304023969,
+  "calibration_source": "calibrated",
+  "validation": {
+    "simulation": false,
+    "hardware_ready": false,
+    "hardware_verified": false
+  },
+  "events": [
+    "[t=0.0s] odometry calibrated: wheel_radius 0.0329 m, wheel_base 0.2972 m",
+    "[t=0.0s] SURVEY: scanning 180 deg at the start pose to learn the tag map",
+    "[t=8.5s] SURVEY: dock not seen -> EXPLORE (move, stop, scan)",
+    "[t=37.4s] EXPLORE done: dock learned, ids [0, 1]",
+    "[t=38.6s] AIM: dock 3.48 m -> approach point 1.68 m away",
+    "[t=47.9s] AIM: dock not seen -> choosing a fallback point",
+    "[t=47.9s] AIM: fallback -> dock approach point (+3.18, +1.80), 1.89 m away",
+    "[t=52.8s] map updated while navigating: learned ids [0, 1, 3]"
+  ]
+}

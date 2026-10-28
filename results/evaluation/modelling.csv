@@ -1,0 +1,9 @@
+operating_point,v,w,landmark,controllability_rank,observability_rank,observability_rank_with_view,n_states
+stopped,0.0,0.0,near,2,2,3,3
+stopped,0.0,0.0,far,2,2,3,3
+straight,0.2,0.0,near,3,3,3,3
+straight,0.2,0.0,far,3,3,3,3
+turn in place,0.0,0.5,near,3,2,3,3
+turn in place,0.0,0.5,far,3,2,3,3
+arc,0.15,0.4,near,3,3,3,3
+arc,0.15,0.4,far,3,3,3,3

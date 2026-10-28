@@ -1,0 +1,38 @@
+{
+  "success": false,
+  "reason": "viewer closed",
+  "sim_time_s": 88.89999999997421,
+  "target_confirmed": false,
+  "camera_target_label": "Final view (target NOT confirmed)",
+  "estimated_path_samples": 445,
+  "lidar_map_points": 9520,
+  "learned_tag_ids": [
+    0
+  ],
+  "method": "EKF trajectory + LiDAR projected with estimated pose; not SLAM",
+  "ground_truth_used_for_control": false,
+  "ground_truth_drawn_for_evaluation": true,
+  "video_recorded": false,
+  "seed": 1949050745,
+  "calibration_source": "nominal_mujoco",
+  "validation": {
+    "simulation": false,
+    "hardware_ready": false,
+    "hardware_verified": false
+  },
+  "events": [
+    "[t=0.0s] SURVEY: scanning 180 deg at the start pose to learn the tag map",
+    "[t=15.7s] SURVEY: dock not seen -> EXPLORE (move, stop, scan)",
+    "[t=22.5s] EXPLORE done: dock learned, ids [0]",
+    "[t=23.7s] AIM: dock 3.48 m -> approach point 1.68 m away",
+    "[t=33.0s] AIM: dock 2.24 m -> approach point 0.44 m away",
+    "[t=38.3s] AIM: dock 1.87 m -> approach point 1.47 m away",
+    "[t=47.5s] AIM: dock not seen -> choosing a fallback point",
+    "[t=47.5s] AIM: fallback -> dock approach point (+2.41, +2.39), 1.23 m away",
+    "[t=56.7s] AIM: dock not seen at the fallback point -> facing the dock, then scanning (max 180 deg)",
+    "[t=62.3s] AIM: dock 1.04 m -> approach point 1.19 m away",
+    "[t=71.6s] AIM: dock not seen -> choosing a fallback point",
+    "[t=71.6s] AIM: fallback -> dock approach point (+2.41, +2.39), 1.27 m away",
+    "[t=85.3s] AIM: dock not seen at the fallback point -> facing the dock, then scanning (max 180 deg)"
+  ]
+}

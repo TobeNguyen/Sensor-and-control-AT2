@@ -1,0 +1,48 @@
+{
+  "success": false,
+  "reason": "timeout",
+  "sim_time_s": 180.00000000013137,
+  "target_confirmed": false,
+  "camera_target_label": "Final view (target NOT confirmed)",
+  "estimated_path_samples": 900,
+  "lidar_map_points": 20829,
+  "learned_tag_ids": [
+    0,
+    1,
+    2,
+    3,
+    4
+  ],
+  "method": "EKF trajectory + LiDAR projected with estimated pose; not SLAM",
+  "ground_truth_used_for_control": false,
+  "ground_truth_drawn_for_evaluation": true,
+  "video_recorded": false,
+  "seed": 621742897,
+  "calibration_source": "calibrated",
+  "validation": {
+    "simulation": false,
+    "hardware_ready": false,
+    "hardware_verified": false
+  },
+  "events": [
+    "[t=0.0s] odometry calibrated: wheel_radius 0.0330 m, wheel_base 0.2868 m",
+    "[t=0.0s] SURVEY: scanning 180 deg at the start pose to learn the tag map",
+    "[t=9.7s] SURVEY: dock not seen -> EXPLORE (move, stop, scan)",
+    "[t=53.2s] EXPLORE done: dock learned, ids [0, 1, 2, 3]",
+    "[t=54.4s] AIM: dock 1.35 m -> approach point 1.36 m away",
+    "[t=65.7s] AIM: stuck -> forced 90 deg turn",
+    "[t=72.5s] AIM: dock not seen -> choosing a fallback point",
+    "[t=72.5s] AIM: fallback -> dock approach point (+2.08, +2.21), 1.40 m away",
+    "[t=87.4s] AIM: stuck -> forced 90 deg turn",
+    "[t=91.7s] map updated while navigating: learned ids [0, 1, 2, 3, 4]",
+    "[t=119.1s] AIM: stuck -> forced 90 deg turn",
+    "[t=125.9s] AIM: dock not seen at the fallback point -> facing the dock, then scanning (max 180 deg)",
+    "[t=138.9s] AIM: fallback -> tag 3 stand-off (+2.13, +0.50), 0.80 m away",
+    "[t=140.0s] SAFETY: translation blocked",
+    "[t=152.5s] AIM: dock not seen at the fallback point -> facing the dock, then scanning (max 180 deg)",
+    "[t=155.1s] AIM: dock 1.81 m -> approach point 1.72 m away",
+    "[t=167.1s] AIM: stuck -> forced 90 deg turn",
+    "[t=173.9s] AIM: dock not seen -> choosing a fallback point",
+    "[t=173.9s] AIM: fallback -> tag 3 stand-off (+2.13, +0.50), 1.50 m away"
+  ]
+}

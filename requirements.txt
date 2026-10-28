@@ -33,3 +33,6 @@ imageio-ffmpeg
 
 # --- Testing ---
 pytest==8.4.2
+
+# --- Real robot (hardware.py): rosbridge client from UTS-RI ---
+rosbridge-api @ git+https://github.com/UTS-RI/turtlebot_rosbridge.git

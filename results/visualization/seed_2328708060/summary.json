@@ -1,0 +1,34 @@
+{
+  "success": true,
+  "reason": "docked",
+  "sim_time_s": 44.10000000000793,
+  "target_confirmed": true,
+  "camera_target_label": "Docked at charging station",
+  "estimated_path_samples": 221,
+  "lidar_map_points": 4994,
+  "learned_tag_ids": [
+    0
+  ],
+  "method": "EKF trajectory + LiDAR projected with estimated pose; not SLAM",
+  "ground_truth_used_for_control": false,
+  "ground_truth_drawn_for_evaluation": true,
+  "video_recorded": false,
+  "seed": 2328708060,
+  "calibration_source": "calibrated",
+  "validation": {
+    "simulation": true,
+    "hardware_ready": false,
+    "hardware_verified": false
+  },
+  "events": [
+    "[t=0.0s] odometry calibrated: wheel_radius 0.0324 m, wheel_base 0.2893 m",
+    "[t=0.0s] SURVEY: scanning 180 deg at the start pose to learn the tag map",
+    "[t=2.1s] SURVEY done: learned ids [0]",
+    "[t=3.3s] AIM: dock 4.42 m -> approach point 2.62 m away",
+    "[t=12.6s] AIM: dock 3.15 m -> approach point 1.35 m away",
+    "[t=22.0s] AIM: dock 2.09 m -> approach point 0.29 m away",
+    "[t=26.1s] AIM: dock 1.89 m -> approach point 1.31 m away",
+    "[t=36.7s] dock seen at 1.05 m -> docking",
+    "[t=44.1s] DOCKED"
+  ]
+}

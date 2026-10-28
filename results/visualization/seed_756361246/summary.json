@@ -1,0 +1,29 @@
+{
+  "success": false,
+  "reason": "viewer closed",
+  "sim_time_s": 63.200000000031274,
+  "target_confirmed": false,
+  "camera_target_label": "Final view (target NOT confirmed)",
+  "estimated_path_samples": 316,
+  "lidar_map_points": 6796,
+  "learned_tag_ids": [
+    1
+  ],
+  "method": "EKF trajectory + LiDAR projected with estimated pose; not SLAM",
+  "ground_truth_used_for_control": false,
+  "ground_truth_drawn_for_evaluation": true,
+  "video_recorded": false,
+  "seed": 756361246,
+  "calibration_source": "nominal_mujoco",
+  "validation": {
+    "simulation": false,
+    "hardware_ready": false,
+    "hardware_verified": false
+  },
+  "events": [
+    "[t=0.0s] odometry calibrated: wheel_radius 0.0321 m, wheel_base 0.2919 m",
+    "[t=0.0s] CAMERA CALIBRATION FAILED (camera calibration rejected: RMS 1.0940007828595648 px > 1.0 px) -> using nominal intrinsics",
+    "[t=0.0s] SURVEY: scanning 180 deg at the start pose to learn the tag map",
+    "[t=8.4s] SURVEY: dock not seen -> EXPLORE (move, stop, scan)"
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "success": false,
+  "reason": "viewer closed",
+  "sim_time_s": 130.499999999895,
+  "target_confirmed": true,
+  "camera_target_label": "ArUco marker / destination",
+  "estimated_path_samples": 653,
+  "lidar_map_points": 14342,
+  "learned_tag_ids": [
+    0,
+    1,
+    2
+  ],
+  "method": "EKF trajectory + LiDAR projected with estimated pose; not SLAM",
+  "ground_truth_used_for_control": false,
+  "ground_truth_drawn_for_evaluation": true,
+  "video_recorded": false,
+  "seed": 949553173,
+  "calibration_source": "nominal_mujoco",
+  "validation": {
+    "simulation": false,
+    "hardware_ready": false,
+    "hardware_verified": false
+  },
+  "events": [
+    "[t=0.0s] odometry calibrated: wheel_radius 0.0323 m, wheel_base 0.2810 m",
+    "[t=0.0s] SURVEY: scanning 180 deg at the start pose to learn the tag map",
+    "[t=8.3s] SURVEY: dock not seen -> EXPLORE (move, stop, scan)",
+    "[t=114.8s] EXPLORE done: dock learned, ids [0, 1, 2]",
+    "[t=114.9s] dock seen at 1.23 m -> docking"
+  ]
+}

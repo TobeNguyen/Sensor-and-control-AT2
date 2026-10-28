@@ -1,0 +1,33 @@
+{
+  "success": false,
+  "reason": "viewer closed",
+  "sim_time_s": 100.73999999994662,
+  "target_confirmed": true,
+  "camera_target_label": "ArUco marker / destination",
+  "estimated_path_samples": 504,
+  "lidar_map_points": 10990,
+  "learned_tag_ids": [
+    0
+  ],
+  "method": "EKF trajectory + LiDAR projected with estimated pose; not SLAM",
+  "ground_truth_used_for_control": false,
+  "ground_truth_drawn_for_evaluation": true,
+  "video_recorded": false,
+  "seed": 3160406950,
+  "calibration_source": "calibrated",
+  "validation": {
+    "simulation": false,
+    "hardware_ready": false,
+    "hardware_verified": false
+  },
+  "events": [
+    "[t=0.0s] odometry calibrated: wheel_radius 0.0326 m, wheel_base 0.3000 m",
+    "[t=0.0s] SURVEY: short scan at the start pose to learn the tag map",
+    "[t=3.7s] SURVEY: dock not seen -> EXPLORE (move, stop, scan)",
+    "[t=46.1s] EXPLORE: dock close (1.82 m) -> AIM",
+    "[t=46.1s] EXPLORE done: dock learned, ids [0]",
+    "[t=46.1s] LOST (sigma 0.156 m > 0.15 m) -> tag recovery #1 started (spinning to look for a tag)",
+    "[t=50.9s] recovery: no tag found -> following the learned map to the dock approach point (+2.44, +2.77)",
+    "[t=61.7s] map-follow finished (not relocalized) -> docking"
+  ]
+}

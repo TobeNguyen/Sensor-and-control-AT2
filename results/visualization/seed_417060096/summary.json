@@ -1,0 +1,37 @@
+{
+  "success": true,
+  "reason": "docked",
+  "sim_time_s": 51.30000000001673,
+  "target_confirmed": true,
+  "camera_target_label": "Docked at charging station",
+  "estimated_path_samples": 257,
+  "lidar_map_points": 5783,
+  "learned_tag_ids": [
+    0
+  ],
+  "method": "EKF trajectory + LiDAR projected with estimated pose; not SLAM",
+  "ground_truth_used_for_control": false,
+  "ground_truth_drawn_for_evaluation": true,
+  "video_recorded": false,
+  "seed": 417060096,
+  "calibration_source": "nominal_mujoco",
+  "validation": {
+    "simulation": true,
+    "hardware_ready": false,
+    "hardware_verified": false
+  },
+  "events": [
+    "[t=0.0s] SURVEY: scanning 180 deg at the start pose to learn the tag map",
+    "[t=2.1s] SURVEY done: learned ids [0]",
+    "[t=3.3s] AIM: dock 4.39 m -> approach point 2.59 m away",
+    "[t=12.5s] AIM: dock 3.40 m -> approach point 1.60 m away",
+    "[t=21.8s] AIM: dock 2.63 m -> approach point 0.83 m away",
+    "[t=29.8s] AIM: dock 1.83 m -> approach point 1.31 m away",
+    "[t=39.0s] AIM: dock not seen -> choosing a fallback point",
+    "[t=39.0s] AIM: fallback -> dock approach point (+2.51, +2.66), 0.38 m away",
+    "[t=44.1s] AIM: dock not seen at the fallback point -> facing the dock, then scanning (max 180 deg)",
+    "[t=46.9s] dock seen at 0.83 m -> docking",
+    "[t=48.3s] dock re-learned from a close view",
+    "[t=51.3s] DOCKED"
+  ]
+}

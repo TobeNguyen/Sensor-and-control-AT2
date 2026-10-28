@@ -1,0 +1,37 @@
+{
+  "success": true,
+  "reason": "docked",
+  "sim_time_s": 115.89999999991129,
+  "target_confirmed": true,
+  "camera_target_label": "Docked at charging station",
+  "estimated_path_samples": 580,
+  "lidar_map_points": 12644,
+  "learned_tag_ids": [
+    0,
+    1,
+    2,
+    3
+  ],
+  "method": "EKF trajectory + LiDAR projected with estimated pose; not SLAM",
+  "ground_truth_used_for_control": false,
+  "ground_truth_drawn_for_evaluation": true,
+  "video_recorded": false,
+  "seed": 745136055,
+  "calibration_source": "calibrated",
+  "validation": {
+    "simulation": true,
+    "hardware_ready": false,
+    "hardware_verified": false
+  },
+  "events": [
+    "[t=0.0s] odometry calibrated: wheel_radius 0.0328 m, wheel_base 0.2885 m",
+    "[t=0.0s] SURVEY: scanning 180 deg at the start pose to learn the tag map",
+    "[t=16.0s] SURVEY: dock not seen -> EXPLORE (move, stop, scan)",
+    "[t=81.2s] EXPLORE done: dock learned, ids [0, 1, 2, 3]",
+    "[t=81.2s] LOST (sigma 0.174 m > 0.15 m) -> tag recovery #1 started (spinning to look for a tag)",
+    "[t=86.0s] recovery: no tag seen, driving to tag 2 stand-off (+1.49, +2.59)",
+    "[t=98.9s] recovery: no tag found -> following the learned map to the dock approach point (+2.49, +3.06)",
+    "[t=107.4s] map-follow finished (not relocalized) -> docking",
+    "[t=115.9s] DOCKED"
+  ]
+}

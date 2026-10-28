@@ -1,0 +1,15 @@
+{
+  "success": true,
+  "reason": "docked",
+  "sim_time_s": 44.90000000000891,
+  "target_confirmed": true,
+  "camera_target_label": "Docked at charging station",
+  "estimated_path_samples": 225,
+  "lidar_map_points": 4933,
+  "learned_tag_ids": [
+    0
+  ],
+  "method": "EKF trajectory + LiDAR projected with estimated pose; not SLAM",
+  "ground_truth_used": false,
+  "video_recorded": false
+}

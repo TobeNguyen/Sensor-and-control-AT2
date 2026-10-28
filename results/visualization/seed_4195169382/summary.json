@@ -1,0 +1,42 @@
+{
+  "success": false,
+  "reason": "viewer closed",
+  "sim_time_s": 95.23999999995944,
+  "target_confirmed": true,
+  "camera_target_label": "ArUco marker / destination",
+  "estimated_path_samples": 477,
+  "lidar_map_points": 10338,
+  "learned_tag_ids": [
+    0,
+    1
+  ],
+  "method": "EKF trajectory + LiDAR projected with estimated pose; not SLAM",
+  "ground_truth_used_for_control": false,
+  "ground_truth_drawn_for_evaluation": true,
+  "video_recorded": false,
+  "seed": 4195169382,
+  "calibration_source": "nominal_mujoco",
+  "validation": {
+    "simulation": false,
+    "hardware_ready": false,
+    "hardware_verified": false
+  },
+  "events": [
+    "[t=0.0s] SURVEY: scanning 180 deg at the start pose to learn the tag map",
+    "[t=8.4s] SURVEY: dock not seen -> EXPLORE (move, stop, scan)",
+    "[t=19.1s] EXPLORE done: dock learned, ids [0, 1]",
+    "[t=20.3s] AIM: dock 3.43 m -> approach point 1.63 m away",
+    "[t=29.6s] AIM: dock 2.62 m -> approach point 0.82 m away",
+    "[t=38.8s] AIM: dock 1.88 m -> approach point 1.21 m away",
+    "[t=48.0s] AIM: dock not seen -> choosing a fallback point",
+    "[t=48.0s] AIM: fallback -> dock approach point (+2.98, +1.93), 0.78 m away",
+    "[t=56.5s] AIM: dock not seen at the fallback point -> facing the dock, then scanning (max 180 deg)",
+    "[t=61.4s] AIM: dock 0.77 m -> approach point 0.74 m away",
+    "[t=69.4s] AIM: dock not seen -> choosing a fallback point",
+    "[t=69.4s] AIM: fallback -> dock approach point (+2.98, +1.93), 0.74 m away",
+    "[t=78.3s] AIM: dock not seen at the fallback point -> facing the dock, then scanning (max 180 deg)",
+    "[t=83.3s] AIM: dock 0.74 m -> approach point 0.74 m away",
+    "[t=91.2s] AIM: dock not seen -> choosing a fallback point",
+    "[t=91.2s] AIM: fallback -> dock approach point (+2.98, +1.93), 0.73 m away"
+  ]
+}

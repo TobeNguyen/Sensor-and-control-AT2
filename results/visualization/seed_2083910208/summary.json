@@ -1,0 +1,37 @@
+{
+  "success": false,
+  "reason": "viewer closed",
+  "sim_time_s": 98.67999999995142,
+  "target_confirmed": true,
+  "camera_target_label": "ArUco marker / destination",
+  "estimated_path_samples": 494,
+  "lidar_map_points": 10582,
+  "learned_tag_ids": [
+    0,
+    1,
+    4
+  ],
+  "method": "EKF trajectory + LiDAR projected with estimated pose; not SLAM",
+  "ground_truth_used_for_control": false,
+  "ground_truth_drawn_for_evaluation": true,
+  "video_recorded": false,
+  "seed": 2083910208,
+  "calibration_source": "calibrated",
+  "validation": {
+    "simulation": false,
+    "hardware_ready": false,
+    "hardware_verified": false
+  },
+  "events": [
+    "[t=0.0s] odometry calibrated: wheel_radius 0.0323 m, wheel_base 0.2998 m",
+    "[t=0.0s] SURVEY: scanning 180 deg at the start pose to learn the tag map",
+    "[t=8.4s] SURVEY: dock not seen -> EXPLORE (move, stop, scan)",
+    "[t=36.2s] EXPLORE done: dock learned, ids [0, 1, 4]",
+    "[t=37.4s] AIM: dock 3.80 m -> approach point 2.00 m away",
+    "[t=46.7s] AIM: dock 2.91 m -> approach point 1.11 m away",
+    "[t=61.2s] AIM: dock not seen -> choosing a fallback point",
+    "[t=61.3s] AIM: fallback -> dock approach point (+2.77, +2.92), 0.84 m away",
+    "[t=70.8s] dock seen at 0.68 m -> docking",
+    "[t=76.0s] dock re-learned from a close view"
+  ]
+}

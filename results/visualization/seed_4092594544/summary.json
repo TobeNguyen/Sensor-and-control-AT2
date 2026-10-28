@@ -1,0 +1,46 @@
+{
+  "success": false,
+  "reason": "viewer closed",
+  "sim_time_s": 92.43999999996596,
+  "target_confirmed": true,
+  "camera_target_label": "ArUco marker / destination",
+  "estimated_path_samples": 463,
+  "lidar_map_points": 9977,
+  "learned_tag_ids": [
+    0,
+    1,
+    3
+  ],
+  "method": "EKF trajectory + LiDAR projected with estimated pose; not SLAM",
+  "ground_truth_used_for_control": false,
+  "ground_truth_drawn_for_evaluation": true,
+  "video_recorded": false,
+  "seed": 4092594544,
+  "calibration_source": "nominal_mujoco",
+  "validation": {
+    "simulation": false,
+    "hardware_ready": false,
+    "hardware_verified": false
+  },
+  "events": [
+    "[t=0.0s] SURVEY: scanning 180 deg at the start pose to learn the tag map",
+    "[t=15.6s] SURVEY: dock not seen -> EXPLORE (move, stop, scan)",
+    "[t=23.1s] EXPLORE done: dock learned, ids [0, 1]",
+    "[t=24.3s] AIM: dock 3.43 m -> approach point 1.63 m away",
+    "[t=33.6s] AIM: dock 2.06 m -> approach point 0.26 m away",
+    "[t=37.5s] AIM: dock 1.87 m -> approach point 1.12 m away",
+    "[t=46.7s] AIM: dock not seen -> choosing a fallback point",
+    "[t=46.7s] AIM: fallback -> dock approach point (+2.17, +2.88), 0.47 m away",
+    "[t=52.6s] AIM: dock not seen at the fallback point -> facing the dock, then scanning (max 180 deg)",
+    "[t=57.3s] dock re-learned from a close view",
+    "[t=58.0s] AIM: dock 0.64 m -> approach point 0.41 m away",
+    "[t=64.3s] AIM: dock not seen -> choosing a fallback point",
+    "[t=64.3s] AIM: fallback -> dock approach point (+1.67, +2.95), 0.10 m away",
+    "[t=72.2s] AIM: dock still 0.90 m away -> driving straight at it",
+    "[t=76.6s] AIM: dock 0.69 m -> approach point 0.33 m away",
+    "[t=82.8s] AIM: dock not seen -> choosing a fallback point",
+    "[t=82.8s] AIM: fallback -> dock approach point (+1.68, +2.86), 0.14 m away",
+    "[t=87.5s] map updated while navigating: learned ids [0, 1, 3]",
+    "[t=90.0s] AIM: dock 0.91 m -> approach point 0.27 m away"
+  ]
+}
