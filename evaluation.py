@@ -30,6 +30,7 @@ METRICS = ["time", "pos_rmse", "heading_rmse", "mean_nees", "mean_nis", "dock_la
         "path_ratio", "effort"]
 
 ROW_FIELDS += ["xte_rmse", "xte_max", "hdg_err_rmse"]
+ROW_FIELDS += ["last_event"]
 METRICS += ["xte_rmse", "xte_max", "hdg_err_rmse"]
 def _num(x):
     try:
@@ -139,7 +140,8 @@ def _log_error(x_est, ref):
     x = np.asarray(x_est, dtype=float)
     if x.shape == (3,) and np.all(np.isfinite(x)) and np.all(np.isfinite(ref.pose)):
         e = np.array(pose_error(x, ref.pose), dtype=float)
-        ERR_LOG.append(e)
+        if abs(e[0]) > 1e-9 or abs(e[1]) > 1e-9:
+            ERR_LOG.append(e)
         return e
     return None
 
@@ -236,6 +238,7 @@ def run_once(exp, label, level, cfg, seed, kw=None, ekf=None, lqr=None, tracker=
             avoid_frac=rep.get("avoid_fraction", float("nan")),
             path_ratio=path / max(straight, 1e-6), effort=float(np.sum(a["v"] ** 2 + a["w"] ** 2) * dt))
         row.update(track_errors())
+        row["last_event"] = res.events[-1] if res.events else ""
     except Exception as exc:                                  # a crashed run counts as a failure
         import traceback
         row["reason"] = f"exception: {type(exc).__name__}"
@@ -470,6 +473,35 @@ def exp_ablation(args) -> None:
             rows.append(run_once("ablation", name, "-", CONFIG, seed, kw=kw))
     save_runs("ablation", rows)
 
+# Random obstacle layouts and start headings (only cfg changes, the simulator is untouched)
+def random_layout(seed, n_obs=3, r=0.2):
+    rng = np.random.default_rng(seed + 12345)
+    hx, hy = CONFIG.env.room_half_size
+    dx, dy, dyaw = CONFIG.env.dock_pose
+    keep = [(dx + math.cos(dyaw), dy + math.sin(dyaw), 0.9), (dx, dy, 0.6), (0.0, 0.0, 0.9)]   # dock approach, dock, start
+    keep += [(tx + 0.9 * math.cos(ty_), ty + 0.9 * math.sin(ty_), 0.7)                          # tag stand-off points
+            for tx, ty, ty_ in ((a, b, c) for a, b, c in CONFIG.tags.fixed_tags)]
+    obs = []
+    for _ in range(20000):
+        if len(obs) == n_obs:
+            break
+        x, y = rng.uniform(-hx + 0.6, hx - 0.6), rng.uniform(-hy + 0.6, hy - 0.6)
+        if any(math.hypot(x - kx, y - ky) < kr + r for kx, ky, kr in keep):
+            continue
+        if any(math.hypot(x - ox, y - oy) < 2 * r + 0.6 for ox, oy, _ in obs):
+            continue
+        obs.append((x, y, r))
+    return tuple(obs)
+
+def exp_layouts(args) -> None:
+    rows = []
+    for seed in seeds_of(args):
+        heading = float(np.random.default_rng(seed + 999).uniform(-math.pi, math.pi))
+        cfg = replace(CONFIG, env=replace(CONFIG.env, obstacles=random_layout(seed),
+                                        start_pose=(0.0, 0.0, heading)))
+        rows.append(run_once("layouts", "random layout + start heading", "-", cfg, seed))
+    save_runs("layouts", rows)
+
 # Summary
 def load_all_runs() -> list:
     rows = []
@@ -493,8 +525,11 @@ def summarize(rows: list) -> list:
             d[m + "_std"] = float(v.std()) if len(v) else float("nan")
         d["collisions"] = int(sum(_num(x["collided"]) == 1 for x in g))
         d["failures"] = json.dumps(dict(Counter(x["reason"] for x in g if _num(x["success"]) != 1)))
-        p = d["success_rate"]
-        d["success_ci95"] = float(1.96 * math.sqrt(p * (1 - p) / len(g)))
+        n_, p, z = len(g), d["success_rate"], 1.96
+        den = 1 + z * z / n_
+        half = z * math.sqrt(p * (1 - p) / n_ + z * z / (4 * n_ * n_))
+        d["success_lo"] = (p + z * z / (2 * n_) - half) / den
+        d["success_hi"] = (p + z * z / (2 * n_) + half) / den
         out.append(d)
     return out
 
@@ -509,7 +544,7 @@ def write_summary(summary: list) -> None:
             "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for d in summary:
         lines.append(f"| {d['experiment']} | {d['label']} | {d['level']} | {d['n']} | "
-                     f"{100 * d['success_rate']:.0f}±{100 * d['success_ci95']:.0f}% | "
+                    f"{100 * d['success_rate']:.0f}% [{100 * d['success_lo']:.0f}-{100 * d['success_hi']:.0f}] | "
                     f"{d['time']:.1f} | {d['pos_rmse']:.3f} | {d['xte_rmse']:.3f} | {d['xte_max']:.3f} | "
                     f"{d['hdg_err_rmse']:.3f} | {d['mean_nees']:.2f} | {d['mean_nis']:.2f} | "
                     f"{d['dock_lateral']:.3f} | {d['failures']} |")
@@ -554,6 +589,7 @@ def make_figures(summary: list) -> None:
         fig = Figure(figsize=(14, 4)); axes = fig.subplots(1, len(keys))
         for ax, (k, title) in zip(axes, keys):
             ax.bar(range(len(g)), [d[k] for d in g])
+            ax.set_xticks(range(len(g)))
             ax.set_xticklabels([d["label"] + ("" if d["level"] == "-" else f" {d['level']}") for d in g], rotation=60, ha="right", fontsize=7)
             ax.set_title(title, fontsize=9)
         fig.tight_layout(); fig.savefig(OUT / fname, dpi=140)
