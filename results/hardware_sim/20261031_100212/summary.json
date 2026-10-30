@@ -1,0 +1,23 @@
+{
+  "seed": 0,
+  "success": true,
+  "reason": "docked",
+  "time": 80.6,
+  "dock_range": 0.466,
+  "dock_lateral": -0.008,
+  "dock_heading_deg": 2.1,
+  "odom_drift": 0.072,
+  "detections": "324/673",
+  "odometry": "r 0.0328 b 0.2882 (true r 0.0329 b 0.2869)",
+  "events": [
+    "[t=  27.0s] SURVEY: dock seen -> stop and look",
+    "[t=  28.0s] dock learned: 2.50 m, +6 deg, -0.51 m off the axis -> AIM",
+    "[t=  28.4s] AIM #1: dock 2.50 m, -0.51 m off the axis -> axis point 1.3 m in front of it (1.21 m away)",
+    "[t=  37.5s] SAFETY: front stop",
+    "[t=  54.3s] AIM #2: dock 1.42 m, +0.30 m off the axis -> axis point 1.3 m in front of it (0.31 m away)",
+    "[t=  65.7s] AIM: dock 1.32 m, +0.05 m off the axis -> DOCK",
+    "[t=  71.4s] DOCKED: 0.92 m, bearing -1.8 deg, axis +3.0 deg",
+    "[t=  71.4s] FINAL: driving 0.47 m closer (stop at 0.45 m)",
+    "[t=  80.6s] FINAL done (LiDAR): drove 0.45 m, LiDAR wall 0.45 m from the robot centre"
+  ]
+}

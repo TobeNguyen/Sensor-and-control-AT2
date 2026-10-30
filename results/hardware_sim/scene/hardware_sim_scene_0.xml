@@ -29,7 +29,7 @@
     <geom name="wall_north" type="box" size="1.5 0.05 0.25" pos="0 1.25 0.25" rgba="0.5 0.5 0.6 1"/>
     <geom name="wall_south" type="box" size="1.5 0.05 0.25" pos="0 -1.25 0.25" rgba="0.5 0.5 0.6 1"/>
 
-    <geom name="box_obstacle" type="box" size="0.1 0.05 0.1" pos="1.18 -0.16999999999999996 0.1" euler="0 0 3.141592653589793" rgba="0.8 0.3 0.2 1"/>
+    <geom name="box_obstacle" type="box" size="0.05 0.1 0.1" pos="0.4299999999999999 -0.44999999999999984 0.1" euler="0 0 3.141592653589793" rgba="0.8 0.3 0.2 1"/>
     <geom name="dock_marker" type="box" size="0.005 0.06666666666666668 0.06666666666666668"
         pos="1.48 0.0 0.15" euler="0 0 3.141592653589793" material="marker_mat"/>
     <geom name="tag_marker_1" type="box" size="0.005 0.06666666666666668 0.06666666666666668"

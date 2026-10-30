@@ -22,6 +22,11 @@
 #   python hardware_sim.py --trials 10 --calib-error    10 seeds, success table
 #   python hardware_sim.py --ideal                      no imperfections (debug the logic only)
 #   python hardware_sim.py --video                      also save camera.mp4 (what the robot saw)
+#   python hardware_sim.py --no-final                   stop at the camera DOCKED pose (no FINAL approach)
+#
+# FINAL approach (tested here first, hardware.py unchanged): after the camera says DOCKED (~0.85 m) the
+# robot drives straight on (odometry heading hold) and stops by LiDAR at FINAL_RANGE from the dock wall.
+# If hardware.py already has its own FINAL state (H.FINAL_APPROACH), that one is used instead.
 #
 # Live camera window (visualization.LiveCameraView): the image the robot REALLY processes (delayed,
 # distorted, noisy), detected markers outlined, state / dock range / bearing, image centre.
@@ -44,7 +49,7 @@ import mujoco
 import hardware as H                                   # the real-robot code under test
 import simulation as S                                 # helpers only (scene text, marker images)
 from config import CONFIG, RESULTS_DIR
-from sensing import Sensing
+from sensing import Sensing, sector_min_range
 from robot_model import wrap_angle
 
 # ============================================================ test arena (BUILD THIS)
@@ -54,15 +59,13 @@ START = (-1.0, -0.3, math.pi / 2)         # robot centre (x, y, heading): starts
 DOCK = (ROOM_X / 2 - 0.02, 0.0, math.pi)  # dock marker centre on the east wall, facing the room (-x)
 TAGS = ((0.0, ROOM_Y / 2 - 0.02, -math.pi / 2),    # tag on the north wall, facing south
         (0.0, -(ROOM_Y / 2 - 0.02), math.pi / 2))  # tag on the south wall, facing north
-BOX_L, BOX_W, BOX_H = 0.20, 0.10, 0.20    # [m] box obstacle (x, y, height)
-# Box PARTLY in front of the dock: BOX_FRONT in front of the marker, its inner edge BOX_GAP from the
-# marker axis -> it narrows the approach lane and hides the marker from oblique views, but the marker
-# stays visible from the axis (if it hides the marker on the axis, ArUco cannot dock at all).
-BOX_FRONT = 0.30          # [m] marker -> box centre, along the marker axis (robot stops ~0.85 m away)
-BOX_GAP = 0.12            # [m] marker axis -> inner edge of the box (marker half width is 0.10)
+BOX_L, BOX_W, BOX_H = 0.10, 0.20, 0.20    # [m] box: depth along the dock axis, width of the front face, height
+# Box BESIDE the docking lane: the robot drives past it and stops (0.85 m) closer to the dock than the box
+BOX_FRONT = 1.05          # [m] marker -> box centre along the axis (box spans 1.00-1.10 m; AIM point 1.3 m)
+BOX_GAP = 0.35            # [m] marker axis -> inner edge (> LAT_TOL 0.15 + half robot 0.15 + 0.05 margin)
 BOX = (DOCK[0] + BOX_FRONT * math.cos(DOCK[2]) - (BOX_GAP + BOX_W / 2) * math.sin(DOCK[2]),
        DOCK[1] + BOX_FRONT * math.sin(DOCK[2]) + (BOX_GAP + BOX_W / 2) * math.cos(DOCK[2]),
-       DOCK[2])                           # box centre (x, y) and yaw (long side along the marker axis)
+    DOCK[2])                           # box centre (x, y) and yaw (long side along the marker axis)
 CAM_Z = S.CAMERA_HEIGHT                   # [m] camera lens height (measure it on the robot); markers at S.CAMERA_HEIGHT
 
 # ============================================================ real camera (fallback if no calibration files)
@@ -98,6 +101,62 @@ LIDAR_PERIOD = 0.2           # [s] 5 Hz
 LIDAR_X = -0.064             # [m] LDS position behind the robot centre (TB3 Waffle)
 LIDAR_NOISE = 0.01           # [m]
 LIDAR_DROPOUT = 0.05
+
+
+# ============================================================ FINAL approach (sim-side test)
+FINAL_RANGE = 0.45           # [m] robot centre -> dock wall at the very end (> FRONT_STOP - LIDAR_BEHIND)
+FINAL_V = 0.05               # [m/s] slow, blind part
+FINAL_ODOM_EXTRA = 0.05      # [m] odometry backup may drive this much further than the camera said
+LIDAR_BEHIND = -LIDAR_X      # [m] LDS behind the robot centre
+
+
+class FinalMission(H.Mission):
+    """hardware.Mission + FINAL: after DOCKED drive straight on, stop by LiDAR (backup: odometry / time)."""
+
+    def __init__(self, enabled=True):
+        super().__init__()
+        self.final_enabled, self.final = enabled, None
+
+    def step(self, f, dt):
+        if self.state != "FINAL":
+            v, w = super().step(f, dt)
+            if self.done and self.success and self.final_enabled and self.final is None:
+                r, b, _ = self.last.relative(self.pose)              # camera range at the DOCKED moment
+                go_on = r - FINAL_RANGE
+                if go_on > 0.02:
+                    self.done, self.success = False, False
+                    self.final = (self.pose.copy(), go_on, self.pose[2] + b, f.time)
+                    self.go(f.time, "FINAL", f"FINAL: driving {go_on:.2f} m closer (stop at {FINAL_RANGE:.2f} m)")
+                    return 0.0, 0.0
+            return v, w
+        self.sense(f)                                                 # keep the odometry pose up to date
+        t = f.time
+        p0, go_on, head, t0 = self.final
+        moved = math.hypot(self.pose[0] - p0[0], self.pose[1] - p0[1])
+        front = sector_min_range(f.lidar, 0.0, math.radians(10))     # dock wall straight ahead
+        wall = front - LIDAR_BEHIND if front < f.lidar.range_max else float("inf")
+        why = ("LiDAR" if wall <= FINAL_RANGE else
+               "odometry" if moved >= go_on + FINAL_ODOM_EXTRA else
+               "timeout" if t - t0 > go_on / FINAL_V + 5.0 else None)
+        if why is not None:
+            self.done, self.success, self.reason = True, True, "docked"
+            self.note(t, f"FINAL done ({why}): drove {moved:.2f} m, LiDAR wall {wall:.2f} m from the robot centre")
+            return 0.0, 0.0
+        w = float(np.clip(1.5 * wrap_angle(head - self.pose[2]), -H.DOCK_TURN, H.DOCK_TURN))
+        return FINAL_V, w
+
+
+def make_mission(args):
+    if getattr(H, "FINAL_APPROACH", None) is not None:      # hardware.py has its own FINAL state
+        H.FINAL_APPROACH = H.FINAL_APPROACH and not args.no_final
+        return H.Mission()
+    return FinalMission(enabled=not args.no_final)
+
+
+def final_target(args):
+    if args.no_final:
+        return H.DOCK_TARGET
+    return getattr(H, "FINAL_RANGE", FINAL_RANGE) if getattr(H, "FINAL_APPROACH", True) else H.DOCK_TARGET
 
 
 # ============================================================ config
@@ -224,8 +283,8 @@ def print_arena(cfg, cam_src):
         name = "DOCK" if tid == c.marker_id else "tag "
         print(f"  {name} id{tid}: ({tx:+.2f}, {ty:+.2f}) = {corner(tx, ty)}, facing {face(tyaw)}")
     bx, by, _ = BOX
-    print(f"  box      : {BOX_L * 100:.0f} x {BOX_W * 100:.0f} x {BOX_H * 100:.0f} cm (long side along the dock axis), "
-          f"centre ({bx:+.2f}, {by:+.2f}) = {corner(bx, by)}")
+    print(f"  box      : front face {BOX_W * 100:.0f} x {BOX_H * 100:.0f} cm facing the robot, "
+          f"{BOX_L * 100:.0f} cm deep, centre ({bx:+.2f}, {by:+.2f}) = {corner(bx, by)}")
     print(f"             = {BOX_FRONT:.2f} m in front of the dock marker, inner edge {BOX_GAP:.2f} m beside "
           f"the dock axis (partly in front of the dock)")
     print(f"  marker   : {c.marker_size * 100:.0f} cm black square, ArUco {c.aruco_dict}")
@@ -571,7 +630,7 @@ def run_once(cfg, cal, seed, args, out=None, verbose=True):
             cfg = calibrate_odometry_sim(env, cfg, rng)
         # real robot: Sensing undistorts with the real calibration; without one: ideal pinhole
         sensing = Sensing(env, cfg, camera_period=H.CAMERA_PERIOD, calibration=cal)
-        mission = H.Mission()
+        mission = make_mission(args)
         dt = cfg.sim.control_dt
         sx, sy, sth = START
         last_print, last_guard = -99.0, ""
@@ -659,6 +718,7 @@ def main_cli() -> int:
     p.add_argument("--no-mesh", action="store_true", help="draw the robot as a cylinder")
     p.add_argument("--no-camera", action="store_true", help="no live camera window")
     p.add_argument("--video", action="store_true", help="save camera.mp4 (what the robot saw)")
+    p.add_argument("--no-final", action="store_true", help="stop at the camera DOCKED pose (no FINAL approach)")
     args = p.parse_args()
     if args.viewer:
         S._ensure_mjpython()                              # macOS: the viewer needs mjpython
@@ -672,6 +732,8 @@ def main_cli() -> int:
           f"lens distortion: {'yes' if cal is not None else 'no'} | robot: "
           f"{'TurtleBot3 meshes' if mesh_dir(cfg) is not None and not args.no_mesh else 'cylinder'} | odometry belief "
           f"r {cfg.robot.wheel_radius:.4f} b {cfg.robot.wheel_base:.4f}")
+    print(f"FINAL approach: {'off' if args.no_final else f'on, stop {final_target(args):.2f} m from the dock wall'}"
+          f" ({'hardware.py' if getattr(H, 'FINAL_APPROACH', None) is not None else 'hardware_sim.py'})")
     print("Scenes go to:", RESULTS_DIR / "hardware_sim" / "scene", "(simulation.py's scene is untouched)\n")
     base = RESULTS_DIR / "hardware_sim"
 
@@ -681,7 +743,7 @@ def main_cli() -> int:
         r = run_once(cfg, cal, args.seed, args, out)
         print("\n=== RESULT (ground truth, only possible in simulation) ===")
         print(f"{'SUCCESS' if r['success'] else 'FAILURE'} ({r['reason']}) in {r['time']} s | "
-              f"dock range {r['dock_range']:.2f} m (target {H.DOCK_TARGET}), lateral {r['dock_lateral']:+.3f} m, "
+              f"dock range {r['dock_range']:.2f} m (target {final_target(args):.2f}), lateral {r['dock_lateral']:+.3f} m, "
               f"heading {r['dock_heading_deg']:+.1f} deg | odometry drift {r['odom_drift']:.3f} m | "
               f"dock detections {r['detections']} | {r['odometry']}")
         for e in r["events"]:

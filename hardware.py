@@ -8,6 +8,9 @@
 #   python hardware.py 192.168.1.213 --check               sensors only, robot does not move
 #   python hardware.py 192.168.1.213 --check --calib-odom  + odometry calibration (robot MOVES)
 #   python hardware.py 192.168.1.213                       full run
+#
+# FINAL approach: the camera needs ~0.85 m to see the whole marker, so after the camera DOCKED check the
+# robot drives straight on (odometry heading hold) and stops by LiDAR at FINAL_RANGE from the dock wall.
 from __future__ import annotations
 
 import argparse
@@ -76,6 +79,11 @@ DOCK_TURN = 0.15             # [rad/s]
 DOCK_LOST = 2.0              # [s] marker not seen this long -> back to AIM
 ALIGN_TIME = 4.0             # [s] arrived but not aligned this long -> back to AIM
 DOCK_TIMEOUT = 45.0          # [s]
+FINAL_APPROACH = True        # False = stop at DOCK_TARGET (camera DOCKED pose) like before
+FINAL_RANGE = 0.45           # [m] robot centre -> dock wall at the very end (> FRONT_STOP - LIDAR_BEHIND)
+FINAL_V = 0.05               # [m/s] slow, blind part
+FINAL_ODOM_EXTRA = 0.05      # [m] odometry backup may drive this much further than the camera said
+LIDAR_BEHIND = 0.064         # [m] LDS is this far behind the robot centre (TB3 Waffle)
 
 # ============================================================ safety
 FRONT_STOP = 0.40            # [m] LiDAR, +-25 deg
@@ -259,6 +267,7 @@ class Mission:
         self.n_explore = self.n_aim = 0
         self.ok_count = 0
         self.arrived = 0.0
+        self.final = None                        # (start pose, distance to drive, heading, t0)
         self.done, self.success, self.reason = False, False, "timeout"
 
     # ---------------------------------------------------------- bookkeeping
@@ -402,9 +411,14 @@ class Mission:
             if m is not None:
                 self.ok_count = self.ok_count + 1 if is_docked(m.range, m.bearing, m.view_angle) else 0
                 if self.ok_count >= DOCK_CONFIRM:
-                    self.done, self.success, self.reason = True, True, "docked"
                     self.note(t, f"DOCKED: {m.range:.2f} m, bearing {math.degrees(m.bearing):+.1f} deg, "
                                 f"axis {math.degrees(wrap_angle(m.bearing - m.view_angle)):+.1f} deg")
+                    go_on = m.range - FINAL_RANGE
+                    if FINAL_APPROACH and go_on > 0.02:
+                        self.final = (self.pose.copy(), go_on, self.pose[2] + m.bearing, t)
+                        return self.go(t, "FINAL", f"FINAL: driving {go_on:.2f} m closer "
+                                                   f"(stop at {FINAL_RANGE:.2f} m)") or (0.0, 0.0)
+                    self.done, self.success, self.reason = True, True, "docked"
                     return 0.0, 0.0
             if not self.seen_recently(t, DOCK_LOST):
                 self.obs = []
@@ -424,6 +438,22 @@ class Mission:
             if r < DOCK_TARGET - 0.15:
                 return -0.05, 0.0                             # too close: back off slowly
             return dock_command(r, b, v)
+
+        if S == "FINAL":                                     # blind straight drive, LiDAR / odometry stop
+            p0, go_on, head, t0 = self.final
+            moved = math.hypot(self.pose[0] - p0[0], self.pose[1] - p0[1])
+            front = sector_min_range(f.lidar, 0.0, math.radians(10))     # dock wall straight ahead
+            wall = front - LIDAR_BEHIND if front < f.lidar.range_max else float("inf")
+            why = ("LiDAR" if wall <= FINAL_RANGE else                    # main stop: LiDAR to the wall
+                   "odometry" if moved >= go_on + FINAL_ODOM_EXTRA else    # backup if the LiDAR sees nothing
+                   "timeout" if t - t0 > go_on / FINAL_V + 5.0 else None)
+            if why is not None:
+                self.done, self.success, self.reason = True, True, "docked"
+                self.note(t, f"FINAL done ({why}): drove {moved:.2f} m, "
+                             f"LiDAR wall {wall:.2f} m from the robot centre")
+                return 0.0, 0.0
+            w = float(np.clip(1.5 * wrap_angle(head - self.pose[2]), -DOCK_TURN, DOCK_TURN))
+            return FINAL_V, w
 
         return 0.0, 0.0
 
@@ -767,7 +797,8 @@ def run_hardware(args) -> int:
         print("  " + e)
     manual = {}
     if not args.no_prompt and rows:
-        print("\nMeasure the final dock position with a ruler.")
+        print("\nMeasure the final dock position with a ruler"
+              + (f" (expected ~{FINAL_RANGE:.2f} m from the dock wall)." if FINAL_APPROACH else "."))
         for key, text in (("dock_range_m", "distance robot centre -> dock marker [m]"),
                         ("dock_lateral_m", "sideways offset from the marker axis [m]"),
                         ("dock_heading_deg", "heading error [deg]")):
@@ -783,7 +814,7 @@ def run_hardware(args) -> int:
     (out / "summary.json").write_text(json.dumps({
         "success": mission.success, "reason": mission.reason, "events": mission.events,
         "manual_dock_measurement": manual,
-        "settings": {"dock_target_m": DOCK_TARGET, "aim_dist_m": AIM_DIST, "lat_tol_m": LAT_TOL,
+        "settings": {"dock_target_m": DOCK_TARGET, "final_range_m": FINAL_RANGE if FINAL_APPROACH else None, "aim_dist_m": AIM_DIST, "lat_tol_m": LAT_TOL,
                     "axis_tol_rad": DOCK_AXIS_TOL, "speed_scale": args.speed_scale,
                     "odometry": f"r {cfg.robot.wheel_radius:.4f} b {cfg.robot.wheel_base:.4f}"
                                 + (" (calibrated)" if odo else " (nominal)")},
