@@ -1,13 +1,20 @@
 # Including libraries
 from __future__ import annotations
 
+import os
+os.environ.setdefault("OMP_NUM_THREADS", "1")       # one BLAS thread per worker: no oversubscription
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+
 import argparse
 import csv
 import json
 import math
 from collections import Counter
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from contextlib import contextmanager, nullcontext
 from dataclasses import replace
+from functools import lru_cache
 import time
 import numpy as np
 from controller import LQRTracker, limit_command, safe_command
@@ -29,15 +36,16 @@ METRICS = ["time", "pos_rmse", "heading_rmse", "mean_nees", "mean_nis", "dock_la
         "dock_heading", "obs_clear", "mean_v", "mean_abs_w", "sat_frac", "avoid_frac",
         "path_ratio", "effort"]
 
-ROW_FIELDS += ["xte_rmse", "xte_max", "hdg_err_rmse"]
+ROW_FIELDS += ["xte_rmse", "xte_max", "hdg_err_rmse", "track_effort"]
 ROW_FIELDS += ["last_event"]
-METRICS += ["xte_rmse", "xte_max", "hdg_err_rmse"]
+METRICS += ["xte_rmse", "xte_max", "hdg_err_rmse", "track_effort"]
+
 def _num(x):
     try:
         return float(x)
     except (TypeError, ValueError):
         return float("nan")
-    
+
 def _json(o):
     if isinstance(o, (np.floating, np.integer)):
         return o.item()
@@ -116,6 +124,18 @@ def make_ekf(cfg, r_scale=1.0, gate=9.21, odom_scale=1.0, use_marker=True, use_l
                         R=np.diag([0.15 ** 2, 0.05 ** 2]) * r_scale, R_view=(0.15 ** 2) * r_scale,
                         use_marker=use_marker, use_lidar=use_lidar)
 
+@lru_cache(maxsize=1)
+def _headless_kw() -> dict:
+    # Turn off any live window / plotting flag that run_pipeline may enable by default (pure speed, no effect on results)
+    import inspect, main
+    try:
+        params = inspect.signature(main.run_pipeline).parameters
+    except (TypeError, ValueError):
+        return {}
+    names = ("live", "show", "visualize", "visualise", "render", "plot", "display", "monitor", "viewer", "gui")
+    return {k: False for k in names
+            if k in params and isinstance(params[k].default, bool) and params[k].default}
+
 @contextmanager
 def lqr_scaled(q_scale: float, r_scale: float):
     import navigation
@@ -135,6 +155,7 @@ def lqr_scaled(q_scale: float, r_scale: float):
         navigation.LQRTracker = orig
 
 ERR_LOG: list = []   # [e_along, e_cross, e_heading] per compute() call (estimated pose)
+U_LOG: list = []     # feedback part of the command (u - u_ref), tracking phase only
 
 def _log_error(x_est, ref):
     x = np.asarray(x_est, dtype=float)
@@ -146,13 +167,15 @@ def _log_error(x_est, ref):
     return None
 
 class LoggedLQR(LQRTracker):
-    # Same LQR as the pipeline, only records the tracking error
+    # Same LQR as the pipeline, only records the tracking error and the feedback effort
     def compute(self, x_est, ref, front_range=None):
         _log_error(x_est, ref)
-        return super().compute(x_est, ref, front_range)
+        v, w = super().compute(x_est, ref, front_range)
+        U_LOG.append((v - ref.v, w - ref.w))
+        return v, w
 
 class StanleyTracker(LQRTracker):
-    # Baseline: proportional law on the same tracking error
+    # Baseline: proportional law on the same tracking error (gains overridden by the grid in jobs_control)
     kx, ky, kth = 1.0, 1.0, 1.0
     def compute(self, x_est, ref, front_range=None):
         e = _log_error(x_est, ref)
@@ -162,7 +185,11 @@ class StanleyTracker(LQRTracker):
                              ref.w + ref.v * self.ky * e[1] + self.kth * e[2], self.cfg)
         if front_range is not None:
             v, w = safe_command(v, w, front_range, self.cfg)
+        U_LOG.append((v - ref.v, w - ref.w))
         return v, w
+
+def stanley(ky: float, kth: float, kx: float = 1.0):
+    return type("Stanley", (StanleyTracker,), dict(kx=kx, ky=ky, kth=kth))
 
 @contextmanager
 def tracker_swapped(cls):
@@ -197,20 +224,38 @@ def cruise_speed(v, redesign):
         navigation.Navigator, main.Navigator, navigation.LQRTracker = o_nav, o_main, o_trk
 
 def track_errors() -> dict:
+    out = {}
     E = np.array(ERR_LOG, dtype=float)
-    if E.ndim != 2 or len(E) == 0:
-        return {}
-    return dict(xte_rmse=float(np.sqrt(np.mean(E[:, 1] ** 2))),
+    if E.ndim == 2 and len(E):
+        out.update(xte_rmse=float(np.sqrt(np.mean(E[:, 1] ** 2))),
                 xte_max=float(np.max(np.abs(E[:, 1]))),
-                hdg_err_rmse=float(np.sqrt(np.mean(E[:, 2] ** 2))))
+                   hdg_err_rmse=float(np.sqrt(np.mean(E[:, 2] ** 2))))
+    U = np.array(U_LOG, dtype=float)
+    if U.ndim == 2 and len(U):
+        out["track_effort"] = float(np.mean(np.sum(U ** 2, axis=1)))
+    return out
+
+# Run storage: only the main process writes, one row as soon as each run finishes
+def append_run(exp: str, row: dict) -> None:
+    OUT.mkdir(parents=True, exist_ok=True)
+    p = OUT / f"{exp}_runs.csv"
+    new = not p.exists()
+    with p.open("a", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=ROW_FIELDS)
+        if new:
+            w.writeheader()
+        w.writerow(row)
+
+def reset_runs(exp: str) -> None:
+    (OUT / f"{exp}_runs.csv").unlink(missing_ok=True)
 
 def run_once(exp, label, level, cfg, seed, kw=None, ekf=None, lqr=None, tracker=None, speed=None) -> dict:
     import main
-    kw = {**BASE_KW, **(kw or {})}
+    kw = {**BASE_KW, **_headless_kw(), **(kw or {})}
     row = {k: float("nan") for k in ROW_FIELDS}
     row.update(experiment=exp, label=label, level=str(level), seed=seed, success=0, reason="exception")
     try:
-        ERR_LOG.clear()
+        ERR_LOG.clear(); U_LOG.clear()
         est = make_ekf(cfg, **ekf) if ekf is not None else None
         with tracker_swapped(tracker or LoggedLQR), (lqr_scaled(*lqr) if lqr else nullcontext()), \
             (cruise_speed(*speed) if speed else nullcontext()):
@@ -246,15 +291,8 @@ def run_once(exp, label, level, cfg, seed, kw=None, ekf=None, lqr=None, tracker=
     print(f"  [{exp}] {label}={level} seed {seed}: {'OK  ' if row['success'] else 'FAIL'} {row['reason']}", flush=True)
     return row
 
-def save_runs(exp: str, rows: list) -> None:
-    OUT.mkdir(parents=True, exist_ok=True)
-    with (OUT / f"{exp}_runs.csv").open("w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=ROW_FIELDS)
-        w.writeheader()
-        w.writerows(rows)
-
-def seeds_of(args):
-    return range(args.seed0, args.seed0 + args.seeds)
+def seeds_of(args, n=None):
+    return range(args.seed0, args.seed0 + (n if n is not None else args.seeds))
 
 # A.Model
 def fd_jacobian(f, x, wrap_rows=(), eps=1e-6):
@@ -303,7 +341,6 @@ def exp_model(args) -> None:
     }
 
     # LQR closed-loop poles at the design point
-    from controller import LQRTracker
     tr = LQRTracker(cfg)
     out = {"operating_points": rows, "jacobian_max_abs_error": errs,
         "lqr_gain_K": tr.K, "lqr_pole_magnitudes": np.abs(tr.closed_loop_poles()),
@@ -319,7 +356,7 @@ def exp_model(args) -> None:
         w.writerows(rows)
     print("A. modelling saved. Jacobian errors:", {k: f"{v:.2e}" for k, v in errs.items()},
         "| LQR stable:", out["lqr_stable"])
-    
+
 # B.Sensing
 def exp_sensing(args, n_frames: int = 300, warmup: int = 15) -> None:
     from calibration import apply_extrinsics, calibrate_camera_in_sim, calibrate_extrinsics_in_sim
@@ -394,42 +431,7 @@ def exp_lidar(args, n=200):
     with (OUT / "lidar_noise.csv").open("w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=list(rows[0])); w.writeheader(); w.writerows(rows)
 
-# C.Estimation
-def exp_estimation(args) -> None:
-    rows = []
-    variants = [("pipeline default", None),
-                ("dead reckoning", dict(use_marker=False)),
-                ("camera only", dict()),
-                ("camera + LiDAR", dict(use_lidar=True)),
-                ("EKF tuned R", dict(r_scale=0.03)),
-                ("UKF", dict(kind="ukf")),
-                ("UKF tuned R", dict(kind="ukf", r_scale=0.03))]
-    sweeps = [("R x", [0.01, 0.03, 0.1, 0.25, 0.5, 2, 4], "r_scale"),
-            ("gate", [6.0, 13.8, None], "gate"),
-            ("odom cov x", [0.5, 2, 5], "odom_scale")]
-    for seed in seeds_of(args):
-        for name, ekf in variants:
-            rows.append(run_once("estimation", name, "-", CONFIG, seed, ekf=ekf))
-        for label, levels, key in sweeps:
-            for lv in levels:
-                rows.append(run_once("estimation", f"sweep {label}", lv, CONFIG, seed, ekf={key: lv}))
-    save_runs("estimation", rows)
-
-# D.Control
-def exp_control(args) -> None:
-    rows = []
-    gains = [("Q x0.1", (0.1, 1.0)), ("Q x1 (default)", (1.0, 1.0)), ("Q x10", (10.0, 1.0)),
-            ("R x10", (1.0, 10.0)), ("R x0.1", (1.0, 0.1))]
-    for seed in seeds_of(args):
-        for name, lqr in gains:
-            rows.append(run_once("control", name, "-", CONFIG, seed, lqr=lqr))
-        rows.append(run_once("control", "Stanley (baseline)", "-", CONFIG, seed, tracker=StanleyTracker))
-        for v in (0.10, 0.22):
-            rows.append(run_once("control", "LQR design 0.15", v, CONFIG, seed, speed=(v, False)))
-            rows.append(run_once("control", "LQR redesigned", v, CONFIG, seed, speed=(v, True)))
-    save_runs("control", rows)
-
-# E.Robustness
+# E.Robustness settings (used by the robust jobs and by the gate sweep)
 def _rz(field_name):
     return lambda c, k: replace(c, realism=replace(c.realism, **{field_name: k}))
 
@@ -449,29 +451,6 @@ ROBUST = {   # name: (levels, cfg modifier(cfg, level), extra run kwargs(level))
         lidar=replace(c.lidar, noise_std=c.lidar.noise_std * k),
         realism=replace(c.realism, frame_drop=min(0.05 * k, 0.5), lidar_dropout=min(0.03 * k, 0.3))), None),
 }
-
-def exp_robust(args) -> None:
-    rows = []
-    for seed in seeds_of(args):
-        for name, (levels, mod, kwf) in ROBUST.items():
-            for lv in levels:
-                rows.append(run_once("robust", name, lv, mod(CONFIG, lv), seed,
-                                    kw=kwf(lv) if kwf else None))
-    save_runs("robust", rows)
-
-def exp_ablation(args) -> None:
-    rows = []
-    variants = [("full system", dict(calib_camera=True)),
-                ("no recovery", dict(calib_camera=True, use_recovery=False)),
-                ("no odometry calibration", dict(calib_camera=True, calib_odometry=False)),
-                ("no camera calibration", dict(calib_camera=False)),
-                ("no extrinsics calibration", dict(calib_extrinsics=False)),
-                ("no delay compensation", dict(camera_delay=0.0)),
-                ("LiDAR map update on", dict(calib_camera=True, use_lidar_map=True))]
-    for seed in seeds_of(args):
-        for name, kw in variants:
-            rows.append(run_once("ablation", name, "-", CONFIG, seed, kw=kw))
-    save_runs("ablation", rows)
 
 # Random obstacle layouts and start headings (only cfg changes, the simulator is untouched)
 def random_layout(seed, n_obs=3, r=0.2):
@@ -493,14 +472,146 @@ def random_layout(seed, n_obs=3, r=0.2):
         obs.append((x, y, r))
     return tuple(obs)
 
-def exp_layouts(args) -> None:
-    rows = []
-    for seed in seeds_of(args):
+# Jobs: plain, picklable descriptions of one run; the worker rebuilds cfg and tracker itself
+def J(exp, label, level, seed, **k):
+    return dict(exp=exp, label=label, level=level, seed=seed, **k)
+
+def build_cfg(spec):
+    if spec is None:
+        return CONFIG
+    if spec[0] == "robust":
+        _, name, lv = spec
+        return ROBUST[name][1](CONFIG, lv)
+    if spec[0] == "layout":
+        seed = spec[1]
         heading = float(np.random.default_rng(seed + 999).uniform(-math.pi, math.pi))
-        cfg = replace(CONFIG, env=replace(CONFIG.env, obstacles=random_layout(seed),
+        return replace(CONFIG, env=replace(CONFIG.env, obstacles=random_layout(seed),
                                         start_pose=(0.0, 0.0, heading)))
-        rows.append(run_once("layouts", "random layout + start heading", "-", cfg, seed))
-    save_runs("layouts", rows)
+    raise ValueError(spec)
+
+def build_tracker(spec):
+    if spec is None:
+        return None
+    if spec[0] == "stanley":
+        return stanley(*spec[1:])
+    raise ValueError(spec)
+
+FUNCS = {"model": exp_model, "sensing": exp_sensing}
+
+def _job(j):
+    if "func" in j:                                   # model / sensing: one-off scripts, no CSV row
+        FUNCS[j["func"]](j["args"])
+        return None
+    return run_once(j["exp"], j["label"], j["level"], build_cfg(j.get("cfg")), j["seed"],
+                    kw=j.get("kw"), ekf=j.get("ekf"), lqr=j.get("lqr"),
+                    tracker=build_tracker(j.get("tracker")), speed=j.get("speed"))
+
+# C.Estimation
+def jobs_estimation(args, n) -> list:
+    variants = [("pipeline default", None),
+                ("dead reckoning", dict(use_marker=False)),
+                ("camera + LiDAR", dict(use_lidar=True)),
+                ("EKF tuned R", dict(r_scale=0.03)),
+                ("UKF", dict(kind="ukf")),
+                ("UKF tuned R", dict(kind="ukf", r_scale=0.03))]
+    sweeps = [("R x", [0.01, 0.03, 0.1, 0.25, 0.5, 2, 4], "r_scale"),
+            ("odom cov x", [0.5, 2, 5], "odom_scale")]
+    out = []
+    for seed in seeds_of(args, n):
+        for name, ekf in variants:
+            out.append(J("estimation", name, "-", seed, ekf=ekf))
+        for label, levels, key in sweeps:
+            for lv in levels:
+                out.append(J("estimation", f"sweep {label}", lv, seed, ekf={key: lv}))
+        for lv in (6.0, 9.21, 13.8, None):           # gate sweep under disturbance (nominal: nothing rejected)
+            out.append(J("estimation", "gate (combined noise x2)", lv, seed,
+                        cfg=("robust", "combined noise x", 2), ekf={"gate": lv}))
+    return out
+
+# D.Control
+def jobs_control(args, n) -> list:
+    out = []
+    for seed in seeds_of(args, n):
+        for q in (0.03, 0.1, 0.3, 1.0, 3.0, 10.0, 30.0):         # only Q/R matters, so sweep Q at R = I
+            out.append(J("control", "LQR Q/R", q, seed, lqr=(q, 1.0)))
+        for ky in (1.0, 3.0, 10.0):
+            for kth in (1.0, 2.0, 4.0):
+                out.append(J("control", "Stanley", f"ky={ky},kth={kth}", seed, tracker=("stanley", ky, kth)))
+        for v in (0.10, 0.22):
+            out.append(J("control", "LQR design 0.15", v, seed, speed=(v, False)))
+            out.append(J("control", "LQR redesigned", v, seed, speed=(v, True)))
+    return out
+
+# E.Robustness
+def jobs_robust(args, n) -> list:
+    out = []
+    for seed in seeds_of(args, n):
+        for name, (levels, _mod, kwf) in ROBUST.items():
+            for lv in levels:
+                out.append(J("robust", name, lv, seed, cfg=("robust", name, lv),
+                            kw=kwf(lv) if kwf else None))
+    return out
+
+def jobs_ablation(args, n) -> list:
+    variants = [("full system", dict(calib_camera=True)),
+                ("no recovery", dict(calib_camera=True, use_recovery=False)),
+                ("no odometry calibration", dict(calib_camera=True, calib_odometry=False)),
+                ("no camera calibration", dict(calib_camera=False)),
+                ("no extrinsics calibration", dict(calib_extrinsics=False)),
+                ("no delay compensation", dict(camera_delay=0.0)),
+                ("LiDAR map update on", dict(calib_camera=True, use_lidar_map=True))]
+    return [J("ablation", name, "-", seed, kw=kw) for seed in seeds_of(args, n) for name, kw in variants]
+
+def jobs_layouts(args, n) -> list:
+    return [J("layouts", "random layout + start heading", "-", seed, cfg=("layout", seed))
+            for seed in seeds_of(args, n)]
+
+def _likely_slow(j) -> int:
+    # Long runs first, so no worker is left with a 130 s run at the very end
+    if "func" in j:
+        return 0
+    lv = _num(j["level"])
+    if j["exp"] == "robust" and (lv >= 2 or j["label"] in ("camera frame drop", "camera delay s (not compensated)",
+                                                        "camera delay s (compensated)") and lv >= 0.3):
+        return 1
+    if j["label"] in ("dead reckoning", "gate (combined noise x2)"):
+        return 1
+    return 2
+
+def run_jobs(jobs: list, workers: int) -> None:
+    for exp in {j["exp"] for j in jobs if "exp" in j}:
+        reset_runs(exp)
+    jobs = sorted(jobs, key=_likely_slow)
+    n, t0 = len(jobs), time.time()
+
+    def progress(i):
+        el = time.time() - t0
+        print(f"=== {i}/{n} done | {el / 60:.1f} min elapsed | ETA {el / i * (n - i) / 60:.1f} min", flush=True)
+
+    def store(j, row):
+        if row is not None:
+            append_run(j["exp"], row)
+
+    if workers <= 1:
+        for i, j in enumerate(jobs, 1):
+            store(j, _job(j)); progress(i)
+        return
+    ex = ProcessPoolExecutor(max_workers=workers)
+    with ex:
+        futs = {ex.submit(_job, j): j for j in jobs}
+        for i, f in enumerate(as_completed(futs), 1):
+            j = futs[f]
+            try:
+                row = f.result()
+            except Exception as exc:                  # worker died (e.g. MuJoCo crash): record a failure
+                print(f"  worker crash on {j.get('exp', j.get('func'))} {j.get('label', '')}: {exc!r}", flush=True)
+                if "func" in j:
+                    row = None
+                else:
+                    row = {k: float("nan") for k in ROW_FIELDS}
+                    row.update(experiment=j["exp"], label=j["label"], level=str(j["level"]), seed=j["seed"],
+                            success=0, reason=f"worker crash: {type(exc).__name__}")
+            store(j, row); progress(i)
 
 # Summary
 def load_all_runs() -> list:
@@ -525,13 +636,20 @@ def summarize(rows: list) -> list:
             d[m + "_std"] = float(v.std()) if len(v) else float("nan")
         d["collisions"] = int(sum(_num(x["collided"]) == 1 for x in g))
         d["failures"] = json.dumps(dict(Counter(x["reason"] for x in g if _num(x["success"]) != 1)))
+        d["last_events_failed"] = json.dumps(dict(Counter(x.get("last_event", "") for x in g
+                                                        if _num(x["success"]) != 1)))
         n_, p, z = len(g), d["success_rate"], 1.96
         den = 1 + z * z / n_
         half = z * math.sqrt(p * (1 - p) / n_ + z * z / (4 * n_ * n_))
         d["success_lo"] = (p + z * z / (2 * n_) - half) / den
         d["success_hi"] = (p + z * z / (2 * n_) + half) / den
         out.append(d)
+    order = {"estimation": 0, "control": 1, "robust": 2, "ablation": 3, "layouts": 4}
+    out.sort(key=lambda d: (order.get(d["experiment"], 9), d["label"], _num(d["level"]), d["level"]))
     return out
+
+def _ms(d, k, f=".3f"):
+    return f"{d[k]:{f}} ± {d[k + '_std']:{f}}"
 
 def write_summary(summary: list) -> None:
     if not summary:
@@ -540,21 +658,22 @@ def write_summary(summary: list) -> None:
         w = csv.DictWriter(f, fieldnames=list(summary[0]))
         w.writeheader()
         w.writerows(summary)
-    lines = ["| experiment | setting | level | n | success ±95% | time [s] | RMSE [m] | XTE rms [m] | XTE max [m] | hdg rms [rad] | NEES (~3) | NIS/dof (~1) | dock lat [m] | failures |",
-            "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+    lines = ["| experiment | setting | level | n | success [95% CI] | time [s] | RMSE [m] | XTE rms [m] | XTE max [m] | hdg rms [rad] | NEES (~3) | NIS/dof (~1) | dock lat [m] | track effort | failures |",
+            "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for d in summary:
         lines.append(f"| {d['experiment']} | {d['label']} | {d['level']} | {d['n']} | "
                     f"{100 * d['success_rate']:.0f}% [{100 * d['success_lo']:.0f}-{100 * d['success_hi']:.0f}] | "
-                    f"{d['time']:.1f} | {d['pos_rmse']:.3f} | {d['xte_rmse']:.3f} | {d['xte_max']:.3f} | "
-                    f"{d['hdg_err_rmse']:.3f} | {d['mean_nees']:.2f} | {d['mean_nis']:.2f} | "
-                    f"{d['dock_lateral']:.3f} | {d['failures']} |")
+                    f"{_ms(d, 'time', '.1f')} | {_ms(d, 'pos_rmse')} | {_ms(d, 'xte_rmse')} | {_ms(d, 'xte_max')} | "
+                    f"{_ms(d, 'hdg_err_rmse')} | {_ms(d, 'mean_nees', '.2f')} | {_ms(d, 'mean_nis', '.2f')} | "
+                    f"{_ms(d, 'dock_lateral')} | {_ms(d, 'track_effort', '.2e')} | {d['failures']} |")
     (OUT / "summary.md").write_text("\n".join(lines), encoding="utf-8")
 
 def make_figures(summary: list) -> None:
     from matplotlib.figure import Figure
     by = lambda e: [d for d in summary if d["experiment"] == e]
+    lab = lambda d: d["label"] + ("" if d["level"] == "-" else f" {d['level']}")
 
-    rob = by("robust")                      # E: success rate vs level
+    rob = by("robust")                      # E: success rate vs level, with Wilson 95% CI
     if rob:
         names = list(dict.fromkeys(d["label"] for d in rob))
         cols = 3
@@ -562,7 +681,9 @@ def make_figures(summary: list) -> None:
         axes = fig.subplots(math.ceil(len(names) / cols), cols, squeeze=False).ravel()
         for ax, n in zip(axes, names):
             g = sorted((d for d in rob if d["label"] == n), key=lambda d: _num(d["level"]))
-            ax.plot([_num(d["level"]) for d in g], [100 * d["success_rate"] for d in g], "o-")
+            p = np.array([100 * d["success_rate"] for d in g])
+            lo = np.array([100 * d["success_lo"] for d in g]); hi = np.array([100 * d["success_hi"] for d in g])
+            ax.errorbar([_num(d["level"]) for d in g], p, yerr=np.clip([p - lo, hi - p], 0, None), fmt="o-", capsize=3)
             ax.set_ylim(-5, 105); ax.set_title(n, fontsize=9); ax.set_ylabel("success [%]"); ax.grid(alpha=0.3)
         for ax in axes[len(names):]:
             ax.axis("off")
@@ -573,26 +694,53 @@ def make_figures(summary: list) -> None:
         fig = Figure(figsize=(7, 5)); ax = fig.subplots()
         for d in est:
             if math.isfinite(d["pos_rmse"]) and math.isfinite(d["mean_nees"]):
-                name = d["label"] + ("" if d["level"] == "-" else f" {d['level']}")
-                ax.scatter(d["pos_rmse"], d["mean_nees"]); ax.annotate(name, (d["pos_rmse"], d["mean_nees"]), fontsize=6)
+                ax.errorbar(d["pos_rmse"], d["mean_nees"], xerr=np.nan_to_num(d["pos_rmse_std"]),
+                            yerr=np.nan_to_num(d["mean_nees_std"]), fmt="o", capsize=2)
+                ax.annotate(lab(d), (d["pos_rmse"], d["mean_nees"]), fontsize=6)
         ax.axhline(3.0, color="gray", ls=":"); ax.set_yscale("log")
         ax.set_xlabel("position RMSE [m]"); ax.set_ylabel("mean NEES (consistent ~ 3)")
         ax.set_title("Estimator accuracy vs consistency"); fig.tight_layout()
         fig.savefig(OUT / "estimation_tradeoff.png", dpi=140)
 
-    for exp, fname in (("control", "control_gains.png"), ("ablation", "ablation.png")):
-        g = by(exp)                         # D and ablation: bars
+    keys = [("success_rate", "success rate"), ("dock_lateral", "dock lateral [m]"),
+            ("track_effort", "tracking effort"), ("time", "time [s]"), ("xte_rmse", "cross-track RMS [m]")]
+    for exp, fname in (("control", "control_gains.png"), ("ablation", "ablation.png"), ("layouts", "layouts.png")):
+        g = by(exp)                         # D, ablation, layouts: bars with error bars
         if not g:
             continue
-        keys = [("success_rate", "success rate"), ("dock_lateral", "dock lateral [m]"),
-                ("effort", "control effort"), ("time", "time [s]"), ("xte_rmse", "cross-track RMS [m]")]
-        fig = Figure(figsize=(14, 4)); axes = fig.subplots(1, len(keys))
+        fig = Figure(figsize=(16, 4.5)); axes = fig.subplots(1, len(keys))
         for ax, (k, title) in zip(axes, keys):
-            ax.bar(range(len(g)), [d[k] for d in g])
+            vals = np.array([d[k] for d in g], dtype=float)
+            if k == "success_rate":
+                err = np.clip([vals - np.array([d["success_lo"] for d in g]), np.array([d["success_hi"] for d in g]) - vals], 0, None)
+            else:
+                err = np.nan_to_num(np.array([d.get(k + "_std", 0.0) for d in g], dtype=float))
+            ax.bar(range(len(g)), np.nan_to_num(vals), yerr=err, capsize=2)
             ax.set_xticks(range(len(g)))
-            ax.set_xticklabels([d["label"] + ("" if d["level"] == "-" else f" {d['level']}") for d in g], rotation=60, ha="right", fontsize=7)
+            ax.set_xticklabels([lab(d) for d in g], rotation=60, ha="right", fontsize=7)
             ax.set_title(title, fontsize=9)
         fig.tight_layout(); fig.savefig(OUT / fname, dpi=140)
+
+    ctl = [d for d in by("control") if d["label"] in ("LQR Q/R", "Stanley")]
+    if ctl:                                 # D: tracking error vs control effort (trade-off)
+        fig = Figure(figsize=(7, 5)); ax = fig.subplots()
+        for name, mk in (("LQR Q/R", "o-"), ("Stanley", "s")):
+            g = [d for d in ctl if d["label"] == name
+                and math.isfinite(d["track_effort"]) and math.isfinite(d["xte_rmse"])]
+            if not g:
+                continue
+            if name == "LQR Q/R":
+                g.sort(key=lambda d: _num(d["level"]))
+            ax.errorbar([d["track_effort"] for d in g], [d["xte_rmse"] for d in g],
+                        xerr=np.nan_to_num([d["track_effort_std"] for d in g]),
+                        yerr=np.nan_to_num([d["xte_rmse_std"] for d in g]),
+                        fmt=mk, capsize=3, label=name)
+            for d in g:
+                ax.annotate(d["level"], (d["track_effort"], d["xte_rmse"]), fontsize=6)
+        ax.set_xscale("log"); ax.set_yscale("log")
+        ax.set_xlabel("feedback effort mean(du²)"); ax.set_ylabel("cross-track RMS [m]")
+        ax.legend(); ax.set_title("Tracking error vs control effort"); ax.grid(alpha=0.3, which="both")
+        fig.tight_layout(); fig.savefig(OUT / "control_tradeoff.png", dpi=140)
 
 def finalize() -> None:
     rows = load_all_runs()
@@ -608,8 +756,9 @@ def finalize() -> None:
 # New seed on every run
 def fresh_seed() -> int:
     return int(time.time()) % 1_000_000
+
 def main() -> None:
-    p = argparse.ArgumentParser(description="Evaluation of the Track A pipeline")
+    p = argparse.ArgumentParser(description="Evaluation of the Track A pipeline (parallel)")
     p.add_argument("--all", action="store_true", help="run everything (default when no flag is given)")
     p.add_argument("--model", action="store_true")
     p.add_argument("--sensing", action="store_true")
@@ -617,32 +766,39 @@ def main() -> None:
     p.add_argument("--control", action="store_true")
     p.add_argument("--robust", action="store_true")
     p.add_argument("--ablation", action="store_true")
+    p.add_argument("--layouts", action="store_true")
     p.add_argument("--plot-only", action="store_true")
     p.add_argument("--seeds", type=int, default=1, help="seeds per setting (default 1)")
+    for e in ("estimation", "control", "robust", "ablation", "layouts"):
+        p.add_argument(f"--seeds-{e}", type=int, default=None, help=f"seeds for {e} (default: --seeds)")
     p.add_argument("--seed0", type=int, default=None, help="first seed (default: new seed every run)")
+    p.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) - 1),
+                help="parallel runs (default: CPU count - 1)")
     a = p.parse_args()
     if a.seed0 is None:
         a.seed0 = fresh_seed()
-    print(f"Evaluation seeds: {a.seed0} .. {a.seed0 + a.seeds - 1}  (reproduce with --seed0 {a.seed0} --seeds {a.seeds})", flush=True)
+    ns = {e: getattr(a, f"seeds_{e}") or a.seeds for e in ("estimation", "control", "robust", "ablation", "layouts")}
 
     OUT.mkdir(parents=True, exist_ok=True)
-    chosen = any([a.model, a.sensing, a.estimation, a.control, a.robust, a.ablation, a.plot_only])
+    chosen = any([a.model, a.sensing, a.estimation, a.control, a.robust, a.ablation, a.layouts, a.plot_only])
     if not chosen:
         a.all = True                      # plain `python evaluation.py` = evaluate everything
 
     if not a.plot_only:
+        jobs = []
         if a.all or a.model:
-            exp_model(a)
+            jobs.append(dict(func="model", args=a))
         if a.all or a.sensing:
-            exp_sensing(a)
-        if a.all or a.estimation:
-            exp_estimation(a)
-        if a.all or a.control:
-            exp_control(a)
-        if a.all or a.robust:
-            exp_robust(a)
-        if a.all or a.ablation:
-            exp_ablation(a)
+            jobs.append(dict(func="sensing", args=a))
+        if a.all or a.estimation: jobs += jobs_estimation(a, ns["estimation"])
+        if a.all or a.control:    jobs += jobs_control(a, ns["control"])
+        if a.all or a.robust:     jobs += jobs_robust(a, ns["robust"])
+        if a.all or a.ablation:   jobs += jobs_ablation(a, ns["ablation"])
+        if a.all or a.layouts:    jobs += jobs_layouts(a, ns["layouts"])
+        print(f"Evaluation seed0 {a.seed0}, seeds per experiment {ns} | {len(jobs)} jobs on {a.workers} workers "
+            f"| headless overrides {_headless_kw()}", flush=True)
+        print(f"Reproduce with the same command and --seed0 {a.seed0}", flush=True)
+        run_jobs(jobs, a.workers)
     finalize()
 
 if __name__ == "__main__":

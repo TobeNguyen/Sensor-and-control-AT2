@@ -1,0 +1,1737 @@
+Evaluation seed0 100, seeds per experiment {'estimation': 5, 'control': 5, 'robust': 5, 'ablation': 10, 'layouts': 20} | 462 jobs on 10 workers | headless overrides {}
+Reproduce with the same command and --seed0 100
+=== 1/462 done | 0.0 min elapsed | ETA 7.7 min
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 18 (RMS 5.01 px)
+A. modelling saved. Jacobian errors: {'F': '8.23e-11', 'G': '8.23e-11', 'H': '1.12e-10'} | LQR stable: True
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 15 (RMS 3.31 px)
+[calib] dropping view 15 (RMS 3.31 px)
+[calib] dropping view 15 (RMS 3.31 px)
+[calib] dropping view 15 (RMS 3.31 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+[calib] dropping view 0 (RMS 2.67 px)
+[calib] dropping view 0 (RMS 2.67 px)
+[calib] dropping view 0 (RMS 2.67 px)
+[calib] dropping view 0 (RMS 2.67 px)
+  [sensing] extrinsics: fwd 0.2641 m (hidden true 0.2350), lat -0.0031, yaw +0.00 deg
+  [sensing] before calibration, range 0.6 m: 56/60 camera frames detected
+  [sensing] before calibration, range 0.9 m: 58/60 camera frames detected
+  [sensing] before calibration, range 1.2 m: 59/60 camera frames detected
+  [sensing] before calibration, range 1.6 m: 58/60 camera frames detected
+  [sensing] before calibration, range 2.0 m: 57/60 camera frames detected
+  [sensing] before calibration, range 2.5 m: 57/60 camera frames detected
+  [sensing] after calibration, range 0.6 m: 56/60 camera frames detected
+  [sensing] after calibration, range 0.9 m: 56/60 camera frames detected
+  [sensing] after calibration, range 1.2 m: 54/60 camera frames detected
+  [sensing] after calibration, range 1.6 m: 55/60 camera frames detected
+  [estimation] gate (combined noise x2)=13.8 seed 100: OK   docked
+=== 2/462 done | 0.4 min elapsed | ETA 86.7 min
+  [estimation] gate (combined noise x2)=6.0 seed 100: OK   docked
+=== 3/462 done | 0.4 min elapsed | ETA 58.0 min
+  [estimation] gate (combined noise x2)=None seed 100: OK   docked
+=== 4/462 done | 0.4 min elapsed | ETA 43.5 min
+  [estimation] gate (combined noise x2)=9.21 seed 100: OK   docked
+=== 5/462 done | 0.4 min elapsed | ETA 34.9 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [estimation] gate (combined noise x2)=13.8 seed 101: OK   docked
+=== 6/462 done | 0.4 min elapsed | ETA 29.5 min
+  [estimation] gate (combined noise x2)=6.0 seed 101: OK   docked
+=== 7/462 done | 0.4 min elapsed | ETA 25.6 min
+  [estimation] gate (combined noise x2)=9.21 seed 101: OK   docked
+=== 8/462 done | 0.4 min elapsed | ETA 22.4 min
+  [sensing] after calibration, range 2.0 m: 60/60 camera frames detected
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [sensing] after calibration, range 2.5 m: 55/60 camera frames detected
+=== 9/462 done | 0.4 min elapsed | ETA 22.5 min
+B. sensing saved: bias before vs after calibration, std vs cfg.R_camera().
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [estimation] gate (combined noise x2)=9.21 seed 102: OK   docked
+=== 10/462 done | 0.7 min elapsed | ETA 30.9 min
+  [estimation] gate (combined noise x2)=6.0 seed 102: OK   docked
+=== 11/462 done | 0.7 min elapsed | ETA 28.1 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [estimation] gate (combined noise x2)=13.8 seed 102: OK   docked
+=== 12/462 done | 0.7 min elapsed | ETA 26.1 min
+  [estimation] gate (combined noise x2)=None seed 102: OK   docked
+=== 13/462 done | 0.7 min elapsed | ETA 24.1 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 12 (RMS 3.66 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [estimation] gate (combined noise x2)=None seed 101: OK   docked
+=== 14/462 done | 0.7 min elapsed | ETA 23.5 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [estimation] dead reckoning=- seed 101: FAIL explore failed
+=== 15/462 done | 0.8 min elapsed | ETA 24.8 min
+  [estimation] dead reckoning=- seed 100: FAIL explore failed
+=== 16/462 done | 0.8 min elapsed | ETA 23.4 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [estimation] dead reckoning=- seed 102: FAIL explore failed
+=== 17/462 done | 1.0 min elapsed | ETA 26.1 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [estimation] gate (combined noise x2)=6.0 seed 103: OK   docked
+=== 18/462 done | 1.0 min elapsed | ETA 25.8 min
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+  [estimation] gate (combined noise x2)=6.0 seed 104: OK   docked
+=== 19/462 done | 1.1 min elapsed | ETA 24.8 min
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+  [estimation] gate (combined noise x2)=9.21 seed 104: OK   docked
+  [estimation] gate (combined noise x2)=13.8 seed 104: OK   docked
+=== 20/462 done | 1.2 min elapsed | ETA 25.7 min
+=== 21/462 done | 1.2 min elapsed | ETA 24.4 min
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+[calib] dropping view 0 (RMS 2.67 px)
+  [estimation] dead reckoning=- seed 103: FAIL explore failed
+=== 22/462 done | 1.2 min elapsed | ETA 23.6 min
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+  [estimation] gate (combined noise x2)=9.21 seed 103: OK   docked
+=== 23/462 done | 1.3 min elapsed | ETA 24.3 min
+  [estimation] gate (combined noise x2)=13.8 seed 103: OK   docked
+=== 24/462 done | 1.3 min elapsed | ETA 23.3 min
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+  [estimation] gate (combined noise x2)=None seed 103: OK   docked
+=== 25/462 done | 1.3 min elapsed | ETA 22.5 min
+[calib] dropping view 0 (RMS 2.67 px)
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+  [estimation] gate (combined noise x2)=None seed 104: OK   docked
+=== 26/462 done | 1.3 min elapsed | ETA 22.1 min
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+  [estimation] dead reckoning=- seed 104: FAIL explore failed
+=== 27/462 done | 1.5 min elapsed | ETA 23.9 min
+  [robust] camera frame drop=0.3 seed 100: OK   docked
+=== 28/462 done | 1.5 min elapsed | ETA 23.1 min
+  [robust] LiDAR noise x=2 seed 100: OK   docked
+=== 29/462 done | 1.5 min elapsed | ETA 22.3 min
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+[calib] dropping view 0 (RMS 2.67 px)
+  [robust] LiDAR noise x=4 seed 100: OK   docked
+=== 30/462 done | 1.5 min elapsed | ETA 22.3 min
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+  [robust] encoder noise x=2 seed 100: OK   docked
+=== 31/462 done | 1.6 min elapsed | ETA 22.3 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [robust] dock shift x=2 seed 100: OK   docked
+=== 32/462 done | 1.6 min elapsed | ETA 21.9 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [robust] camera delay s (not compensated)=0.4 seed 100: OK   docked
+=== 33/462 done | 1.8 min elapsed | ETA 23.4 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [robust] camera frame drop=0.5 seed 100: OK   docked
+=== 34/462 done | 1.8 min elapsed | ETA 23.0 min
+  [robust] wheel slip x=3 seed 100: OK   docked
+=== 35/462 done | 1.8 min elapsed | ETA 22.3 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [robust] encoder noise x=4 seed 100: FAIL explore failed
+=== 36/462 done | 1.8 min elapsed | ETA 21.8 min
+[calib] dropping view 15 (RMS 3.31 px)
+  [robust] combined noise x=2 seed 100: OK   docked
+=== 37/462 done | 1.8 min elapsed | ETA 21.2 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [robust] camera delay s (compensated)=0.4 seed 100: OK   docked
+=== 38/462 done | 1.9 min elapsed | ETA 20.7 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [robust] encoder noise x=2 seed 101: OK   docked
+=== 39/462 done | 1.9 min elapsed | ETA 21.0 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [robust] wheel slip x=2 seed 100: OK   docked
+=== 40/462 done | 2.1 min elapsed | ETA 21.8 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [robust] camera frame drop=0.3 seed 101: OK   docked
+=== 41/462 done | 2.1 min elapsed | ETA 22.0 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [robust] LiDAR noise x=2 seed 101: OK   docked
+=== 42/462 done | 2.3 min elapsed | ETA 22.8 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [robust] combined noise x=3 seed 100: FAIL explore failed
+=== 43/462 done | 2.3 min elapsed | ETA 22.8 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [robust] wheel slip x=2 seed 101: OK   docked
+=== 44/462 done | 2.4 min elapsed | ETA 22.7 min
+  [robust] encoder noise x=4 seed 101: FAIL explore failed
+=== 45/462 done | 2.4 min elapsed | ETA 22.5 min
+  [robust] camera delay s (compensated)=0.4 seed 101: OK   docked
+=== 46/462 done | 2.5 min elapsed | ETA 22.2 min
+  [robust] camera delay s (not compensated)=0.4 seed 101: OK   docked
+=== 47/462 done | 2.5 min elapsed | ETA 21.7 min
+  [robust] wheel slip x=3 seed 101: OK   docked
+=== 48/462 done | 2.5 min elapsed | ETA 21.3 min
+  [robust] dock shift x=2 seed 101: OK   docked
+=== 49/462 done | 2.5 min elapsed | ETA 20.9 min
+  [robust] camera frame drop=0.5 seed 101: FAIL explore failed
+=== 50/462 done | 2.6 min elapsed | ETA 21.7 min
+  [robust] combined noise x=2 seed 101: OK   docked
+=== 51/462 done | 2.7 min elapsed | ETA 21.4 min
+  [robust] encoder noise x=2 seed 102: OK   docked
+=== 52/462 done | 2.7 min elapsed | ETA 21.3 min
+  [robust] LiDAR noise x=4 seed 101: OK   docked
+=== 53/462 done | 2.7 min elapsed | ETA 21.0 min
+  [robust] LiDAR noise x=2 seed 102: OK   docked
+=== 54/462 done | 2.8 min elapsed | ETA 20.9 min
+  [robust] LiDAR noise x=4 seed 102: OK   docked
+=== 55/462 done | 2.8 min elapsed | ETA 20.6 min
+  [robust] camera frame drop=0.5 seed 102: OK   docked
+=== 56/462 done | 2.8 min elapsed | ETA 20.5 min
+  [robust] dock shift x=2 seed 102: OK   docked
+=== 57/462 done | 3.0 min elapsed | ETA 21.6 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [robust] encoder noise x=4 seed 102: FAIL explore failed
+=== 58/462 done | 3.1 min elapsed | ETA 21.4 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [robust] combined noise x=2 seed 102: OK   docked
+=== 59/462 done | 3.1 min elapsed | ETA 21.2 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [robust] combined noise x=3 seed 101: FAIL explore failed
+=== 60/462 done | 3.2 min elapsed | ETA 21.3 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [robust] camera delay s (not compensated)=0.4 seed 102: OK   docked
+=== 61/462 done | 3.2 min elapsed | ETA 21.0 min
+  [robust] camera delay s (compensated)=0.4 seed 102: OK   docked
+=== 62/462 done | 3.2 min elapsed | ETA 20.7 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [robust] wheel slip x=2 seed 102: OK   docked
+=== 63/462 done | 3.2 min elapsed | ETA 20.5 min
+  [robust] camera frame drop=0.3 seed 102: OK   docked
+=== 64/462 done | 3.2 min elapsed | ETA 20.2 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [robust] LiDAR noise x=2 seed 103: OK   docked
+=== 65/462 done | 3.4 min elapsed | ETA 21.1 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [robust] combined noise x=3 seed 102: FAIL explore failed
+=== 66/462 done | 3.5 min elapsed | ETA 20.8 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [robust] LiDAR noise x=4 seed 103: OK   docked
+=== 67/462 done | 3.6 min elapsed | ETA 21.2 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [robust] wheel slip x=3 seed 102: FAIL timeout
+=== 68/462 done | 3.6 min elapsed | ETA 21.1 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [robust] encoder noise x=2 seed 103: OK   docked
+=== 69/462 done | 3.7 min elapsed | ETA 20.8 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [robust] wheel slip x=2 seed 103: OK   docked
+=== 70/462 done | 3.8 min elapsed | ETA 21.3 min
+  [robust] camera frame drop=0.3 seed 103: OK   docked
+=== 71/462 done | 3.8 min elapsed | ETA 21.0 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [robust] encoder noise x=4 seed 103: FAIL explore failed
+=== 72/462 done | 3.9 min elapsed | ETA 21.0 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [robust] wheel slip x=3 seed 103: OK   docked
+=== 73/462 done | 3.9 min elapsed | ETA 20.9 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [robust] dock shift x=2 seed 103: OK   docked
+=== 74/462 done | 4.0 min elapsed | ETA 20.8 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [robust] camera frame drop=0.5 seed 103: FAIL explore failed
+=== 75/462 done | 4.0 min elapsed | ETA 20.6 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [robust] camera delay s (compensated)=0.4 seed 103: FAIL explore failed
+=== 76/462 done | 4.0 min elapsed | ETA 20.4 min
+[calib] dropping view 13 (RMS 4.34 px)
+  [robust] camera delay s (not compensated)=0.4 seed 103: FAIL explore failed
+=== 77/462 done | 4.0 min elapsed | ETA 20.1 min
+[calib] dropping view 4 (RMS 3.52 px)
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [robust] encoder noise x=2 seed 104: OK   docked
+=== 78/462 done | 4.1 min elapsed | ETA 20.3 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [robust] LiDAR noise x=2 seed 104: OK   docked
+=== 79/462 done | 4.2 min elapsed | ETA 20.4 min
+[calib] dropping view 13 (RMS 4.34 px)
+  [robust] combined noise x=2 seed 103: OK   docked
+=== 80/462 done | 4.2 min elapsed | ETA 20.1 min
+[calib] dropping view 4 (RMS 3.52 px)
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [robust] LiDAR noise x=4 seed 104: OK   docked
+=== 81/462 done | 4.2 min elapsed | ETA 19.9 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [robust] camera frame drop=0.3 seed 104: OK   docked
+=== 82/462 done | 4.3 min elapsed | ETA 19.9 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [robust] camera delay s (not compensated)=0.4 seed 104: OK   docked
+=== 83/462 done | 4.3 min elapsed | ETA 19.8 min
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+  [robust] camera delay s (compensated)=0.4 seed 104: OK   docked
+=== 84/462 done | 4.4 min elapsed | ETA 19.6 min
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+  [robust] combined noise x=3 seed 103: FAIL explore failed
+=== 85/462 done | 4.4 min elapsed | ETA 19.6 min
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+  [robust] dock shift x=2 seed 104: OK   docked
+=== 86/462 done | 4.4 min elapsed | ETA 19.5 min
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+  [robust] combined noise x=2 seed 104: OK   docked
+=== 87/462 done | 4.5 min elapsed | ETA 19.6 min
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+  [robust] encoder noise x=4 seed 104: FAIL explore failed
+=== 88/462 done | 4.6 min elapsed | ETA 19.4 min
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+  [estimation] pipeline default=- seed 100: OK   docked
+=== 89/462 done | 4.6 min elapsed | ETA 19.4 min
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+  [estimation] camera + LiDAR=- seed 100: OK   docked
+=== 90/462 done | 4.7 min elapsed | ETA 19.3 min
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+  [estimation] EKF tuned R=- seed 100: OK   docked
+=== 91/462 done | 4.7 min elapsed | ETA 19.3 min
+  [robust] camera frame drop=0.5 seed 104: FAIL explore failed
+=== 92/462 done | 4.7 min elapsed | ETA 19.0 min
+[calib] dropping view 18 (RMS 5.01 px)
+  [estimation] UKF=- seed 100: OK   docked
+=== 93/462 done | 4.7 min elapsed | ETA 18.8 min
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+  [estimation] UKF tuned R=- seed 100: OK   docked
+=== 94/462 done | 4.8 min elapsed | ETA 18.9 min
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+  [estimation] sweep R x=0.01 seed 100: OK   docked
+=== 95/462 done | 4.9 min elapsed | ETA 18.7 min
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+  [estimation] sweep R x=0.03 seed 100: OK   docked
+=== 96/462 done | 4.9 min elapsed | ETA 18.8 min
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+  [estimation] sweep R x=0.1 seed 100: OK   docked
+=== 97/462 done | 5.0 min elapsed | ETA 18.7 min
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+  [robust] combined noise x=3 seed 104: FAIL explore failed
+=== 98/462 done | 5.0 min elapsed | ETA 18.6 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [estimation] sweep R x=0.25 seed 100: OK   docked
+=== 99/462 done | 5.0 min elapsed | ETA 18.4 min
+  [estimation] sweep R x=0.5 seed 100: OK   docked
+=== 100/462 done | 5.0 min elapsed | ETA 18.2 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [estimation] sweep R x=2 seed 100: OK   docked
+=== 101/462 done | 5.0 min elapsed | ETA 18.0 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [estimation] sweep R x=4 seed 100: OK   docked
+=== 102/462 done | 5.1 min elapsed | ETA 18.1 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [estimation] sweep odom cov x=0.5 seed 100: OK   docked
+=== 103/462 done | 5.1 min elapsed | ETA 17.9 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [robust] wheel slip x=2 seed 104: FAIL timeout
+=== 104/462 done | 5.2 min elapsed | ETA 17.8 min
+  [robust] wheel slip x=3 seed 104: FAIL timeout
+=== 105/462 done | 5.2 min elapsed | ETA 17.6 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [estimation] sweep odom cov x=2 seed 100: OK   docked
+=== 106/462 done | 5.2 min elapsed | ETA 17.5 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [estimation] sweep odom cov x=5 seed 100: OK   docked
+=== 107/462 done | 5.3 min elapsed | ETA 17.4 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [estimation] pipeline default=- seed 101: OK   docked
+=== 108/462 done | 5.3 min elapsed | ETA 17.3 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [estimation] UKF=- seed 101: OK   docked
+=== 109/462 done | 5.3 min elapsed | ETA 17.2 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [estimation] camera + LiDAR=- seed 101: OK   docked
+=== 110/462 done | 5.3 min elapsed | ETA 17.0 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [estimation] EKF tuned R=- seed 101: OK   docked
+=== 111/462 done | 5.4 min elapsed | ETA 17.1 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [estimation] sweep R x=0.25 seed 101: OK   docked
+=== 112/462 done | 5.5 min elapsed | ETA 17.2 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [estimation] sweep R x=0.01 seed 101: OK   docked
+=== 113/462 done | 5.5 min elapsed | ETA 17.0 min
+  [estimation] sweep R x=0.5 seed 101: OK   docked
+=== 114/462 done | 5.5 min elapsed | ETA 16.9 min
+  [estimation] sweep R x=0.1 seed 101: OK   docked
+=== 115/462 done | 5.5 min elapsed | ETA 16.7 min
+  [estimation] sweep R x=0.03 seed 101: OK   docked
+=== 116/462 done | 5.6 min elapsed | ETA 16.6 min
+  [estimation] sweep R x=2 seed 101: OK   docked
+=== 117/462 done | 5.6 min elapsed | ETA 16.4 min
+  [estimation] sweep R x=4 seed 101: OK   docked
+=== 118/462 done | 5.6 min elapsed | ETA 16.3 min
+  [estimation] sweep odom cov x=0.5 seed 101: OK   docked
+=== 119/462 done | 5.6 min elapsed | ETA 16.2 min
+  [estimation] sweep odom cov x=2 seed 101: OK   docked
+=== 120/462 done | 5.7 min elapsed | ETA 16.2 min
+  [estimation] UKF tuned R=- seed 101: OK   docked
+=== 121/462 done | 5.8 min elapsed | ETA 16.2 min
+  [estimation] camera + LiDAR=- seed 102: OK   docked
+=== 122/462 done | 5.8 min elapsed | ETA 16.1 min
+  [estimation] pipeline default=- seed 102: OK   docked
+=== 123/462 done | 5.8 min elapsed | ETA 15.9 min
+  [estimation] sweep odom cov x=5 seed 101: OK   docked
+=== 124/462 done | 5.8 min elapsed | ETA 15.8 min
+  [estimation] UKF=- seed 102: OK   docked
+=== 125/462 done | 5.8 min elapsed | ETA 15.7 min
+  [estimation] UKF tuned R=- seed 102: OK   docked
+=== 126/462 done | 5.8 min elapsed | ETA 15.6 min
+  [estimation] EKF tuned R=- seed 102: OK   docked
+=== 127/462 done | 5.9 min elapsed | ETA 15.5 min
+  [estimation] sweep R x=0.03 seed 102: OK   docked
+=== 128/462 done | 6.0 min elapsed | ETA 15.6 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [estimation] sweep R x=0.1 seed 102: OK   docked
+=== 129/462 done | 6.0 min elapsed | ETA 15.5 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [estimation] sweep R x=0.01 seed 102: OK   docked
+=== 130/462 done | 6.0 min elapsed | ETA 15.3 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [estimation] sweep R x=0.25 seed 102: OK   docked
+=== 131/462 done | 6.0 min elapsed | ETA 15.2 min
+  [estimation] sweep R x=4 seed 102: OK   docked
+=== 132/462 done | 6.0 min elapsed | ETA 15.1 min
+[calib] dropping view 7 (RMS 3.84 px)
+  [estimation] sweep R x=0.5 seed 102: OK   docked
+=== 133/462 done | 6.0 min elapsed | ETA 14.9 min
+[calib] dropping view 12 (RMS 3.66 px)
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [estimation] sweep R x=2 seed 102: OK   docked
+=== 134/462 done | 6.1 min elapsed | ETA 14.8 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [estimation] sweep odom cov x=0.5 seed 102: OK   docked
+=== 135/462 done | 6.1 min elapsed | ETA 14.8 min
+  [estimation] sweep odom cov x=2 seed 102: OK   docked
+=== 136/462 done | 6.1 min elapsed | ETA 14.6 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [estimation] sweep odom cov x=5 seed 102: OK   docked
+=== 137/462 done | 6.1 min elapsed | ETA 14.6 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [estimation] camera + LiDAR=- seed 103: OK   docked
+=== 138/462 done | 6.3 min elapsed | ETA 14.8 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [estimation] pipeline default=- seed 103: OK   docked
+=== 139/462 done | 6.5 min elapsed | ETA 15.1 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [estimation] UKF=- seed 103: OK   docked
+=== 140/462 done | 6.5 min elapsed | ETA 15.0 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [estimation] sweep R x=0.5 seed 103: OK   docked
+=== 141/462 done | 6.7 min elapsed | ETA 15.2 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [estimation] EKF tuned R=- seed 103: FAIL explore failed
+=== 142/462 done | 6.7 min elapsed | ETA 15.1 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [estimation] UKF tuned R=- seed 103: FAIL explore failed
+=== 143/462 done | 6.7 min elapsed | ETA 15.0 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [estimation] sweep R x=0.01 seed 103: FAIL explore failed
+=== 144/462 done | 6.7 min elapsed | ETA 14.9 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [estimation] sweep R x=0.03 seed 103: FAIL explore failed
+=== 145/462 done | 6.8 min elapsed | ETA 14.8 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [estimation] sweep R x=0.1 seed 103: FAIL explore failed
+=== 146/462 done | 6.8 min elapsed | ETA 14.7 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [estimation] sweep R x=0.25 seed 103: FAIL explore failed
+=== 147/462 done | 6.8 min elapsed | ETA 14.6 min
+  [estimation] sweep R x=2 seed 103: OK   docked
+=== 148/462 done | 6.8 min elapsed | ETA 14.4 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [estimation] sweep R x=4 seed 103: OK   docked
+=== 149/462 done | 7.0 min elapsed | ETA 14.7 min
+  [estimation] pipeline default=- seed 104: OK   docked
+=== 150/462 done | 7.0 min elapsed | ETA 14.6 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [estimation] camera + LiDAR=- seed 104: OK   docked
+=== 151/462 done | 7.0 min elapsed | ETA 14.5 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [estimation] sweep odom cov x=0.5 seed 103: OK   docked
+=== 152/462 done | 7.0 min elapsed | ETA 14.4 min
+  [estimation] EKF tuned R=- seed 104: OK   docked
+=== 153/462 done | 7.1 min elapsed | ETA 14.2 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [estimation] UKF=- seed 104: OK   docked
+=== 154/462 done | 7.1 min elapsed | ETA 14.2 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [estimation] UKF tuned R=- seed 104: OK   docked
+=== 155/462 done | 7.1 min elapsed | ETA 14.1 min
+  [estimation] sweep R x=0.01 seed 104: OK   docked
+=== 156/462 done | 7.1 min elapsed | ETA 13.9 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [estimation] sweep odom cov x=2 seed 103: OK   docked
+=== 157/462 done | 7.2 min elapsed | ETA 14.0 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [estimation] sweep odom cov x=5 seed 103: OK   docked
+=== 158/462 done | 7.2 min elapsed | ETA 13.9 min
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+  [estimation] sweep R x=0.1 seed 104: OK   docked
+=== 159/462 done | 7.3 min elapsed | ETA 13.9 min
+  [estimation] sweep R x=0.03 seed 104: OK   docked
+=== 160/462 done | 7.3 min elapsed | ETA 13.8 min
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+  [estimation] sweep R x=0.25 seed 104: OK   docked
+=== 161/462 done | 7.3 min elapsed | ETA 13.7 min
+  [estimation] sweep R x=0.5 seed 104: OK   docked
+=== 162/462 done | 7.3 min elapsed | ETA 13.6 min
+[calib] dropping view 18 (RMS 5.01 px)
+  [estimation] sweep R x=2 seed 104: OK   docked
+=== 163/462 done | 7.4 min elapsed | ETA 13.5 min
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 0 (RMS 2.67 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+  [estimation] sweep R x=4 seed 104: OK   docked
+=== 164/462 done | 7.4 min elapsed | ETA 13.4 min
+  [estimation] sweep odom cov x=0.5 seed 104: OK   docked
+=== 165/462 done | 7.4 min elapsed | ETA 13.3 min
+[calib] dropping view 18 (RMS 5.01 px)
+  [estimation] sweep odom cov x=2 seed 104: OK   docked
+=== 166/462 done | 7.4 min elapsed | ETA 13.2 min
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 0 (RMS 2.67 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+  [estimation] sweep odom cov x=5 seed 104: OK   docked
+=== 167/462 done | 7.5 min elapsed | ETA 13.2 min
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+  [control] LQR Q/R=0.03 seed 100: OK   docked
+=== 168/462 done | 7.5 min elapsed | ETA 13.1 min
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+  [control] LQR Q/R=0.1 seed 100: OK   docked
+=== 169/462 done | 7.6 min elapsed | ETA 13.2 min
+  [control] LQR Q/R=0.3 seed 100: OK   docked
+=== 170/462 done | 7.6 min elapsed | ETA 13.1 min
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+  [control] LQR Q/R=1.0 seed 100: OK   docked
+=== 171/462 done | 7.6 min elapsed | ETA 13.0 min
+[calib] dropping view 18 (RMS 5.01 px)
+  [control] LQR Q/R=3.0 seed 100: OK   docked
+[calib] dropping view 18 (RMS 3.24 px)
+=== 172/462 done | 7.6 min elapsed | ETA 12.9 min
+[calib] dropping view 0 (RMS 2.67 px)
+  [control] LQR Q/R=10.0 seed 100: OK   docked
+=== 173/462 done | 7.6 min elapsed | ETA 12.8 min
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+  [control] LQR Q/R=30.0 seed 100: OK   docked
+=== 174/462 done | 7.7 min elapsed | ETA 12.7 min
+  [control] Stanley=ky=1.0,kth=1.0 seed 100: OK   docked
+=== 175/462 done | 7.7 min elapsed | ETA 12.6 min
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+  [control] Stanley=ky=1.0,kth=2.0 seed 100: OK   docked
+=== 176/462 done | 7.7 min elapsed | ETA 12.5 min
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+  [control] Stanley=ky=1.0,kth=4.0 seed 100: OK   docked
+=== 177/462 done | 7.8 min elapsed | ETA 12.5 min
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+  [control] Stanley=ky=3.0,kth=1.0 seed 100: OK   docked
+=== 178/462 done | 7.8 min elapsed | ETA 12.4 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [control] Stanley=ky=3.0,kth=2.0 seed 100: OK   docked
+=== 179/462 done | 7.9 min elapsed | ETA 12.5 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [control] Stanley=ky=3.0,kth=4.0 seed 100: OK   docked
+=== 180/462 done | 7.9 min elapsed | ETA 12.4 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [control] Stanley=ky=10.0,kth=1.0 seed 100: OK   docked
+=== 181/462 done | 7.9 min elapsed | ETA 12.3 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [control] Stanley=ky=10.0,kth=2.0 seed 100: OK   docked
+=== 182/462 done | 7.9 min elapsed | ETA 12.2 min
+  [control] Stanley=ky=10.0,kth=4.0 seed 100: OK   docked
+=== 183/462 done | 7.9 min elapsed | ETA 12.1 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [control] LQR design 0.15=0.22 seed 100: OK   docked
+=== 184/462 done | 8.0 min elapsed | ETA 12.0 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [control] LQR design 0.15=0.1 seed 100: OK   docked
+=== 185/462 done | 8.0 min elapsed | ETA 11.9 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [control] LQR redesigned=0.1 seed 100: OK   docked
+=== 186/462 done | 8.0 min elapsed | ETA 11.9 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [control] LQR redesigned=0.22 seed 100: OK   docked
+=== 187/462 done | 8.1 min elapsed | ETA 11.8 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [control] LQR Q/R=0.03 seed 101: OK   docked
+=== 188/462 done | 8.1 min elapsed | ETA 11.8 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [control] LQR Q/R=0.1 seed 101: OK   docked
+=== 189/462 done | 8.2 min elapsed | ETA 11.8 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [control] LQR Q/R=0.3 seed 101: OK   docked
+=== 190/462 done | 8.2 min elapsed | ETA 11.7 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [control] LQR Q/R=1.0 seed 101: OK   docked
+=== 191/462 done | 8.2 min elapsed | ETA 11.6 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [control] LQR Q/R=10.0 seed 101: OK   docked
+=== 192/462 done | 8.2 min elapsed | ETA 11.6 min
+[calib] dropping view 15 (RMS 4.07 px)
+  [control] LQR Q/R=3.0 seed 101: OK   docked
+[calib] dropping view 15 (RMS 3.31 px)
+=== 193/462 done | 8.2 min elapsed | ETA 11.5 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [control] LQR Q/R=30.0 seed 101: OK   docked
+=== 194/462 done | 8.3 min elapsed | ETA 11.4 min
+[calib] dropping view 15 (RMS 4.07 px)
+  [control] Stanley=ky=1.0,kth=1.0 seed 101: OK   docked
+=== 195/462 done | 8.3 min elapsed | ETA 11.3 min
+[calib] dropping view 15 (RMS 3.31 px)
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [control] Stanley=ky=1.0,kth=2.0 seed 101: OK   docked
+=== 196/462 done | 8.3 min elapsed | ETA 11.2 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [control] Stanley=ky=1.0,kth=4.0 seed 101: OK   docked
+=== 197/462 done | 8.4 min elapsed | ETA 11.2 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [control] Stanley=ky=3.0,kth=1.0 seed 101: OK   docked
+=== 198/462 done | 8.4 min elapsed | ETA 11.2 min
+  [control] Stanley=ky=3.0,kth=2.0 seed 101: OK   docked
+=== 199/462 done | 8.5 min elapsed | ETA 11.2 min
+  [control] Stanley=ky=3.0,kth=4.0 seed 101: OK   docked
+=== 200/462 done | 8.5 min elapsed | ETA 11.1 min
+  [control] Stanley=ky=10.0,kth=1.0 seed 101: OK   docked
+=== 201/462 done | 8.5 min elapsed | ETA 11.0 min
+  [control] Stanley=ky=10.0,kth=2.0 seed 101: OK   docked
+=== 202/462 done | 8.5 min elapsed | ETA 11.0 min
+  [control] Stanley=ky=10.0,kth=4.0 seed 101: OK   docked
+=== 203/462 done | 8.5 min elapsed | ETA 10.9 min
+  [control] LQR design 0.15=0.22 seed 101: OK   docked
+=== 204/462 done | 8.6 min elapsed | ETA 10.8 min
+  [control] LQR design 0.15=0.1 seed 101: OK   docked
+=== 205/462 done | 8.6 min elapsed | ETA 10.7 min
+  [control] LQR redesigned=0.1 seed 101: OK   docked
+=== 206/462 done | 8.6 min elapsed | ETA 10.7 min
+  [control] LQR redesigned=0.22 seed 101: OK   docked
+=== 207/462 done | 8.6 min elapsed | ETA 10.6 min
+  [control] LQR Q/R=0.03 seed 102: OK   docked
+=== 208/462 done | 8.6 min elapsed | ETA 10.6 min
+  [control] LQR Q/R=0.1 seed 102: OK   docked
+=== 209/462 done | 8.7 min elapsed | ETA 10.6 min
+  [control] LQR Q/R=0.3 seed 102: OK   docked
+=== 210/462 done | 8.8 min elapsed | ETA 10.5 min
+  [control] LQR Q/R=1.0 seed 102: OK   docked
+=== 211/462 done | 8.8 min elapsed | ETA 10.4 min
+  [control] LQR Q/R=3.0 seed 102: OK   docked
+=== 212/462 done | 8.8 min elapsed | ETA 10.3 min
+  [control] LQR Q/R=10.0 seed 102: OK   docked
+=== 213/462 done | 8.8 min elapsed | ETA 10.3 min
+  [control] LQR Q/R=30.0 seed 102: OK   docked
+=== 214/462 done | 8.8 min elapsed | ETA 10.2 min
+  [control] Stanley=ky=1.0,kth=1.0 seed 102: OK   docked
+=== 215/462 done | 8.9 min elapsed | ETA 10.2 min
+  [control] Stanley=ky=1.0,kth=2.0 seed 102: OK   docked
+=== 216/462 done | 8.9 min elapsed | ETA 10.1 min
+  [control] Stanley=ky=1.0,kth=4.0 seed 102: OK   docked
+=== 217/462 done | 8.9 min elapsed | ETA 10.1 min
+  [control] Stanley=ky=3.0,kth=1.0 seed 102: OK   docked
+=== 218/462 done | 8.9 min elapsed | ETA 10.0 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [control] Stanley=ky=3.0,kth=2.0 seed 102: OK   docked
+=== 219/462 done | 9.0 min elapsed | ETA 10.0 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [control] Stanley=ky=3.0,kth=4.0 seed 102: OK   docked
+=== 220/462 done | 9.0 min elapsed | ETA 9.9 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [control] Stanley=ky=10.0,kth=1.0 seed 102: OK   docked
+=== 221/462 done | 9.1 min elapsed | ETA 9.9 min
+  [control] Stanley=ky=10.0,kth=2.0 seed 102: OK   docked
+=== 222/462 done | 9.1 min elapsed | ETA 9.8 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [control] Stanley=ky=10.0,kth=4.0 seed 102: OK   docked
+=== 223/462 done | 9.1 min elapsed | ETA 9.7 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [control] LQR design 0.15=0.1 seed 102: OK   docked
+=== 224/462 done | 9.1 min elapsed | ETA 9.6 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [control] LQR design 0.15=0.22 seed 102: OK   docked
+=== 225/462 done | 9.1 min elapsed | ETA 9.6 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [control] LQR redesigned=0.22 seed 102: OK   docked
+=== 226/462 done | 9.2 min elapsed | ETA 9.6 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [control] LQR redesigned=0.1 seed 102: OK   docked
+=== 227/462 done | 9.2 min elapsed | ETA 9.5 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [control] LQR Q/R=0.1 seed 103: OK   docked
+=== 228/462 done | 9.4 min elapsed | ETA 9.7 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [control] LQR Q/R=0.03 seed 103: OK   docked
+=== 229/462 done | 9.5 min elapsed | ETA 9.7 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [control] LQR Q/R=0.3 seed 103: OK   docked
+=== 230/462 done | 9.5 min elapsed | ETA 9.6 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [control] LQR Q/R=30.0 seed 103: OK   docked
+=== 231/462 done | 9.5 min elapsed | ETA 9.5 min
+  [control] LQR Q/R=10.0 seed 103: OK   docked
+=== 232/462 done | 9.5 min elapsed | ETA 9.5 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [control] LQR Q/R=1.0 seed 103: OK   docked
+=== 233/462 done | 9.6 min elapsed | ETA 9.4 min
+  [control] Stanley=ky=1.0,kth=1.0 seed 103: OK   docked
+=== 234/462 done | 9.6 min elapsed | ETA 9.3 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [control] LQR Q/R=3.0 seed 103: OK   docked
+=== 235/462 done | 9.6 min elapsed | ETA 9.3 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [control] Stanley=ky=1.0,kth=2.0 seed 103: OK   docked
+=== 236/462 done | 9.7 min elapsed | ETA 9.3 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [control] Stanley=ky=1.0,kth=4.0 seed 103: OK   docked
+=== 237/462 done | 9.7 min elapsed | ETA 9.2 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [control] Stanley=ky=3.0,kth=1.0 seed 103: OK   docked
+=== 238/462 done | 9.9 min elapsed | ETA 9.3 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [control] Stanley=ky=3.0,kth=2.0 seed 103: OK   docked
+=== 239/462 done | 10.0 min elapsed | ETA 9.3 min
+  [control] Stanley=ky=10.0,kth=2.0 seed 103: OK   docked
+=== 240/462 done | 10.0 min elapsed | ETA 9.2 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [control] Stanley=ky=3.0,kth=4.0 seed 103: OK   docked
+=== 241/462 done | 10.0 min elapsed | ETA 9.2 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [control] Stanley=ky=10.0,kth=1.0 seed 103: OK   docked
+=== 242/462 done | 10.1 min elapsed | ETA 9.1 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [control] Stanley=ky=10.0,kth=4.0 seed 103: OK   docked
+=== 243/462 done | 10.1 min elapsed | ETA 9.1 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [control] LQR design 0.15=0.1 seed 103: OK   docked
+=== 244/462 done | 10.1 min elapsed | ETA 9.1 min
+  [control] LQR design 0.15=0.22 seed 103: OK   docked
+=== 245/462 done | 10.1 min elapsed | ETA 9.0 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [control] LQR redesigned=0.1 seed 103: OK   docked
+=== 246/462 done | 10.2 min elapsed | ETA 8.9 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [control] LQR redesigned=0.22 seed 103: OK   docked
+=== 247/462 done | 10.2 min elapsed | ETA 8.9 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [control] LQR Q/R=0.03 seed 104: OK   docked
+=== 248/462 done | 10.2 min elapsed | ETA 8.8 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [control] LQR Q/R=0.1 seed 104: OK   docked
+=== 249/462 done | 10.3 min elapsed | ETA 8.8 min
+  [control] LQR Q/R=0.3 seed 104: OK   docked
+=== 250/462 done | 10.3 min elapsed | ETA 8.7 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [control] LQR Q/R=1.0 seed 104: OK   docked
+=== 251/462 done | 10.3 min elapsed | ETA 8.7 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [control] LQR Q/R=3.0 seed 104: OK   docked
+=== 252/462 done | 10.3 min elapsed | ETA 8.6 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [control] LQR Q/R=10.0 seed 104: OK   docked
+=== 253/462 done | 10.4 min elapsed | ETA 8.6 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [control] LQR Q/R=30.0 seed 104: OK   docked
+=== 254/462 done | 10.4 min elapsed | ETA 8.5 min
+  [control] Stanley=ky=1.0,kth=1.0 seed 104: OK   docked
+=== 255/462 done | 10.4 min elapsed | ETA 8.5 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [control] Stanley=ky=1.0,kth=2.0 seed 104: OK   docked
+=== 256/462 done | 10.5 min elapsed | ETA 8.4 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [control] Stanley=ky=1.0,kth=4.0 seed 104: OK   docked
+=== 257/462 done | 10.5 min elapsed | ETA 8.4 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [control] Stanley=ky=3.0,kth=1.0 seed 104: OK   docked
+=== 258/462 done | 10.5 min elapsed | ETA 8.3 min
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+  [control] Stanley=ky=3.0,kth=2.0 seed 104: OK   docked
+=== 259/462 done | 10.5 min elapsed | ETA 8.3 min
+  [control] Stanley=ky=3.0,kth=4.0 seed 104: OK   docked
+=== 260/462 done | 10.6 min elapsed | ETA 8.2 min
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+  [control] Stanley=ky=10.0,kth=1.0 seed 104: OK   docked
+=== 261/462 done | 10.6 min elapsed | ETA 8.2 min
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+  [control] Stanley=ky=10.0,kth=2.0 seed 104: OK   docked
+=== 262/462 done | 10.6 min elapsed | ETA 8.1 min
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+  [control] Stanley=ky=10.0,kth=4.0 seed 104: OK   docked
+=== 263/462 done | 10.7 min elapsed | ETA 8.1 min
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+  [control] LQR design 0.15=0.1 seed 104: OK   docked
+=== 264/462 done | 10.7 min elapsed | ETA 8.1 min
+  [control] LQR redesigned=0.1 seed 104: OK   docked
+=== 265/462 done | 10.7 min elapsed | ETA 8.0 min
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+[calib] dropping view 0 (RMS 2.67 px)
+  [control] LQR redesigned=0.22 seed 104: OK   docked
+=== 266/462 done | 10.8 min elapsed | ETA 7.9 min
+  [control] LQR design 0.15=0.22 seed 104: OK   docked
+=== 267/462 done | 10.8 min elapsed | ETA 7.9 min
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+[calib] dropping view 0 (RMS 2.67 px)
+  [robust] encoder noise x=0.5 seed 100: OK   docked
+=== 268/462 done | 10.8 min elapsed | ETA 7.8 min
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+  [robust] encoder noise x=1 seed 100: OK   docked
+=== 269/462 done | 10.8 min elapsed | ETA 7.8 min
+  [robust] LiDAR noise x=0.5 seed 100: OK   docked
+=== 270/462 done | 10.8 min elapsed | ETA 7.7 min
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+  [robust] LiDAR noise x=1 seed 100: OK   docked
+=== 271/462 done | 10.9 min elapsed | ETA 7.7 min
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+  [robust] LiDAR dropout=0.0 seed 100: OK   docked
+=== 272/462 done | 10.9 min elapsed | ETA 7.6 min
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+  [robust] LiDAR dropout=0.05 seed 100: OK   docked
+=== 273/462 done | 11.0 min elapsed | ETA 7.6 min
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+  [robust] LiDAR dropout=0.15 seed 100: OK   docked
+=== 274/462 done | 11.0 min elapsed | ETA 7.6 min
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+  [robust] LiDAR dropout=0.3 seed 100: OK   docked
+=== 275/462 done | 11.0 min elapsed | ETA 7.5 min
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+  [robust] camera frame drop=0.0 seed 100: OK   docked
+=== 276/462 done | 11.0 min elapsed | ETA 7.4 min
+  [robust] camera frame drop=0.1 seed 100: OK   docked
+=== 277/462 done | 11.0 min elapsed | ETA 7.4 min
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+  [robust] camera delay s (not compensated)=0.0 seed 100: OK   docked
+=== 278/462 done | 11.1 min elapsed | ETA 7.3 min
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+  [robust] camera delay s (not compensated)=0.1 seed 100: OK   docked
+=== 279/462 done | 11.1 min elapsed | ETA 7.3 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [robust] camera delay s (not compensated)=0.2 seed 100: OK   docked
+=== 280/462 done | 11.1 min elapsed | ETA 7.2 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [robust] camera delay s (compensated)=0.0 seed 100: OK   docked
+=== 281/462 done | 11.2 min elapsed | ETA 7.2 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [robust] camera delay s (compensated)=0.1 seed 100: OK   docked
+=== 282/462 done | 11.2 min elapsed | ETA 7.2 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [robust] camera delay s (compensated)=0.2 seed 100: OK   docked
+=== 283/462 done | 11.3 min elapsed | ETA 7.1 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [robust] dock shift x=1 seed 100: OK   docked
+=== 284/462 done | 11.3 min elapsed | ETA 7.1 min
+  [robust] dock shift x=0.0 seed 100: OK   docked
+=== 285/462 done | 11.3 min elapsed | ETA 7.0 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [robust] wheel slip x=0.0 seed 100: OK   docked
+=== 286/462 done | 11.3 min elapsed | ETA 7.0 min
+  [robust] wheel slip x=1 seed 100: OK   docked
+=== 287/462 done | 11.3 min elapsed | ETA 6.9 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [robust] combined noise x=1 seed 100: OK   docked
+=== 288/462 done | 11.3 min elapsed | ETA 6.8 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [robust] encoder noise x=1 seed 101: OK   docked
+=== 289/462 done | 11.4 min elapsed | ETA 6.8 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [robust] LiDAR noise x=0.5 seed 101: OK   docked
+=== 290/462 done | 11.5 min elapsed | ETA 6.8 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [robust] LiDAR noise x=1 seed 101: OK   docked
+=== 291/462 done | 11.5 min elapsed | ETA 6.8 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [robust] LiDAR dropout=0.0 seed 101: OK   docked
+=== 292/462 done | 11.6 min elapsed | ETA 6.7 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [robust] LiDAR dropout=0.15 seed 101: OK   docked
+=== 293/462 done | 11.6 min elapsed | ETA 6.7 min
+  [robust] LiDAR dropout=0.05 seed 101: OK   docked
+=== 294/462 done | 11.6 min elapsed | ETA 6.6 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [robust] LiDAR dropout=0.3 seed 101: OK   docked
+=== 295/462 done | 11.6 min elapsed | ETA 6.6 min
+[calib] dropping view 15 (RMS 4.07 px)
+  [robust] camera frame drop=0.0 seed 101: OK   docked
+=== 296/462 done | 11.6 min elapsed | ETA 6.5 min
+[calib] dropping view 15 (RMS 3.31 px)
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [robust] camera frame drop=0.1 seed 101: OK   docked
+=== 297/462 done | 11.6 min elapsed | ETA 6.5 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [robust] encoder noise x=0.5 seed 101: OK   docked
+=== 298/462 done | 11.7 min elapsed | ETA 6.4 min
+  [robust] camera delay s (not compensated)=0.0 seed 101: OK   docked
+=== 299/462 done | 11.7 min elapsed | ETA 6.4 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [robust] camera delay s (not compensated)=0.1 seed 101: OK   docked
+=== 300/462 done | 11.8 min elapsed | ETA 6.4 min
+  [robust] camera delay s (not compensated)=0.2 seed 101: OK   docked
+=== 301/462 done | 11.8 min elapsed | ETA 6.3 min
+  [robust] camera delay s (compensated)=0.0 seed 101: OK   docked
+=== 302/462 done | 11.8 min elapsed | ETA 6.3 min
+  [robust] camera delay s (compensated)=0.2 seed 101: OK   docked
+=== 303/462 done | 11.9 min elapsed | ETA 6.2 min
+  [robust] camera delay s (compensated)=0.1 seed 101: OK   docked
+=== 304/462 done | 11.9 min elapsed | ETA 6.2 min
+  [robust] dock shift x=1 seed 101: OK   docked
+=== 305/462 done | 11.9 min elapsed | ETA 6.1 min
+  [robust] wheel slip x=1 seed 101: OK   docked
+=== 306/462 done | 12.0 min elapsed | ETA 6.1 min
+  [robust] combined noise x=1 seed 101: OK   docked
+=== 307/462 done | 12.0 min elapsed | ETA 6.0 min
+  [robust] encoder noise x=1 seed 102: OK   docked
+=== 308/462 done | 12.0 min elapsed | ETA 6.0 min
+  [robust] LiDAR noise x=0.5 seed 102: OK   docked
+=== 309/462 done | 12.1 min elapsed | ETA 6.0 min
+  [robust] dock shift x=0.0 seed 101: OK   docked
+=== 310/462 done | 12.1 min elapsed | ETA 5.9 min
+  [robust] LiDAR noise x=1 seed 102: OK   docked
+=== 311/462 done | 12.1 min elapsed | ETA 5.9 min
+  [robust] LiDAR dropout=0.0 seed 102: OK   docked
+=== 312/462 done | 12.1 min elapsed | ETA 5.8 min
+  [robust] wheel slip x=0.0 seed 101: OK   docked
+=== 313/462 done | 12.1 min elapsed | ETA 5.8 min
+  [robust] LiDAR dropout=0.05 seed 102: OK   docked
+=== 314/462 done | 12.2 min elapsed | ETA 5.7 min
+  [robust] LiDAR dropout=0.3 seed 102: OK   docked
+=== 315/462 done | 12.2 min elapsed | ETA 5.7 min
+  [robust] LiDAR dropout=0.15 seed 102: OK   docked
+=== 316/462 done | 12.2 min elapsed | ETA 5.7 min
+  [robust] encoder noise x=0.5 seed 102: OK   docked
+=== 317/462 done | 12.3 min elapsed | ETA 5.6 min
+  [robust] camera frame drop=0.0 seed 102: OK   docked
+=== 318/462 done | 12.3 min elapsed | ETA 5.6 min
+  [robust] camera delay s (not compensated)=0.0 seed 102: OK   docked
+=== 319/462 done | 12.4 min elapsed | ETA 5.5 min
+  [robust] camera delay s (compensated)=0.1 seed 102: OK   docked
+=== 320/462 done | 12.4 min elapsed | ETA 5.5 min
+  [robust] camera delay s (not compensated)=0.1 seed 102: OK   docked
+=== 321/462 done | 12.4 min elapsed | ETA 5.4 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [robust] camera delay s (compensated)=0.0 seed 102: OK   docked
+=== 322/462 done | 12.4 min elapsed | ETA 5.4 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [robust] camera delay s (not compensated)=0.2 seed 102: OK   docked
+=== 323/462 done | 12.4 min elapsed | ETA 5.3 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [robust] camera delay s (compensated)=0.2 seed 102: OK   docked
+=== 324/462 done | 12.5 min elapsed | ETA 5.3 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [robust] camera frame drop=0.1 seed 102: OK   docked
+=== 325/462 done | 12.5 min elapsed | ETA 5.3 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [robust] dock shift x=1 seed 102: OK   docked
+=== 326/462 done | 12.6 min elapsed | ETA 5.2 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [robust] wheel slip x=1 seed 102: OK   docked
+=== 327/462 done | 12.6 min elapsed | ETA 5.2 min
+  [robust] dock shift x=0.0 seed 102: OK   docked
+=== 328/462 done | 12.6 min elapsed | ETA 5.2 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [robust] combined noise x=1 seed 102: OK   docked
+=== 329/462 done | 12.7 min elapsed | ETA 5.1 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [robust] LiDAR noise x=0.5 seed 103: OK   docked
+=== 330/462 done | 12.7 min elapsed | ETA 5.1 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [robust] wheel slip x=0.0 seed 102: OK   docked
+=== 331/462 done | 12.8 min elapsed | ETA 5.1 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [robust] encoder noise x=1 seed 103: OK   docked
+=== 332/462 done | 12.9 min elapsed | ETA 5.1 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [robust] camera frame drop=0.0 seed 103: OK   docked
+=== 333/462 done | 12.9 min elapsed | ETA 5.0 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [robust] LiDAR noise x=1 seed 103: OK   docked
+=== 334/462 done | 13.0 min elapsed | ETA 5.0 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [robust] encoder noise x=0.5 seed 103: OK   docked
+=== 335/462 done | 13.0 min elapsed | ETA 4.9 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [robust] LiDAR dropout=0.0 seed 103: OK   docked
+=== 336/462 done | 13.1 min elapsed | ETA 4.9 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [robust] LiDAR dropout=0.05 seed 103: OK   docked
+=== 337/462 done | 13.1 min elapsed | ETA 4.9 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [robust] camera delay s (not compensated)=0.0 seed 103: OK   docked
+=== 338/462 done | 13.1 min elapsed | ETA 4.8 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [robust] LiDAR dropout=0.3 seed 103: OK   docked
+=== 339/462 done | 13.1 min elapsed | ETA 4.8 min
+  [robust] LiDAR dropout=0.15 seed 103: OK   docked
+=== 340/462 done | 13.1 min elapsed | ETA 4.7 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [robust] camera frame drop=0.1 seed 103: OK   docked
+=== 341/462 done | 13.2 min elapsed | ETA 4.7 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [robust] camera delay s (not compensated)=0.1 seed 103: OK   docked
+=== 342/462 done | 13.3 min elapsed | ETA 4.7 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [robust] camera delay s (compensated)=0.0 seed 103: OK   docked
+=== 343/462 done | 13.3 min elapsed | ETA 4.6 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [robust] camera delay s (compensated)=0.1 seed 103: OK   docked
+=== 344/462 done | 13.3 min elapsed | ETA 4.6 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [robust] dock shift x=0.0 seed 103: OK   docked
+=== 345/462 done | 13.4 min elapsed | ETA 4.5 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [robust] wheel slip x=0.0 seed 103: OK   docked
+=== 346/462 done | 13.4 min elapsed | ETA 4.5 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [robust] camera delay s (not compensated)=0.2 seed 103: OK   docked
+=== 347/462 done | 13.5 min elapsed | ETA 4.5 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [robust] encoder noise x=1 seed 104: OK   docked
+=== 348/462 done | 13.6 min elapsed | ETA 4.4 min
+  [robust] camera delay s (compensated)=0.2 seed 103: OK   docked
+=== 349/462 done | 13.6 min elapsed | ETA 4.4 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [robust] dock shift x=1 seed 103: OK   docked
+=== 350/462 done | 13.6 min elapsed | ETA 4.4 min
+  [robust] LiDAR noise x=0.5 seed 104: OK   docked
+=== 351/462 done | 13.6 min elapsed | ETA 4.3 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [robust] wheel slip x=1 seed 103: OK   docked
+=== 352/462 done | 13.6 min elapsed | ETA 4.3 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [robust] LiDAR noise x=1 seed 104: OK   docked
+=== 353/462 done | 13.7 min elapsed | ETA 4.2 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [robust] encoder noise x=0.5 seed 104: OK   docked
+=== 354/462 done | 13.7 min elapsed | ETA 4.2 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [robust] LiDAR dropout=0.0 seed 104: OK   docked
+=== 355/462 done | 13.7 min elapsed | ETA 4.1 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [robust] combined noise x=1 seed 103: OK   docked
+=== 356/462 done | 13.7 min elapsed | ETA 4.1 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [robust] LiDAR dropout=0.05 seed 104: OK   docked
+=== 357/462 done | 13.7 min elapsed | ETA 4.0 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [robust] LiDAR dropout=0.15 seed 104: OK   docked
+=== 358/462 done | 13.9 min elapsed | ETA 4.0 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [robust] LiDAR dropout=0.3 seed 104: OK   docked
+=== 359/462 done | 13.9 min elapsed | ETA 4.0 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [robust] camera frame drop=0.0 seed 104: OK   docked
+=== 360/462 done | 13.9 min elapsed | ETA 3.9 min
+  [robust] camera frame drop=0.1 seed 104: OK   docked
+=== 361/462 done | 13.9 min elapsed | ETA 3.9 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [robust] camera delay s (not compensated)=0.0 seed 104: OK   docked
+=== 362/462 done | 13.9 min elapsed | ETA 3.8 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [robust] camera delay s (not compensated)=0.1 seed 104: OK   docked
+=== 363/462 done | 14.0 min elapsed | ETA 3.8 min
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+  [robust] camera delay s (not compensated)=0.2 seed 104: OK   docked
+=== 364/462 done | 14.0 min elapsed | ETA 3.8 min
+[calib] dropping view 0 (RMS 2.67 px)
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+  [robust] camera delay s (compensated)=0.0 seed 104: OK   docked
+=== 365/462 done | 14.0 min elapsed | ETA 3.7 min
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+  [robust] camera delay s (compensated)=0.1 seed 104: OK   docked
+=== 366/462 done | 14.0 min elapsed | ETA 3.7 min
+  [robust] camera delay s (compensated)=0.2 seed 104: OK   docked
+=== 367/462 done | 14.0 min elapsed | ETA 3.6 min
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+  [robust] dock shift x=0.0 seed 104: OK   docked
+=== 368/462 done | 14.2 min elapsed | ETA 3.6 min
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+  [robust] dock shift x=1 seed 104: OK   docked
+=== 369/462 done | 14.2 min elapsed | ETA 3.6 min
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+  [robust] wheel slip x=0.0 seed 104: OK   docked
+=== 370/462 done | 14.2 min elapsed | ETA 3.5 min
+  [robust] wheel slip x=1 seed 104: OK   docked
+=== 371/462 done | 14.2 min elapsed | ETA 3.5 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [ablation] no camera calibration=- seed 100: OK   docked
+=== 372/462 done | 14.2 min elapsed | ETA 3.4 min
+  [robust] combined noise x=1 seed 104: OK   docked
+=== 373/462 done | 14.2 min elapsed | ETA 3.4 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [ablation] full system=- seed 100: OK   docked
+=== 374/462 done | 14.3 min elapsed | ETA 3.4 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [ablation] no recovery=- seed 100: OK   docked
+=== 375/462 done | 14.3 min elapsed | ETA 3.3 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [ablation] no odometry calibration=- seed 100: OK   docked
+=== 376/462 done | 14.3 min elapsed | ETA 3.3 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [ablation] no extrinsics calibration=- seed 100: OK   docked
+=== 377/462 done | 14.3 min elapsed | ETA 3.2 min
+  [ablation] no camera calibration=- seed 101: OK   docked
+=== 378/462 done | 14.4 min elapsed | ETA 3.2 min
+  [ablation] no delay compensation=- seed 100: OK   docked
+=== 379/462 done | 14.5 min elapsed | ETA 3.2 min
+  [ablation] full system=- seed 101: OK   docked
+=== 380/462 done | 14.5 min elapsed | ETA 3.1 min
+  [ablation] LiDAR map update on=- seed 100: OK   docked
+=== 381/462 done | 14.5 min elapsed | ETA 3.1 min
+  [ablation] no recovery=- seed 101: OK   docked
+=== 382/462 done | 14.5 min elapsed | ETA 3.0 min
+  [ablation] no extrinsics calibration=- seed 101: OK   docked
+=== 383/462 done | 14.5 min elapsed | ETA 3.0 min
+  [ablation] no delay compensation=- seed 101: OK   docked
+=== 384/462 done | 14.6 min elapsed | ETA 3.0 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [ablation] full system=- seed 102: OK   docked
+=== 385/462 done | 14.6 min elapsed | ETA 2.9 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [ablation] no recovery=- seed 102: OK   docked
+=== 386/462 done | 14.7 min elapsed | ETA 2.9 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [ablation] no camera calibration=- seed 102: OK   docked
+=== 387/462 done | 14.7 min elapsed | ETA 2.9 min
+  [ablation] no extrinsics calibration=- seed 102: OK   docked
+=== 388/462 done | 14.7 min elapsed | ETA 2.8 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [ablation] no delay compensation=- seed 102: OK   docked
+=== 389/462 done | 14.8 min elapsed | ETA 2.8 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [ablation] no odometry calibration=- seed 101: OK   docked
+=== 390/462 done | 14.8 min elapsed | ETA 2.7 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [ablation] LiDAR map update on=- seed 102: OK   docked
+=== 391/462 done | 14.8 min elapsed | ETA 2.7 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [ablation] no odometry calibration=- seed 102: OK   docked
+=== 392/462 done | 14.8 min elapsed | ETA 2.7 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [ablation] LiDAR map update on=- seed 101: OK   docked
+=== 393/462 done | 14.9 min elapsed | ETA 2.6 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [ablation] no odometry calibration=- seed 103: OK   docked
+=== 394/462 done | 15.0 min elapsed | ETA 2.6 min
+  [ablation] full system=- seed 103: OK   docked
+=== 395/462 done | 15.1 min elapsed | ETA 2.6 min
+  [ablation] no camera calibration=- seed 103: OK   docked
+=== 396/462 done | 15.1 min elapsed | ETA 2.5 min
+[calib] dropping view 13 (RMS 4.34 px)
+  [ablation] LiDAR map update on=- seed 103: OK   docked
+=== 397/462 done | 15.1 min elapsed | ETA 2.5 min
+[calib] dropping view 4 (RMS 3.52 px)
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [ablation] full system=- seed 104: OK   docked
+=== 398/462 done | 15.1 min elapsed | ETA 2.4 min
+  [ablation] no recovery=- seed 103: OK   docked
+=== 399/462 done | 15.1 min elapsed | ETA 2.4 min
+  [ablation] no recovery=- seed 104: OK   docked
+=== 400/462 done | 15.1 min elapsed | ETA 2.3 min
+  [ablation] no odometry calibration=- seed 104: OK   docked
+=== 401/462 done | 15.1 min elapsed | ETA 2.3 min
+  [ablation] no camera calibration=- seed 104: OK   docked
+=== 402/462 done | 15.2 min elapsed | ETA 2.3 min
+  [ablation] no extrinsics calibration=- seed 103: OK   docked
+=== 403/462 done | 15.3 min elapsed | ETA 2.2 min
+  [ablation] no delay compensation=- seed 103: OK   docked
+=== 404/462 done | 15.3 min elapsed | ETA 2.2 min
+  [ablation] no camera calibration=- seed 105: OK   docked
+=== 405/462 done | 15.3 min elapsed | ETA 2.2 min
+  [ablation] no extrinsics calibration=- seed 104: OK   docked
+=== 406/462 done | 15.4 min elapsed | ETA 2.1 min
+  [ablation] no delay compensation=- seed 104: OK   docked
+=== 407/462 done | 15.4 min elapsed | ETA 2.1 min
+  [ablation] LiDAR map update on=- seed 104: OK   docked
+=== 408/462 done | 15.4 min elapsed | ETA 2.0 min
+  [ablation] full system=- seed 105: OK   docked
+=== 409/462 done | 15.4 min elapsed | ETA 2.0 min
+  [ablation] no recovery=- seed 105: OK   docked
+=== 410/462 done | 15.4 min elapsed | ETA 2.0 min
+  [ablation] no extrinsics calibration=- seed 105: OK   docked
+=== 411/462 done | 15.5 min elapsed | ETA 1.9 min
+  [ablation] no delay compensation=- seed 105: OK   docked
+=== 412/462 done | 15.6 min elapsed | ETA 1.9 min
+[calib] dropping view 1 (RMS 5.86 px)
+  [ablation] no camera calibration=- seed 106: OK   docked
+=== 413/462 done | 15.6 min elapsed | ETA 1.9 min
+[calib] dropping view 1 (RMS 5.86 px)
+  [ablation] no odometry calibration=- seed 105: OK   docked
+=== 414/462 done | 15.6 min elapsed | ETA 1.8 min
+[calib] dropping view 1 (RMS 5.86 px)
+  [ablation] full system=- seed 106: OK   docked
+=== 415/462 done | 15.6 min elapsed | ETA 1.8 min
+  [ablation] no recovery=- seed 106: OK   docked
+=== 416/462 done | 15.6 min elapsed | ETA 1.7 min
+[calib] dropping view 1 (RMS 5.86 px)
+  [ablation] no extrinsics calibration=- seed 106: OK   docked
+=== 417/462 done | 15.7 min elapsed | ETA 1.7 min
+[calib] dropping view 1 (RMS 5.86 px)
+  [ablation] no delay compensation=- seed 106: OK   docked
+=== 418/462 done | 15.7 min elapsed | ETA 1.7 min
+[calib] dropping view 1 (RMS 5.86 px)
+  [ablation] LiDAR map update on=- seed 106: OK   docked
+=== 419/462 done | 15.8 min elapsed | ETA 1.6 min
+  [ablation] no odometry calibration=- seed 106: OK   docked
+=== 420/462 done | 15.9 min elapsed | ETA 1.6 min
+  [ablation] LiDAR map update on=- seed 105: OK   docked
+=== 421/462 done | 15.9 min elapsed | ETA 1.6 min
+  [ablation] no camera calibration=- seed 107: OK   docked
+=== 422/462 done | 15.9 min elapsed | ETA 1.5 min
+  [ablation] full system=- seed 107: OK   docked
+=== 423/462 done | 16.0 min elapsed | ETA 1.5 min
+  [ablation] no recovery=- seed 107: OK   docked
+=== 424/462 done | 16.0 min elapsed | ETA 1.4 min
+  [ablation] no odometry calibration=- seed 107: OK   docked
+=== 425/462 done | 16.0 min elapsed | ETA 1.4 min
+  [ablation] full system=- seed 108: OK   docked
+=== 426/462 done | 16.1 min elapsed | ETA 1.4 min
+[calib] dropping view 5 (RMS 3.67 px)
+[calib] dropping view 1 (RMS 3.27 px)
+  [ablation] no extrinsics calibration=- seed 107: OK   docked
+=== 427/462 done | 16.1 min elapsed | ETA 1.3 min
+[calib] dropping view 5 (RMS 3.67 px)
+[calib] dropping view 1 (RMS 3.27 px)
+  [ablation] no delay compensation=- seed 107: OK   docked
+=== 428/462 done | 16.1 min elapsed | ETA 1.3 min
+[calib] dropping view 5 (RMS 3.67 px)
+[calib] dropping view 1 (RMS 3.27 px)
+  [ablation] no camera calibration=- seed 108: OK   docked
+=== 429/462 done | 16.2 min elapsed | ETA 1.2 min
+  [ablation] no recovery=- seed 108: OK   docked
+=== 430/462 done | 16.2 min elapsed | ETA 1.2 min
+[calib] dropping view 5 (RMS 3.67 px)
+[calib] dropping view 1 (RMS 3.27 px)
+  [ablation] LiDAR map update on=- seed 107: OK   docked
+=== 431/462 done | 16.2 min elapsed | ETA 1.2 min
+[calib] dropping view 5 (RMS 3.67 px)
+[calib] dropping view 1 (RMS 3.27 px)
+  [ablation] no odometry calibration=- seed 108: OK   docked
+=== 432/462 done | 16.2 min elapsed | ETA 1.1 min
+[calib] dropping view 5 (RMS 3.67 px)
+[calib] dropping view 1 (RMS 3.27 px)
+  [ablation] no extrinsics calibration=- seed 108: OK   docked
+=== 433/462 done | 16.3 min elapsed | ETA 1.1 min
+[calib] dropping view 18 (RMS 5.01 px)
+[calib] dropping view 18 (RMS 3.24 px)
+[calib] dropping view 0 (RMS 2.67 px)
+  [ablation] no delay compensation=- seed 108: OK   docked
+=== 434/462 done | 16.3 min elapsed | ETA 1.1 min
+[calib] dropping view 15 (RMS 4.07 px)
+[calib] dropping view 15 (RMS 3.31 px)
+  [ablation] full system=- seed 109: OK   docked
+=== 435/462 done | 16.4 min elapsed | ETA 1.0 min
+  [ablation] no camera calibration=- seed 109: OK   docked
+=== 436/462 done | 16.4 min elapsed | ETA 1.0 min
+[calib] dropping view 7 (RMS 3.84 px)
+[calib] dropping view 12 (RMS 3.66 px)
+  [ablation] no recovery=- seed 109: OK   docked
+=== 437/462 done | 16.4 min elapsed | ETA 0.9 min
+[calib] dropping view 13 (RMS 4.34 px)
+[calib] dropping view 4 (RMS 3.52 px)
+  [ablation] no extrinsics calibration=- seed 109: OK   docked
+=== 438/462 done | 16.4 min elapsed | ETA 0.9 min
+  [layouts] random layout + start heading=- seed 100: OK   docked
+=== 439/462 done | 16.5 min elapsed | ETA 0.9 min
+  [layouts] random layout + start heading=- seed 103: OK   docked
+=== 440/462 done | 16.5 min elapsed | ETA 0.8 min
+[calib] dropping view 1 (RMS 5.86 px)
+  [ablation] no delay compensation=- seed 109: OK   docked
+=== 441/462 done | 16.5 min elapsed | ETA 0.8 min
+  [ablation] LiDAR map update on=- seed 109: OK   docked
+=== 442/462 done | 16.5 min elapsed | ETA 0.7 min
+[calib] dropping view 5 (RMS 3.67 px)
+[calib] dropping view 1 (RMS 3.27 px)
+  [layouts] random layout + start heading=- seed 102: OK   docked
+=== 443/462 done | 16.6 min elapsed | ETA 0.7 min
+[calib] dropping view 5 (RMS 4.12 px)
+[calib] dropping view 9 (RMS 3.58 px)
+  [layouts] random layout + start heading=- seed 105: OK   docked
+=== 444/462 done | 16.6 min elapsed | ETA 0.7 min
+  [ablation] no odometry calibration=- seed 109: OK   docked
+=== 445/462 done | 16.6 min elapsed | ETA 0.6 min
+[calib] dropping view 7 (RMS 4.79 px)
+[calib] dropping view 2 (RMS 4.51 px)
+[calib] dropping view 6 (RMS 3.67 px)
+[calib] dropping view 2 (RMS 3.45 px)
+  [layouts] random layout + start heading=- seed 101: OK   docked
+=== 446/462 done | 16.6 min elapsed | ETA 0.6 min
+[calib] dropping view 3 (RMS 3.69 px)
+  [layouts] random layout + start heading=- seed 104: OK   docked
+=== 447/462 done | 16.7 min elapsed | ETA 0.6 min
+  [layouts] random layout + start heading=- seed 106: OK   docked
+=== 448/462 done | 16.7 min elapsed | ETA 0.5 min
+[calib] dropping view 15 (RMS 4.23 px)
+[calib] dropping view 4 (RMS 4.02 px)
+[calib] dropping view 10 (RMS 3.48 px)
+  [layouts] random layout + start heading=- seed 111: OK   docked
+=== 449/462 done | 16.7 min elapsed | ETA 0.5 min
+[calib] dropping view 17 (RMS 4.79 px)
+[calib] dropping view 15 (RMS 3.57 px)
+[calib] dropping view 6 (RMS 3.40 px)
+  [layouts] random layout + start heading=- seed 109: OK   docked
+=== 450/462 done | 16.7 min elapsed | ETA 0.4 min
+[calib] dropping view 19 (RMS 4.49 px)
+[calib] dropping view 7 (RMS 4.12 px)
+[calib] dropping view 5 (RMS 3.55 px)
+  [layouts] random layout + start heading=- seed 107: OK   docked
+=== 451/462 done | 16.8 min elapsed | ETA 0.4 min
+[calib] dropping view 10 (RMS 5.89 px)
+[calib] dropping view 13 (RMS 4.55 px)
+[calib] dropping view 12 (RMS 4.00 px)
+[calib] dropping view 1 (RMS 3.67 px)
+  [layouts] random layout + start heading=- seed 108: OK   docked
+=== 452/462 done | 16.8 min elapsed | ETA 0.4 min
+[calib] dropping view 4 (RMS 3.43 px)
+  [ablation] LiDAR map update on=- seed 108: OK   docked
+=== 453/462 done | 16.8 min elapsed | ETA 0.3 min
+  [layouts] random layout + start heading=- seed 115: OK   docked
+=== 454/462 done | 16.8 min elapsed | ETA 0.3 min
+  [layouts] random layout + start heading=- seed 112: OK   docked
+=== 455/462 done | 16.9 min elapsed | ETA 0.3 min
+  [layouts] random layout + start heading=- seed 110: OK   docked
+=== 456/462 done | 16.9 min elapsed | ETA 0.2 min
+  [layouts] random layout + start heading=- seed 119: OK   docked
+=== 457/462 done | 16.9 min elapsed | ETA 0.2 min
+  [layouts] random layout + start heading=- seed 116: OK   docked
+=== 458/462 done | 17.0 min elapsed | ETA 0.1 min
+  [layouts] random layout + start heading=- seed 114: OK   docked
+=== 459/462 done | 17.0 min elapsed | ETA 0.1 min
+  [layouts] random layout + start heading=- seed 118: OK   docked
+=== 460/462 done | 17.0 min elapsed | ETA 0.1 min
+  [layouts] random layout + start heading=- seed 117: OK   docked
+=== 461/462 done | 17.0 min elapsed | ETA 0.0 min
+  [layouts] random layout + start heading=- seed 113: OK   docked
+=== 462/462 done | 17.0 min elapsed | ETA 0.0 min
+Traceback (most recent call last):
+  File "/Users/lethienphu/Documents/Studying/UTS/Year 2/Semester 2/Sensors and Controls for Mechatronics System/Integrated Project/evaluation.py", line 805, in <module>
+    main()
+  File "/Users/lethienphu/Documents/Studying/UTS/Year 2/Semester 2/Sensors and Controls for Mechatronics System/Integrated Project/evaluation.py", line 802, in main
+    finalize()
+  File "/Users/lethienphu/Documents/Studying/UTS/Year 2/Semester 2/Sensors and Controls for Mechatronics System/Integrated Project/evaluation.py", line 752, in finalize
+    make_figures(summary)
+  File "/Users/lethienphu/Documents/Studying/UTS/Year 2/Semester 2/Sensors and Controls for Mechatronics System/Integrated Project/evaluation.py", line 718, in make_figures
+    ax.bar(range(len(g)), np.nan_to_num(vals), yerr=err, capsize=2)
+  File "/Users/lethienphu/Documents/Studying/UTS/Year 2/Semester 2/Sensors and Controls for Mechatronics System/Integrated Project/venv/lib/python3.12/site-packages/matplotlib/__init__.py", line 1524, in inner
+    return func(
+           ^^^^^
+  File "/Users/lethienphu/Documents/Studying/UTS/Year 2/Semester 2/Sensors and Controls for Mechatronics System/Integrated Project/venv/lib/python3.12/site-packages/matplotlib/axes/_axes.py", line 2676, in bar
+    errorbar = self.errorbar(ex, ey, yerr=yerr, xerr=xerr, fmt='none',
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/lethienphu/Documents/Studying/UTS/Year 2/Semester 2/Sensors and Controls for Mechatronics System/Integrated Project/venv/lib/python3.12/site-packages/matplotlib/_api/deprecation.py", line 453, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/lethienphu/Documents/Studying/UTS/Year 2/Semester 2/Sensors and Controls for Mechatronics System/Integrated Project/venv/lib/python3.12/site-packages/matplotlib/__init__.py", line 1524, in inner
+    return func(
+           ^^^^^
+  File "/Users/lethienphu/Documents/Studying/UTS/Year 2/Semester 2/Sensors and Controls for Mechatronics System/Integrated Project/venv/lib/python3.12/site-packages/matplotlib/axes/_axes.py", line 3825, in errorbar
+    raise ValueError(
+ValueError: 'yerr' must not contain negative values

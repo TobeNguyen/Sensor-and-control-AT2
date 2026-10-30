@@ -28,7 +28,7 @@ from robot_model import wrap_angle, motion_model
 # ============================================================ robot / sensors
 ROBOT_IP = "192.168.1.213"
 CAMERA_WIDTH, CAMERA_HEIGHT = 640, 480
-MARKER_SIZE = 0.15           # [m] black part of the printed marker
+MARKER_SIZE = 0.10           # [m] black part of the printed marker
 CONTROL_DT = 0.05            # [s] 20 Hz
 CAMERA_PERIOD = 0.1          # [s] camera processed at 10 Hz
 CAMERA_DELAY = 0.2           # [s] image age: the pose of that moment is used for the marker
