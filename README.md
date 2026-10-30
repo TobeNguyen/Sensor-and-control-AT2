@@ -123,10 +123,10 @@ Ranks are computed numerically (`analyse_model`) at four operating points, with 
 
 | Operating point | Controllability rank | Observability rank (range + bearing) | Observability rank (+ view angle) | Smallest Gramian eigenvalue, without view | Smallest Gramian eigenvalue, with view |
 |---|---|---|---|---|---|
-| stopped (v = 0, w = 0) | 2 | 2 | 3 | about 0 (|λ| < 1e-9) | 8.56e4 |
-| straight (v = 0.2) | 3 | 3 | 3 | about 0 (|λ| < 1e-9) | 8.59e4 |
-| turn in place (w = 0.5) | 3 | 2 | 3 | about 0 (|λ| < 1e-9) | 8.56e4 |
-| arc (v = 0.15, w = 0.4) | 3 | 3 | 3 | about 0 (|λ| < 1e-9) | 8.58e4 |
+| stopped (v = 0, w = 0) | 2 | 2 | 3 | ≈ 0 (−2.1e-10) | 8.56e4 |
+| straight (v = 0.2) | 3 | 3 | 3 | ≈ 0 (−5.2e-10) | 8.59e4 |
+| turn in place (w = 0.5) | 3 | 2 | 3 | ≈ 0 (−2.1e-10) | 8.56e4 |
+| arc (v = 0.15, w = 0.4) | 3 | 3 | 3 | ≈ 0 (−4.1e-10) | 8.58e4 |
 
 What the numbers show:
 
