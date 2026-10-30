@@ -662,7 +662,7 @@ def calibrate_hardware(cfg: Config = CONFIG,
 # ---------------------------------------------------------------- capture images from the real camera
 def capture_calib_images(get_frame, out_dir="calib_images", pattern=(9, 6),
                          n_target=20, min_shift_px=40.0, timeout=600.0):
-    """Intrinsics: auto-save an image whenever the chessboard appears in a view
+    """Intrinsics: live view, auto-save an image whenever the chessboard appears in a view
     different enough from the last saved one. get_frame() -> RGB image from the robot camera."""
     import time
     out = Path(out_dir)
@@ -670,29 +670,42 @@ def capture_calib_images(get_frame, out_dir="calib_images", pattern=(9, 6),
     for old in out.glob("calib_*.jpg"):
         old.unlink()                                  # avoid mixing old and new images
     print(f"Hold the chessboard tilted/rotated, near/far, and move it into the frame corners. "
-          f"Need {n_target} images.")
+          f"Need {n_target} images. Press q in the window to abort.")
     last, saved, t0 = None, 0, time.time()
     while saved < n_target:
         if time.time() - t0 > timeout:
+            cv2.destroyAllWindows()
             raise TimeoutError(f"Timed out: only {saved}/{n_target} images saved")
         img = get_frame()
         corners = find_chessboard_corners(img, pattern)
+
+        view = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+        if corners is not None:
+            cv2.drawChessboardCorners(view, tuple(pattern), corners.reshape(-1, 1, 2).astype(np.float32), True)
+        cv2.putText(view, f"saved {saved}/{n_target} | {'BOARD OK' if corners is not None else 'no board'}",
+                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8,
+                    (0, 255, 0) if corners is not None else (0, 0, 255), 2)
+        cv2.imshow("calib capture", view)
+
         if corners is not None and (last is None or np.abs(corners - last).mean() > min_shift_px):
             cv2.imwrite(str(out / f"calib_{saved:02d}.jpg"), cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
             last, saved = corners, saved + 1
             print(f"  saved {saved}/{n_target}", flush=True)
-        time.sleep(0.3)
+        if cv2.waitKey(300) & 0xFF == ord("q"):
+            cv2.destroyAllWindows()
+            raise KeyboardInterrupt("capture aborted")
+    cv2.destroyAllWindows()
 
 
 def capture_extrinsic_images(get_frame, out_dir="extr_images", pattern=(9, 6)):
     """Extrinsics: for each placement, type 'x y normal_deg' (robot frame);
-    the code grabs a frame and writes poses.csv."""
+    the code grabs a frame (live view, retries 5 s) and writes poses.csv."""
     import time
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     rows = []
-    print("Place the chessboard in front of the robot and measure its centre (x forward, y left) "
-          "and normal_deg.")
+    print("Place the chessboard FIRST (whole board visible, 0.7-1.2 m away), then type its centre "
+          "(x forward, y left, metres) and normal_deg.")
     print("A board facing the robot head-on has normal_deg = 180.")
     while True:
         s = input(f"Placement {len(rows) + 1}: enter 'x y normal_deg' (empty = done): ").strip()
@@ -703,16 +716,26 @@ def capture_extrinsic_images(get_frame, out_dir="extr_images", pattern=(9, 6)):
         except ValueError:
             print("  need exactly 3 numbers separated by spaces")
             continue
-        for _ in range(3):                            # skip a few stale frames
+        img, corners, t0 = None, None, time.time()
+        while time.time() - t0 < 5.0:
             img = get_frame()
-            time.sleep(0.2)
-        if find_chessboard_corners(img, pattern) is None:
-            print("  chessboard not found, adjust it and re-enter")
+            corners = find_chessboard_corners(img, pattern)
+            view = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+            if corners is not None:
+                cv2.drawChessboardCorners(view, tuple(pattern),
+                                          corners.reshape(-1, 1, 2).astype(np.float32), True)
+            cv2.imshow("extrinsic capture", view)
+            cv2.waitKey(200)
+            if corners is not None:
+                break
+        if corners is None:
+            print("  chessboard not found: make sure the WHOLE board is in the image, then re-enter")
             continue
         name = f"extr_{len(rows):02d}.jpg"
         cv2.imwrite(str(out / name), cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
         rows.append(f"{name},{x},{y},{n}")
         print(f"  saved {name}")
+    cv2.destroyAllWindows()
     if len(rows) < 3:
         raise ValueError(f"only {len(rows)} placements (need >= 3, better >= 5)")
     (out / "poses.csv").write_text("file,x,y,normal_deg\n" + "\n".join(rows) + "\n")
@@ -746,6 +769,8 @@ if __name__ == "__main__":
     parser.add_argument("--capture", action="store_true",
                         help="capture chessboard images from the real robot camera, then calibrate")
     parser.add_argument("--ip", default=None, help="robot IP (used with --capture)")
+    parser.add_argument("--extr-only", action="store_true",
+                        help="with --capture: skip intrinsic images, only capture the extrinsic step")
     args = parser.parse_args()
     if args.extrinsic_sim or args.extrinsic_poses:
         if args.extrinsic_sim:
@@ -788,14 +813,15 @@ if __name__ == "__main__":
         print("saved:", save_intrinsics(cal.intrinsics, "results/camera_intrinsics_sim.json"))
     else:
         if args.capture:
-            from hardware import ROBOT_IP, RosbridgeEnvironment
+            from hardware import ROBOT_IP, RosbridgeEnvironment, hardware_config
             from rosbridge_api import RosbridgeRobot
             with RosbridgeRobot(args.ip or ROBOT_IP) as robot:
                 env = RosbridgeEnvironment(robot, CONFIG)
                 try:
-                    capture_calib_images(env.read_camera, Path(args.images).parent,
-                                        tuple(args.pattern))
-                    input("Intrinsic images done. Set up the board for the extrinsic step, press Enter... ")
+                    if not args.extr_only:
+                        capture_calib_images(env.read_camera, Path(args.images).parent,
+                                            tuple(args.pattern))
+                        input("Intrinsic images done. Set up the board for the extrinsic step, press Enter... ")
                     capture_extrinsic_images(env.read_camera, Path(args.extr_csv).parent,
                                             tuple(args.pattern))
                 finally:

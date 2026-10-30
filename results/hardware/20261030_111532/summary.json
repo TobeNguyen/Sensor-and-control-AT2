@@ -1,0 +1,28 @@
+{
+  "success": false,
+  "reason": "safety fault",
+  "sim_time_s": 30.474338667001575,
+  "target_confirmed": false,
+  "camera_target_label": "Final view (target NOT confirmed)",
+  "estimated_path_samples": 108,
+  "lidar_map_points": 1170,
+  "learned_tag_ids": [],
+  "method": "EKF trajectory + LiDAR projected with estimated pose; not SLAM",
+  "ground_truth_used_for_control": false,
+  "ground_truth_drawn_for_evaluation": true,
+  "video_recorded": false,
+  "seed": null,
+  "calibration_source": "calibrated",
+  "validation": {
+    "simulation": false,
+    "hardware_ready": false,
+    "hardware_verified": false
+  },
+  "events": [
+    "[t=6.9s] SURVEY: scanning 180 deg at the start pose to learn the tag map",
+    "[t=21.4s] SURVEY: dock not seen -> EXPLORE (move, stop, scan)",
+    "[t=24.1s] SAFETY: LiDAR data stale or invalid",
+    "[t=28.8s] SAFETY: LiDAR data stale or invalid",
+    "[t=30.4s] SAFETY: E-STOP: LiDAR data lost"
+  ]
+}

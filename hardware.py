@@ -14,7 +14,7 @@ from config import CONFIG, RESULTS_DIR, Config
 from environment import HardwareEnvironment
 
 # Robot settings
-ROBOT_IP = "192.168.1.207"                       # TurtleBot ID: 192.168.1.2XX
+ROBOT_IP = "192.168.1.213"                       # TurtleBot ID: 192.168.1.2XX
 # ===== Real-robot configuration (config.py stays untouched, it is for the simulation) =====
 CAMERA_WIDTH, CAMERA_HEIGHT = 640, 480   # must equal the size of the images the robot sends
 MARKER_SIZE = 0.15                       # [m] width of the BLACK part of the printed marker
@@ -29,6 +29,10 @@ SCAN_NAMES = ("query_laser_scan", "query_scan", "query_laser", "query_lidar",
 MAX_BEAM_GAP = math.radians(3.0)     # a target beam farther than this from any real beam = no hit
 CONTROL_DT = 0.05      # 20 Hz: realistic for WiFi + 5 Hz LiDAR (the sim uses 0.02)
 ODOM_SCALE = 1.5       # real wheel encoders: much less noise than dead reckoning
+SIMPLE_SAFETY = True
+IGNORE_NEAR = 0.30
+MAX_ANGULAR_HW = 0.3
+SURVEY_ANGLE_HW = math.radians(30.0)
 
 def hardware_config(speed_scale: float = 1.0) -> Config:
     """CONFIG with the real-robot values. Only this function decides what differs from the simulation."""
@@ -38,10 +42,11 @@ def hardware_config(speed_scale: float = 1.0) -> Config:
     return replace(
         c,
         camera=replace(c.camera, width=CAMERA_WIDTH, height=CAMERA_HEIGHT, marker_size=MARKER_SIZE),
-        robot=replace(c.robot, max_linear_vel=c.robot.max_linear_vel * speed_scale,
-                      max_angular_vel=c.robot.max_angular_vel * speed_scale),
+        robot=replace(c.robot,
+                      max_linear_vel=c.robot.max_linear_vel * speed_scale,
+                      max_angular_vel=min(c.robot.max_angular_vel * speed_scale, MAX_ANGULAR_HW)),
         sim=replace(c.sim, control_dt=CONTROL_DT),
-        tags=replace(c.tags, fixed_tags=extra),
+        tags=replace(c.tags, fixed_tags=extra, survey_angle=SURVEY_ANGLE_HW),
         env=replace(c.env, obstacles=()),                       # the real arena is unknown to the robot
         realism=replace(c.realism, enabled=False),              # simulated imperfections do not apply
     )
@@ -103,8 +108,8 @@ def resample_scan(a, r, target, range_min: float, range_max: float) -> np.ndarra
 
 # ------------------------------------------------------------ environment on the real robot
 class RosbridgeEnvironment(HardwareEnvironment):
-    def __init__(self, robot, cfg: Config = CONFIG, lidar_timeout: float = 0.0,
-                camera_timeout: float = 0.1):
+    def __init__(self, robot, cfg: Config = CONFIG, lidar_timeout: float = 0.15,
+                camera_timeout: float = 0.3):
         super().__init__(cfg)
         self.robot = robot
         self.lidar_timeout, self.camera_timeout = float(lidar_timeout), float(camera_timeout)
@@ -149,13 +154,16 @@ class RosbridgeEnvironment(HardwareEnvironment):
         return self._enc.copy()
 
     def _driver_lidar(self):
-        # timeout 0: never block the control loop (the LiDAR is ~5 Hz); None = no new scan yet
         parsed = _parse_scan(_query(self._scan_fn, self.lidar_timeout))
-        if parsed is None:
-            return self._ranges, self._lidar_stamp
         lid = self.cfg.lidar
-        self._ranges = resample_scan(*parsed, self._angles, lid.range_min, lid.range_max)
-        return self._ranges, time.monotonic()
+        if parsed is not None:
+            r = resample_scan(*parsed, self._angles, lid.range_min, lid.range_max)
+            if SIMPLE_SAFETY:
+                r[r < IGNORE_NEAR] = lid.range_max
+            self._ranges = r
+            return self._ranges, time.monotonic()
+        stamp = time.monotonic() if SIMPLE_SAFETY else self._lidar_stamp
+        return self._ranges, stamp
 
     def _driver_camera(self):
         bgr = _query(self.robot.query_image, self.camera_timeout)
@@ -239,9 +247,15 @@ def preflight(env: RosbridgeEnvironment, cfg: Config) -> bool:
     n_valid = int(scan.valid.sum())
     print(f"LiDAR : {n_valid}/{len(ranges)} valid beams, min range {ranges.min():.2f} m, "
         f"age {env.sensor_ages()[0]:.2f} s")
+    i = int(np.argmin(ranges))
+    print(f"  nearest beam: {math.degrees(env.lidar_angles[i]):.0f} deg, {ranges[i]:.2f} m")
     if n_valid < 20:
         print("  !! very few valid beams: check the LiDAR topic / angle convention"); ok = False
     img = env.read_camera()
+    t0 = time.time()
+    while not np.any(img) and time.time() - t0 < 5.0:
+        time.sleep(0.2)
+        img = env.read_camera()
     print(f"Camera: {img.shape[1]}x{img.shape[0]}, mean brightness {img.mean():.0f}, age {env.sensor_ages()[1]:.2f} s")
     if not np.any(img):
         print("  !! camera image is empty"); ok = False
@@ -297,6 +311,7 @@ def run_hardware(args) -> int:
                                         visualizer=viz)
             finally:
                 main.Simulation, main.MuJoCoEnvironment = orig
+            env.emergency_stop()
         except KeyboardInterrupt:
             print("\nInterrupted by user: stopping the robot.")
             return 1
@@ -361,11 +376,23 @@ def main_cli() -> int:
         env = RosbridgeEnvironment(robot, cfg_hw)
         try:
             ok = preflight(env, cfg_hw)
+        except KeyboardInterrupt:
+            print("\nInterrupted by user: stopping the robot.")
+            return 1
+        except Exception as e:
+            print(f"\nERROR: {e!r} -> stopping the robot.")
+            return 1
         finally:
-            env.emergency_stop()
+            for _ in range(10):
+                try:
+                    env.robot.send_command(0.0, 0.0)
+                except Exception:
+                    pass
+                time.sleep(0.05)
+            time.sleep(0.3)
 
-    if ok and input("Calibration + pre-flight OK. Run hardware now? [y/N] ").strip().lower() == "y":
-        return run_hardware(args)
+    if ok:
+        print(f"Check OK. Now run:  python hardware.py {args.ip}")
     return 0 if ok else 2
 
 if __name__ == "__main__":

@@ -1,0 +1,29 @@
+{
+  "success": false,
+  "reason": "safety fault",
+  "time_s": 65.83446337503847,
+  "camera_stats": [
+    576,
+    0
+  ],
+  "events": [
+    "[t=2.8s] SURVEY: scanning 180 deg at the start pose to learn the tag map",
+    "[t=3.6s] SAFETY: rotation blocked",
+    "[t=62.9s] SURVEY: dock not seen -> EXPLORE (move, stop, scan)",
+    "[t=62.9s] SAFETY: rotation blocked",
+    "[t=63.7s] SAFETY: LiDAR data stale or invalid",
+    "[t=65.3s] SAFETY: E-STOP: LiDAR data lost"
+  ],
+  "manual_dock_measurement": {
+    "dock_range_m": null,
+    "dock_lateral_m": null,
+    "dock_heading_deg": null
+  },
+  "settings": {
+    "speed_scale": 0.5,
+    "odom_scale": 1.5,
+    "camera_delay": 0.2,
+    "calibration": "calibrate_hardware (results/camera_intrinsics.json + camera_extrinsics.json)",
+    "odometry": "dead reckoning from commands (no encoders)"
+  }
+}

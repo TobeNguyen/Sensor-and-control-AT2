@@ -1,0 +1,26 @@
+{
+  "success": false,
+  "reason": "explore failed",
+  "sim_time_s": 125.31005699996604,
+  "target_confirmed": false,
+  "camera_target_label": "Final view (target NOT confirmed)",
+  "estimated_path_samples": 533,
+  "lidar_map_points": 7784,
+  "learned_tag_ids": [],
+  "method": "EKF trajectory + LiDAR projected with estimated pose; not SLAM",
+  "ground_truth_used_for_control": false,
+  "ground_truth_drawn_for_evaluation": true,
+  "video_recorded": false,
+  "seed": null,
+  "calibration_source": "calibrated",
+  "validation": {
+    "simulation": false,
+    "hardware_ready": false,
+    "hardware_verified": false
+  },
+  "events": [
+    "[t=2.3s] SURVEY: scanning 180 deg at the start pose to learn the tag map",
+    "[t=5.1s] SURVEY: dock not seen -> EXPLORE (move, stop, scan)",
+    "[t=125.2s] EXPLORE FAILED: dock not seen within 120 s"
+  ]
+}
