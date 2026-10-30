@@ -578,8 +578,12 @@ class RosbridgeEnvironment(HardwareEnvironment):
     def emergency_stop(self) -> None:
         self._integrate()
         self._cmd = (0.0, 0.0)
-        for _ in range(3):
-            self.robot.send_command(0.0, 0.0)
+        for _ in range(10):                      # ~0.5 s of zeros: one lost WiFi packet cannot keep it moving
+            try:
+                self.robot.send_command(0.0, 0.0)
+            except Exception:
+                pass
+            time.sleep(0.05)
 
 
 # ============================================================ pre-flight check (robot does not move)
