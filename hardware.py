@@ -12,7 +12,11 @@ import cv2
 
 from config import CONFIG, RESULTS_DIR, Config
 from environment import HardwareEnvironment
-
+from recovery import Explorer, StopGoScan, MapView
+from sensing import Sensing, sector_min_range
+from robot_model import wrap_angle
+import docking
+from controller import limit_command
 # Robot settings
 ROBOT_IP = "192.168.1.213"                       # TurtleBot ID: 192.168.1.2XX
 # ===== Real-robot configuration (config.py stays untouched, it is for the simulation) =====
@@ -32,25 +36,167 @@ ODOM_SCALE = 1.5       # real wheel encoders: much less noise than dead reckonin
 SIMPLE_SAFETY = True
 IGNORE_NEAR = 0.30
 MAX_ANGULAR_HW = 0.3
-SURVEY_ANGLE_HW = math.radians(30.0)
+SURVEY_ANGLE_HW = 2.0 * math.pi
+HW_SCAN_STEP = math.radians(30.0)
+DOCK_LOCK_TIME = 1.5     # [s] stand still this long after seeing the dock
+HW_LEARN_SIGMA = 0.15    # [m] real odometry: 0.08 is too strict
+TAG_LOCK_TIME = 3.0      # [s] max stop time per tag
+TAG_LOST_TIME = 1.0      # [s] tag not seen this long while stopped -> give up on it
+CENTER_TOL = 0.12        # [rad] dock counts as centred below this bearing
+MAX_TURN = 0.25          # [rad/s]
+MIN_TURN = 0.08          # [rad/s] smaller commands may not move the robot
+LEARN_RANGE = 2.0        # [m] drive closer if the dock is farther than this
+APPROACH_V = 0.10        # [m/s]
+DOCK_MEMORY = 10.0       # [s] remember the dock direction this long (odometry-propagated)
+MAX_DOCK_LOCK = 6.0      # [s] SURVEY: longest stop (turn + learn) for one sighting
+HW_K_BEARING = 1.2      # [1/s] centre the marker (sim: 5.5)
+HW_K_AXIS = 0.6         # [1/s] gentle pull onto the marker axis (sim: 4.0)
+HW_VIEW_CLIP = 0.2      # [rad] limit of the axis term
+HW_EDGE = 0.15          # [rad] marker near the image edge: only turn TOWARDS it
+HW_BETA_MAX = 0.2       # [rad] no forward motion if the marker is this far off-centre
+HW_DOCK_TURN = 0.15     # [rad/s] max turn while docking (sim: 0.8)
+HW_DOCK_SPEED = 0.10    # [m/s]
+ODOM_FILE = RESULTS_DIR / "odometry_hw.json"
+DOCK_TARGET_HW = 0.85    # [m] robot centre -> marker at the end of docking (sim: 0.55)
+DOCK_TOL_HW = 0.08       # [m] (sim: 0.05)
+APPROACH_DIST_HW = 1.4   # [m] AIM approach point in front of the dock (sim: 1.0)
+def _turn(b: float) -> float:
+    return math.copysign(float(np.clip(abs(b), MIN_TURN, MAX_TURN)), b)
 
+
+def hw_docking_command(rng, bearing, view, cfg):
+    d = cfg.docking
+    if rng <= d.target_distance + d.distance_tolerance:          # arrived: only centre
+        return limit_command(0.0, float(np.clip(0.8 * bearing, -HW_DOCK_TURN, HW_DOCK_TURN)), cfg)
+    speed = float(np.clip(docking.K_RANGE * (rng - d.target_distance),
+                        docking.DOCK_MIN_SPEED, HW_DOCK_SPEED))
+    speed *= float(np.clip(1.0 - abs(bearing) / HW_BETA_MAX, 0.0, 1.0))
+    if abs(bearing) > HW_EDGE:                                   # keep the marker in the narrow FOV
+        w = HW_K_BEARING * bearing
+    else:
+        w = HW_K_BEARING * bearing - HW_K_AXIS * float(np.clip(view, -HW_VIEW_CLIP, HW_VIEW_CLIP))
+    return limit_command(speed, float(np.clip(w, -HW_DOCK_TURN, HW_DOCK_TURN)), cfg)
+
+
+DOCK_PATCH = dict(docking_command=hw_docking_command,
+                MEASUREMENT_TIMEOUT=1.0,     # tolerate short WiFi frame drops before SEARCH
+                SEARCH_OMEGA=0.2)            # search slowly (sim: 0.7)
+
+class HwSensing(Sensing):
+    dock_t, dock_b, dock_r = -99.0, 0.0, 0.0     # last dock sighting (bearing / range propagated)
+
+    def read(self):
+        f = super().read()
+        C = HwSensing
+        if f.marker is not None:
+            C.dock_t, C.dock_b, C.dock_r = f.time, f.marker.bearing, f.marker.range
+        else:                                    # between camera frames: follow the robot's motion
+            C.dock_b = wrap_angle(C.dock_b - f.odometry.dtheta)
+            C.dock_r -= f.odometry.ds * math.cos(C.dock_b)
+        return f
+
+
+class HwStopGoScan(StopGoScan):
+    def __init__(self, *a, **k):
+        k["step"] = HW_SCAN_STEP
+        super().__init__(*a, **k)
+        self.lock_t0 = None
+
+    def update(self, t, dtheta):
+        locked = t - HwSensing.dock_t < DOCK_LOCK_TIME
+        if not locked:
+            self.lock_t0 = None
+        elif self.lock_t0 is None:
+            self.lock_t0 = t
+        if locked and t - self.lock_t0 < MAX_DOCK_LOCK:
+            self.spun += abs(dtheta)
+            self.hold_t0, self.step_spun = None, 0.0
+            b = HwSensing.dock_b
+            if abs(b) > CENTER_TOL:
+                return _turn(b), False           # turn BACK towards the dock
+            return 0.0, abs(dtheta) < 1e-3       # centred: stand still and observe
+        return super().update(t, dtheta)
+
+
+class HwExplorer(Explorer):
+    ekf = None
+
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        self.lock_id = None
+        self.lock_t0 = self.lock_seen = 0.0
+        self.skipped = set()
+
+    def update(self, frame, x_est, sigma_xy):
+        n_min = self.run_cfg.tags.survey_min_obs
+        still = abs(frame.odometry.dtheta) < 1e-3 and abs(frame.odometry.ds) < 1e-3
+
+        # A) dock seen recently and not learned yet: face it -> get closer -> stand still and learn
+        if (self.tag_map.count(self.dock_id) < n_min
+                and frame.time - HwSensing.dock_t < DOCK_MEMORY):
+            b, r = HwSensing.dock_b, HwSensing.dock_r
+            if abs(b) > CENTER_TOL:
+                return 0.0, _turn(b)
+            if r > LEARN_RANGE and sector_min_range(frame.lidar, 0.0, 0.4) > 0.6:
+                return APPROACH_V, 1.0 * b       # drive towards it, keep it centred
+            if still and sigma_xy < HW_LEARN_SIGMA and frame.marker is not None:
+                self.tag_map.add(x_est, frame.marker, max_range=self.run_cfg.tags.dock_max_range)
+            return 0.0, 0.0
+
+        # B) other tags: stop and learn them (dock handled above, never skipped)
+        if self.lock_id is None:
+            new = [m for m in frame.markers
+                   if int(m.marker_id) != self.dock_id
+                   and self.tag_map.count(m.marker_id) < n_min and m.marker_id not in self.skipped]
+            if new:
+                self.lock_id = int(new[0].marker_id)
+                self.lock_t0 = self.lock_seen = frame.time
+        if self.lock_id is None:
+            return super().update(frame, x_est, sigma_xy)
+        if any(int(m.marker_id) == self.lock_id for m in frame.markers):
+            self.lock_seen = frame.time
+        learned = self.tag_map.count(self.lock_id) >= n_min
+        if learned or frame.time - self.lock_t0 > TAG_LOCK_TIME or frame.time - self.lock_seen > TAG_LOST_TIME:
+            if learned and self.ekf is not None:
+                self.ekf.set_tag_map(MapView(self.tag_map, self.dock_id))
+            elif not learned:
+                self.skipped.add(self.lock_id)
+            self.lock_id, self.t0 = None, frame.time
+            return 0.0, 0.0
+        if still and sigma_xy < HW_LEARN_SIGMA:
+            tags = self.run_cfg.tags
+            for m in frame.markers:
+                self.tag_map.add(x_est, m, max_range=min(tags.survey_max_range, 2.0))
+        return 0.0, 0.0
+
+def load_odometry_hw():
+    """(wheel_radius, wheel_base) measured on the real robot, or None."""
+    try:
+        d = json.loads(ODOM_FILE.read_text())
+        return float(d["wheel_radius"]), float(d["wheel_base"])
+    except (OSError, ValueError, KeyError):
+        return None
+    
 def hardware_config(speed_scale: float = 1.0) -> Config:
-    """CONFIG with the real-robot values. Only this function decides what differs from the simulation."""
     c = CONFIG
     extra = tuple(c.tags.fixed_tags[i] if i < len(c.tags.fixed_tags) else (0.0, 0.0, 0.0)
-                for i in range(N_EXTRA_TAGS))                 # only the COUNT matters for control
+                for i in range(N_EXTRA_TAGS))
+    odo = load_odometry_hw()
+    r, b = odo if odo is not None else (c.robot.wheel_radius, c.robot.wheel_base)
     return replace(
         c,
         camera=replace(c.camera, width=CAMERA_WIDTH, height=CAMERA_HEIGHT, marker_size=MARKER_SIZE),
-        robot=replace(c.robot,
+        robot=replace(c.robot, wheel_radius=r, wheel_base=b,
                       max_linear_vel=c.robot.max_linear_vel * speed_scale,
                       max_angular_vel=min(c.robot.max_angular_vel * speed_scale, MAX_ANGULAR_HW)),
         sim=replace(c.sim, control_dt=CONTROL_DT),
-        tags=replace(c.tags, fixed_tags=extra, survey_angle=SURVEY_ANGLE_HW),
-        env=replace(c.env, obstacles=()),                       # the real arena is unknown to the robot
-        realism=replace(c.realism, enabled=False),              # simulated imperfections do not apply
+        docking=replace(c.docking, target_distance=DOCK_TARGET_HW,
+                        distance_tolerance=DOCK_TOL_HW),
+        tags=replace(c.tags, fixed_tags=extra, survey_angle=SURVEY_ANGLE_HW,
+                    approach_dist=APPROACH_DIST_HW),
+        env=replace(c.env, obstacles=()),
+        realism=replace(c.realism, enabled=False),
     )
-
 
 def with_fov(cfg: Config, calibration) -> Config:
     """Vertical field of view from the calibrated focal length (instead of the simulator's 60 deg)."""
@@ -265,6 +411,51 @@ def preflight(env: RosbridgeEnvironment, cfg: Config) -> bool:
     print("Stop command sent.")
     return ok
 
+def _drive(env, v: float, w: float, duration: float) -> None:
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < duration:
+        env.step(v, w)
+    for _ in range(int(1.0 / env.cfg.sim.control_dt)):     # 1 s settle
+        env.step(0.0, 0.0)
+
+
+def calibrate_odometry_hw(env: RosbridgeEnvironment, cfg: Config):
+    if not env._joint_ok:
+        print("!! no /joint_states: odometry calibration needs the real wheel encoders")
+        return None
+    r0, b0 = cfg.robot.wheel_radius, cfg.robot.wheel_base
+
+    # 1) straight line -> wheel radius
+    input("\n[1/2] STRAIGHT: clear ~1.3 m in front, mark the wheel axle on the floor. "
+          "Enter = drive ~1 m... ")
+    e0 = env.read_encoders(); _drive(env, 0.10, 0.0, 10.0); e1 = env.read_encoders()
+    dphi = e1 - e0
+    print(f"  wheel rotation L {dphi[0]:.3f} rad, R {dphi[1]:.3f} rad | "
+          f"odometry says {r0 * dphi.mean():.3f} m (r = {r0:.4f})")
+    if dphi.mean() <= 0:
+        print("!! wheel angles decreased while driving forward: check /joint_states sign"); return None
+    d_true = float(input("  measured distance [m]: "))
+    r = d_true / float(dphi.mean())
+
+    # 2) spin in place -> wheel base
+    input("\n[2/2] SPIN: mark the robot heading with tape. Enter = spin ~2 turns left... ")
+    e0 = env.read_encoders(); _drive(env, 0.0, 0.3, 4.0 * math.pi / 0.3); e1 = env.read_encoders()
+    dphi = e1 - e0
+    print(f"  odometry says {math.degrees(r * (dphi[1] - dphi[0]) / b0):.0f} deg (b = {b0:.4f})")
+    extra = input("  2 full turns (720 deg) + how many EXTRA deg? (+ more, - less, empty = 0): ").strip()
+    theta = math.radians(720.0 + (float(extra) if extra else 0.0))
+    b = r * float(dphi[1] - dphi[0]) / theta
+
+    print(f"\n  wheel_radius {r0:.4f} -> {r:.4f} m | wheel_base {b0:.4f} -> {b:.4f} m")
+    if not (0.025 < r < 0.045 and 0.12 < b < 0.32):
+        print("!! values look wrong (TB3: r ~0.033, Burger b ~0.160, Waffle b ~0.287) -> NOT saved")
+        return None
+    ODOM_FILE.parent.mkdir(parents=True, exist_ok=True)
+    ODOM_FILE.write_text(json.dumps({"wheel_radius": r, "wheel_base": b,
+                                     "straight_m": d_true, "spin_deg": math.degrees(theta)}, indent=2))
+    print("  saved:", ODOM_FILE, "(used automatically by hardware_config)")
+    return r, b
+
 # ------------------------------------------------------------ full run
 def run_hardware(args) -> int:
     import main
@@ -300,9 +491,15 @@ def run_hardware(args) -> int:
                                R=np.diag([0.15 ** 2, 0.05 ** 2]), R_view=0.15 ** 2)
             viz = None if args.no_viz else RouteVisualizer(cfg, output_dir=out, live_view=not args.no_live_camera)
 
-            orig = (main.Simulation, main.MuJoCoEnvironment)
+            orig = (main.Simulation, main.MuJoCoEnvironment, main.StopGoScan, main.Explorer, main.Sensing)
             main.Simulation = lambda c=None, seed=None, scene_dir=None: HardwareSim(env, cfg)
             main.MuJoCoEnvironment = lambda sim: sim.env
+            main.StopGoScan, main.Explorer, main.Sensing = HwStopGoScan, HwExplorer, HwSensing
+            HwExplorer.ekf = ekf
+            HwSensing.dock_t = -99.0
+            dock_orig = {k: getattr(docking, k) for k in DOCK_PATCH}
+            for k, v in DOCK_PATCH.items():
+                setattr(docking, k, v)
             try:
                 result = main.run_pipeline(cfg, seed=None, estimator=ekf, viewer=False, verbose=True,
                                         dock_use_estimate=True, use_recovery=True,
@@ -310,7 +507,9 @@ def run_hardware(args) -> int:
                                         calibration=calibration, camera_delay=args.camera_delay,
                                         visualizer=viz)
             finally:
-                main.Simulation, main.MuJoCoEnvironment = orig
+                (main.Simulation, main.MuJoCoEnvironment, main.StopGoScan, main.Explorer, main.Sensing) = orig
+                for k, v in dock_orig.items():
+                    setattr(docking, k, v)
             env.emergency_stop()
         except KeyboardInterrupt:
             print("\nInterrupted by user: stopping the robot.")
@@ -355,6 +554,8 @@ def main_cli() -> int:
     p.add_argument("--no-live-camera", action="store_true")
     p.add_argument("--no-prompt", action="store_true", help="skip the manual dock measurement questions")
     p.add_argument("--force", action="store_true", help="run even if the pre-flight check fails")
+    p.add_argument("--calib-odom", action="store_true",
+            help="with --check: drive 1 m + spin 2 turns to calibrate the wheel odometry (robot MOVES)")
     args = p.parse_args()
 
     if not args.check:                            # plain `python hardware.py` = full run
@@ -376,6 +577,12 @@ def main_cli() -> int:
         env = RosbridgeEnvironment(robot, cfg_hw)
         try:
             ok = preflight(env, cfg_hw)
+            odo = load_odometry_hw()
+            print("Odometry params:", f"r {cfg_hw.robot.wheel_radius:.4f} m, b {cfg_hw.robot.wheel_base:.4f} m",
+                "(calibrated)" if odo else "(nominal config, not calibrated)")
+            if args.calib_odom and ok:
+                calibrate_odometry_hw(env, cfg_hw)
+            
         except KeyboardInterrupt:
             print("\nInterrupted by user: stopping the robot.")
             return 1

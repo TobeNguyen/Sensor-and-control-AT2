@@ -1,0 +1,39 @@
+{
+  "success": false,
+  "reason": "timeout",
+  "time_s": 180.37913483398734,
+  "camera_stats": [
+    879,
+    70
+  ],
+  "events": [
+    "[t=4.4s] SURVEY: scanning 180 deg at the start pose to learn the tag map",
+    "[t=34.0s] SURVEY: dock not seen -> EXPLORE (move, stop, scan)",
+    "[t=71.7s] EXPLORE done: dock learned, ids [0]",
+    "[t=72.9s] AIM: dock 1.87 m -> approach point 0.77 m away",
+    "[t=73.2s] dock seen at 1.89 m -> docking",
+    "[t=90.9s] dock re-learned from a close view",
+    "[t=93.3s] docking too long -> back to AIM",
+    "[t=94.7s] AIM: dock 0.88 m -> approach point 0.65 m away",
+    "[t=113.5s] AIM: dock not seen -> choosing a fallback point",
+    "[t=113.6s] AIM: fallback -> dock approach point (+0.86, +0.49), 0.46 m away",
+    "[t=150.3s] AIM: dock not seen at the fallback point -> facing the dock, then scanning (max 180 deg)",
+    "[t=167.8s] AIM: dock not seen anywhere -> blind docking",
+    "[t=177.8s] docking failed -> P inflated -> tag recovery #1 started"
+  ],
+  "manual_dock_measurement": {
+    "dock_range_m": 0.6,
+    "dock_lateral_m": 0.1,
+    "dock_heading_deg": 120.0
+  },
+  "settings": {
+    "speed_scale": 0.5,
+    "odom_scale": 1.5,
+    "camera_delay": 0.2,
+    "calibration": "calibrate_hardware (results/camera_intrinsics.json + camera_extrinsics.json)",
+    "odometry": "wheel encoders (/joint_states), r 0.0328 m, b 0.2882 m (calibrated)",
+    "dock_target_m": 0.85,
+    "axis_tolerance_rad": 0.25,
+    "lidar_view_refinements": 0
+  }
+}
