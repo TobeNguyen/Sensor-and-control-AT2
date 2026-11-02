@@ -10,7 +10,9 @@
 
 ---
 
-**Group:** [6] · **Video (5 min):** [] · **Repository:** [https://github.com/TobeNguyen/Sensor-and-control-AT2]
+**Group:** [6] · 
+**Video (5 min):** [] · 
+**Repository:** [https://github.com/TobeNguyen/Sensor-and-control-AT2]
 
 ## Quick start
 
