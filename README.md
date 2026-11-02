@@ -6,7 +6,7 @@
 |---|---|
 | Thien Phu Le | 25661048 |
 | Tran Minh Thi Nguyen | 14621635 |
-| Nguyen Hoang Tung Dao |  |
+| Nguyen Hoang Tung Dao | 26631301 |
 
 ---
 
@@ -679,9 +679,9 @@ The real-robot interface (`rosbridge_api.py`) is the rosbridge client provided b
 
 | Member | Contribution |
 |---|---|
-| Thien Phu Le | [ ] |
-| Tran Minh Thi Nguyen | [ ] |
-| Nguyen Hoang Tung Dao | [ ] |
+| Thien Phu Le | [Modelling and Control ] |
+| Tran Minh Thi Nguyen | [Estimation and Robustness ] |
+| Nguyen Hoang Tung Dao | [Sensing and Hardward Test ] |
 
 ---
 
@@ -689,4 +689,5 @@ The real-robot interface (`rosbridge_api.py`) is the rosbridge client provided b
 
 | Tool | Purpose |
 |---|---|
-| [ ] | [ ] |
+| [Claude ] | [Explaining course concepts (EKF/UKF consistency, NEES/NIS, LQR, observability Gramian) and answering questions about the assignment brief and marking guide ] |
+| [ChatGPT ] | [Reviewing the assignment's requirements ] |
