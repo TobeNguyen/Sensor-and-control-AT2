@@ -689,5 +689,5 @@ The real-robot interface (`rosbridge_api.py`) is the rosbridge client provided b
 
 | Tool | Purpose |
 |---|---|
-| [Claude ] | [Explaining course concepts (EKF/UKF consistency, NEES/NIS, LQR, observability Gramian) and answering questions about the assignment brief and marking guide ] |
-| [ChatGPT ] | [Reviewing the assignment's requirements ] |
+| [Claude] | [Explaining course concepts (EKF/UKF consistency, NEES/NIS, LQR, observability Gramian) and answering questions about the assignment brief and marking guide ] |
+| [ChatGPT] | [Reviewing the assignment's requirements ] |
