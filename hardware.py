@@ -7,7 +7,9 @@
 #
 #   python hardware.py 192.168.1.213 --check               sensors only, robot does not move
 #   python hardware.py 192.168.1.213 --check --calib-odom  + odometry calibration (robot MOVES)
-#   python hardware.py 192.168.1.213                       full run
+#   python hardware.py 192.168.1.213                       full run (+ live camera window)
+#   python hardware.py 192.168.1.213 --video               + save camera.mp4 of what the robot saw
+#   python hardware.py 192.168.1.213 --no-camera           no camera window (slow laptop / SSH)
 #
 # FINAL approach: the camera needs ~0.85 m to see the whole marker, so after the camera DOCKED check the
 # robot drives straight on (odometry heading hold) and stops by LiDAR at FINAL_RANGE from the dock wall.
@@ -703,6 +705,76 @@ def calibrate_odometry_hw(env: RosbridgeEnvironment, cfg: Config):
     return r, b
 
 
+# ============================================================ live camera window (visualization.py)
+class CameraView:
+    """What the robot camera sees: window (visualization.LiveCameraView, own process) + optional video.
+    Shows the processed image, detected ArUco outlines, state, dock range / bearing, image centre."""
+
+    def __init__(self, cfg, live=True, video_path=None):
+        self.live = None
+        if live:
+            try:
+                from visualization import LiveCameraView
+                self.live = LiveCameraView(window="TurtleBot camera (hardware.py)",
+                                           period=CAMERA_PERIOD, scale=1.0, enabled=True)
+            except Exception as e:                       # never stop the robot because of the viewer
+                print(f"(camera window not available: {e!r})")
+        self.video_path, self.writer, self.last_img = video_path, None, None
+        self.detector = None
+        try:                                             # only to DRAW the markers (robot uses Sensing)
+            d = cv2.aruco.getPredefinedDictionary(getattr(cv2.aruco, cfg.camera.aruco_dict))
+            self.detector = cv2.aruco.ArucoDetector(d, cv2.aruco.DetectorParameters()) \
+                if hasattr(cv2.aruco, "ArucoDetector") else (d, cv2.aruco.DetectorParameters_create())
+        except Exception:
+            pass
+
+    def update(self, f, state, v, w, t):
+        if f.image is None or not np.any(f.image):
+            return
+        rgb = np.ascontiguousarray(f.image).copy()
+        h, wd = rgb.shape[:2]
+        try:
+            if isinstance(self.detector, tuple):
+                corners, ids, _ = cv2.aruco.detectMarkers(rgb, *self.detector)
+            elif self.detector is not None:
+                corners, ids, _ = self.detector.detectMarkers(rgb)
+            else:
+                ids = None
+            if ids is not None:
+                cv2.aruco.drawDetectedMarkers(rgb, corners, ids)
+        except Exception:
+            pass
+        cv2.drawMarker(rgb, (wd // 2, h // 2), (255, 255, 0), cv2.MARKER_CROSS, 20, 1)
+        cv2.putText(rgb, f"t={t:5.1f}s  v={v:+.2f} w={w:+.2f}", (8, h - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+        self.last_img = rgb
+        if self.live is not None:
+            try:
+                self.live.update(f.time, rgb, mode=state, marker=f.marker, markers=f.markers)
+            except Exception:
+                self.live = None
+        if self.video_path is not None:
+            bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+            top = state + (f" | dock {f.marker.range:.2f} m {math.degrees(f.marker.bearing):+.0f} deg"
+                           if f.marker is not None else " | no dock")
+            cv2.putText(bgr, top, (8, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 220, 0), 1, cv2.LINE_AA)
+            if self.writer is None:
+                self.writer = cv2.VideoWriter(str(self.video_path), cv2.VideoWriter_fourcc(*"mp4v"),
+                                              round(1.0 / CAMERA_PERIOD), (wd, h))
+            self.writer.write(bgr)
+
+    def close(self, out=None):
+        try:
+            if self.live is not None:
+                self.live.close()
+            if self.writer is not None:
+                self.writer.release()
+            if out is not None and self.last_img is not None:
+                cv2.imwrite(str(out / "camera_final.jpg"), cv2.cvtColor(self.last_img, cv2.COLOR_RGB2BGR))
+        except Exception:
+            pass
+
+
 # ============================================================ full run
 def save_plot(path_xy, mission, out):
     try:
@@ -745,6 +817,7 @@ def run_hardware(args) -> int:
 
     mission = Mission()
     path, rows = [], []
+    view = None
     with RosbridgeRobot(args.ip) as robot:
         env = RosbridgeEnvironment(robot, cfg)
         try:
@@ -753,6 +826,10 @@ def run_hardware(args) -> int:
                 return 2
             input("Pre-flight OK. Clear the area, keep a hand on the robot. Enter = start (Ctrl+C = stop)... ")
             sensing = Sensing(env, cfg, camera_period=CAMERA_PERIOD, calibration=calibration)
+            if not args.no_camera or args.video:
+                view = CameraView(cfg, live=not args.no_camera,
+                                  video_path=(out / "camera.mp4") if args.video else None)
+            n_cam_seen = -1
             dt = cfg.sim.control_dt
             t0 = env.time
             last_print, last_guard = -99.0, ""
@@ -770,6 +847,9 @@ def run_hardware(args) -> int:
                 path.append((x[0], x[1]))
                 rows.append((t, x[0], x[1], x[2], mission.state, v, w,
                             -1.0 if f.marker is None else f.marker.range))
+                if view is not None and sensing.n_camera != n_cam_seen:      # new camera frame only
+                    n_cam_seen = sensing.n_camera
+                    view.update(f, mission.state, v, w, t)
                 if t - last_print >= 1.0:
                     last_print = t
                     dk = (f"{f.marker.range:.2f} m {math.degrees(f.marker.bearing):+.0f} deg"
@@ -788,6 +868,8 @@ def run_hardware(args) -> int:
             mission.reason = "interrupted"
         finally:
             env.emergency_stop()
+            if view is not None:
+                view.close(out)
 
     print("\n=== RESULT ===")
     print(f"{'SUCCESS' if mission.success else 'FAILURE'} ({mission.reason}) after "
@@ -833,6 +915,8 @@ def main_cli() -> int:
     p.add_argument("--square", type=float, default=0.025)
     p.add_argument("--no-prompt", action="store_true")
     p.add_argument("--force", action="store_true")
+    p.add_argument("--no-camera", action="store_true", help="no live camera window")
+    p.add_argument("--video", action="store_true", help="save camera.mp4 (what the robot saw)")
     args = p.parse_args()
 
     if not args.check:

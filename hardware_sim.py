@@ -54,7 +54,7 @@ from robot_model import wrap_angle
 
 # ============================================================ test arena (BUILD THIS)
 # Frame: origin = centre of the arena, +x towards the dock wall ("east"), +y to the left ("north").
-ROOM_X, ROOM_Y = 3.0, 2.4                 # [m] inner size of the arena (x, y)
+ROOM_X, ROOM_Y = 3.0, 1.8                 # [m] inner size of the arena (x, y)
 START = (-1.0, -0.3, math.pi / 2)         # robot centre (x, y, heading): starts facing NORTH, not the dock
 DOCK = (ROOM_X / 2 - 0.02, 0.0, math.pi)  # dock marker centre on the east wall, facing the room (-x)
 TAGS = ((0.0, ROOM_Y / 2 - 0.02, -math.pi / 2),    # tag on the north wall, facing south
@@ -66,7 +66,7 @@ BOX_GAP = 0.35            # [m] marker axis -> inner edge (> LAT_TOL 0.15 + half
 BOX = (DOCK[0] + BOX_FRONT * math.cos(DOCK[2]) - (BOX_GAP + BOX_W / 2) * math.sin(DOCK[2]),
        DOCK[1] + BOX_FRONT * math.sin(DOCK[2]) + (BOX_GAP + BOX_W / 2) * math.cos(DOCK[2]),
     DOCK[2])                           # box centre (x, y) and yaw (long side along the marker axis)
-CAM_Z = S.CAMERA_HEIGHT                   # [m] camera lens height (measure it on the robot); markers at S.CAMERA_HEIGHT
+CAM_Z = 0.10                 # [m] camera lens height (measure it on the robot); markers at S.CAMERA_HEIGHT
 
 # ============================================================ real camera (fallback if no calibration files)
 CAM_FWD, CAM_LAT, CAM_YAW = 0.234, 0.054, math.radians(-5.08)
@@ -96,6 +96,7 @@ ACC_V, ACC_W = 0.5, 2.0      # acceleration limits [m/s^2], [rad/s^2]
 CMD_DELAY = 0.10             # [s] WiFi latency of the velocity command
 LOOP_JITTER = 0.02           # [s] extra time per control step (0..jitter)
 TAPE_ERR = (0.005, math.radians(2.0))     # --calib-odom: tape measure error (distance, angle)
+CALIB_POSE = (-1.0, 0.0, 0.0)  # free spot for --calib-odom: facing east, the 1 m run ends at the arena centre
 # LiDAR
 LIDAR_PERIOD = 0.2           # [s] 5 Hz
 LIDAR_X = -0.064             # [m] LDS position behind the robot centre (TB3 Waffle)
@@ -324,6 +325,7 @@ class HwSimEnv:
         self._ranges = np.full(cfg.lidar.num_beams, cfg.lidar.range_max)
         self._lidar_t = -99.0
         self.collided_any = False
+        self.first_contact = None
         self.reset_pose(cfg.env.start_pose)
 
     def reset_pose(self, pose):
@@ -335,6 +337,8 @@ class HwSimEnv:
         self._cmdq.clear()
         self._v_cmd = (0.0, 0.0)
         self._lidar_t = -99.0
+        self.collided_any = False
+        self.first_contact = None
 
     @property
     def time(self):
@@ -453,8 +457,17 @@ class HwSimEnv:
     def _contact(self):
         for i in range(self.data.ncon):
             c = self.data.contact[i]
-            if self._base in (self.model.geom_bodyid[c.geom1], self.model.geom_bodyid[c.geom2]):
-                return True
+            g1, g2 = c.geom1, c.geom2
+            if self._base not in (self.model.geom_bodyid[g1], self.model.geom_bodyid[g2]):
+                continue
+            if mujoco.mjtGeom.mjGEOM_PLANE in (self.model.geom_type[g1], self.model.geom_type[g2]):
+                continue                                   # the floor is not a collision
+            if c.dist > 0.0:
+                continue                                   # inside the contact margin, not touching
+            if self.first_contact is None:
+                name = lambda g: mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_GEOM, g) or f"geom{g}"
+                self.first_contact = f"{name(g1)} <-> {name(g2)} at t={self.time:.1f} s"
+            return True
         return False
 
     def emergency_stop(self):
@@ -474,6 +487,7 @@ def calibrate_odometry_sim(env: HwSimEnv, cfg, rng):
     The tape measure is the ground truth + a small measuring error."""
     dt = cfg.sim.control_dt
     r0, b0 = cfg.robot.wheel_radius, cfg.robot.wheel_base
+    env.reset_pose(CALIB_POSE)
 
     def drive(v, w, duration):
         turned, last = 0.0, env.truth()[2]
@@ -498,6 +512,9 @@ def calibrate_odometry_sim(env: HwSimEnv, cfg, rng):
     print(f"[sim calib-odom] wheel_radius {r0:.4f} -> {r:.4f} m (true {env.r_true:.4f}) | "
           f"wheel_base {b0:.4f} -> {b:.4f} m (true {env.b_true:.4f}, slip {100 * env.slip:.1f} %)")
     env.reset_pose(cfg.env.start_pose)                        # put the robot back on the start mark
+    if env.collided_any:
+        print(f"[sim calib-odom] WARNING: contact during calibration ({env.first_contact})")
+    env.reset_pose(cfg.env.start_pose)                        # back on the start mark, contact flag cleared
     return replace(cfg, robot=replace(cfg.robot, wheel_radius=r, wheel_base=b))
 
 
@@ -672,7 +689,7 @@ def run_once(cfg, cal, seed, args, out=None, verbose=True):
                     break
                 if env.collided_any:
                     mission.reason = "collision"
-                    mission.note(f.time, "COLLISION")
+                    mission.note(f.time, f"COLLISION: {env.first_contact}")
                     break
                 if f.time - t0 > H.RUN_TIMEOUT:
                     mission.reason = "timeout"
@@ -719,7 +736,11 @@ def main_cli() -> int:
     p.add_argument("--no-camera", action="store_true", help="no live camera window")
     p.add_argument("--video", action="store_true", help="save camera.mp4 (what the robot saw)")
     p.add_argument("--no-final", action="store_true", help="stop at the camera DOCKED pose (no FINAL approach)")
+    p.add_argument("--lat-tol", type=float, default=None, help="override hardware.LAT_TOL (sim test only)")
     args = p.parse_args()
+    if args.lat_tol is not None:
+        H.LAT_TOL = args.lat_tol                          # Mission reads the module global at run time
+        print(f"LAT_TOL overridden: {H.LAT_TOL:.2f} m (hardware.py unchanged)")
     if args.viewer:
         S._ensure_mjpython()                              # macOS: the viewer needs mjpython
 

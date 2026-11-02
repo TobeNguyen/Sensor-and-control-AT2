@@ -10,6 +10,22 @@
 
 ---
 
+**Group:** [6] · **Video (5 min):** [] · **Repository:** [https://github.com/TobeNguyen/Sensor-and-control-AT2]
+
+## Quick start
+
+```bash
+python -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
+python main.py --seed 42             # one run in simulation with the live monitor
+python evaluation.py --plot-only     # rebuild all tables and figures from results/evaluation
+pytest                               # test suite
+```
+
+Full evaluation and real-robot commands: section 12.
+
+---
+
 ## 1. Overview
 
 A TurtleBot3 Waffle starts at an unknown pose in a room containing obstacles. It has to find a charging dock marked with an ArUco marker, drive to it without collisions and dock in front of it. The robot is given no map: marker poses are learned at run time and obstacles are seen only through the LiDAR.
@@ -23,7 +39,7 @@ The system combines four components, each one assessed separately:
 | Estimation | Extended Kalman Filter on the planar pose |
 | Control | Discrete-time LQR path tracker, LiDAR avoidance, visual-servoing docking |
 
-The software never uses ground truth for control. The simulator exposes ground truth in a single place, which feeds the evaluation metrics only. The robot software talks to the robot through one interface, so the same pipeline can run in simulation and on the real robot.
+The software never uses ground truth for control. The simulator exposes ground truth in a single place, which feeds the evaluation metrics only. The robot software talks to the robot through one interface (`environment.py`), used by both the simulator and the real robot. On the real robot a simplified runner (`hardware.py`, section 11) uses the same sensing, calibration and marker-measurement code, but replaces the EKF and the LQR by wheel odometry and a turn-and-drive controller.
 
 ---
 
@@ -71,7 +87,11 @@ Hand-over rules worth noting:
 | `simulation.py` | MuJoCo scene, sensors with imperfections |
 | `visualization.py` | Live monitor, final report, route record |
 | `evaluation.py` | Systematic evaluation (criteria A to E) |
-| `hardware.py` | Real-robot driver and entry point |
+| `hardware.py` | Simplified runner for the real TurtleBot3 (odometry, stop-and-look state machine, visual-servoing docking, LiDAR final approach), pre-flight check and odometry calibration on the robot |
+| `hardware_sim.py` | Runs the `hardware.py` state machine in MuJoCo under real-robot conditions |
+| `rosbridge_api.py` | rosbridge client (UTS-RI): velocity command, camera, laser scan and joint states |
+| `check_markers.py` | Checks the printed ArUco markers on the real camera: dictionary, IDs, marker size, docking conditions |
+| `wheel_check.py` | Short in-place rotation to check that the robot responds before a run |
 
 ---
 
@@ -82,6 +102,16 @@ Hand-over rules worth noting:
 - **Estimator frame:** origin at the robot start pose. Learned marker poses and all control quantities live in this frame.
 - **World frame:** used only to draw results and to compare against ground truth.
 - Bearing is positive to the left. The marker view angle is zero when the marker faces the robot head-on. The camera frame is X right, Y down, Z forward. A set of automatic checks (`check_frame_conventions`) verifies that points ahead, to the left and above the camera project to the expected pixels, that the camera-robot transform round-trips, and that a head-on marker gives zero bearing and view angle.
+```mermaid
+flowchart LR
+  W["World frame<br/>simulator only, ground truth"] -->|"start pose<br/>unknown to the robot"| E["Estimator frame<br/>origin = start pose"]
+  E -->|"robot pose x, y, θ<br/>EKF estimate"| B["Base frame<br/>x forward, y left"]
+  B -->|"camera extrinsics<br/>forward, lateral, yaw (5.3)"| C["Camera frame<br/>X right, Y down, Z forward"]
+  C -->|"PnP: R, t"| M["Marker frame"]
+  B -->|"LiDAR at the base origin (sim)<br/>6.4 cm behind it (real robot)"| L["LiDAR frame"]
+```
+
+From measurement to control: the marker pose from PnP (camera frame) is transformed with the camera extrinsics into the base frame and reduced to `[range, bearing, view]` (section 4.3). The EKF uses these to correct the robot pose in the estimator frame, where the learned marker map also lives. The LQR acts on the tracking error between this estimated pose and the reference segment, expressed in the base frame (section 4.4). The world frame and ground truth are used only by the evaluation.
 
 ### 4.2 Robot kinematics
 
@@ -490,9 +520,12 @@ The 29 failed runs were classified with the last logged event of each run (`last
 - **The gate is almost never active**, even under combined noise ×2, so its value is not demonstrated.
 - **Exploration depends on the reported covariance** and fails under strong odometry noise (section 9.4).
 - **The planner and the safety layer can deadlock** under strong wheel slip (section 9.4).
+- **Hardware evidence is limited.** One successful real-robot run, with the final pose measured by hand and no ground truth during the run.
+- **The hardware runner is simplified.** The EKF and the LQR were not run on the real robot (section 11.2), so the hardware result does not validate the estimator or the LQR.
+- **Unexplained heading error on hardware.** The measured final heading error (16.4°) is more than twice the largest simulated value; the cause was not identified (section 11.5).
+- **Hardware safety is front and rear only.** It checks ±25° ahead and ±35° behind and ignores LiDAR returns closer than 0.30 m, so an obstacle beside the robot is not detected; this caused the collision found in `hardware_sim.py` (section 11.6).
 - **Extrinsic calibration error.** The forward camera offset is estimated with an error of 7 to 29 mm, and the cause of the larger error was not verified.
 - **Simulated camera noise.** A stationary marker gives a zero-variance measurement in simulation. A real camera has pixel noise, so the noise model will differ on hardware.
-- The TurtleBot3 mesh could not be loaded, so the robot body is simulated as a cylinder.
 - The LiDAR map update needs the room geometry, so it is not part of the default system.
 - The controller and the estimator assume planar motion and a static scene.
 - The camera is used only while the robot is nearly stationary, which limits how fast the robot can move through a scene.
@@ -504,15 +537,103 @@ The 29 failed runs were classified with the last logged event of each run (`last
 
 ## 11. Real robot
 
-> **TODO:** write after the hardware tests.
+### 11.1 Setup
 
-Planned contents:
-- Robot, network and rosbridge interface; what differs from the simulation configuration
-- Source of the odometry (wheel encoders or dead reckoning from the commands)
-- Calibration on the real hardware (intrinsics, extrinsics, odometry)
-- Safety procedure and pre-flight check
-- Measurement of the final docking pose (no ground truth on the robot)
-- Simulation versus real comparison and the sim-to-real gap
+TurtleBot3 Waffle connected over WiFi through rosbridge (`rosbridge_api.py`, client provided by UTS-RI). The software uses four topics: `/cmd_vel` (velocity command), `/camera/image_raw/compressed` (640 × 480), `/scan` (LiDAR) and `/joint_states` (wheel encoders). The dock is a printed ArUco marker (`DICT_4X4_50`, 0.10 m black square).
+
+### 11.2 What runs on the robot
+
+`hardware.py` is a simplified version of the simulated pipeline. It shares with it the robot interface (`environment.py`), the sensing code (`sensing.py`: undistortion, ArUco detection, conversion to range, bearing and view angle), the calibration code (`calibration.py`), the motion model and the principle of taking every decision while standing still. It differs as follows:
+
+| Component | Simulation (`main.py`) | Real robot (`hardware.py`) |
+|---|---|---|
+| Pose | EKF fusing odometry and markers | Wheel odometry only |
+| Dock pose | Learned map in the EKF frame | Median of at least 3 stationary observations in the odometry frame, re-learned at every new sighting |
+| Path tracking | LQR on the tracking error | Turn on the spot, then drive straight with a proportional heading correction |
+| Docking | Visual servoing to 0.55 m | Visual servoing to 0.85 m (camera check), then a straight final approach on odometry heading, stopped by the LiDAR 0.45 m from the dock wall |
+| Speed | Nominal | Halved; turn rate at most 0.3 rad/s, at least 0.08 rad/s (motor dead band) |
+| Control rate | 50 Hz | 20 Hz |
+| Safety | `SafetyGuard` (section 8) | Front stop 0.40 m (±25°), rear stop 0.35 m (±35°), stop if the LiDAR scan is older than 1.0 s, LiDAR returns closer than 0.30 m ignored (robot's own parts), stop command repeated for 0.5 s |
+
+**Why simplified.** The real camera has a narrow field of view, and the whole marker only fits in the image from about 0.85 m. The marker is therefore lost as soon as the robot turns or drives. With a single dock, short drives between stationary looks and the dock re-learned at every sighting, odometry drift is corrected by the next look, and an EKF is not required to complete the task. The final 0.4 m is driven without the camera and stopped by the LiDAR.
+
+The EKF and the LQR were therefore **not** exercised on the hardware. The hardware result is evidence for the sensing and calibration on the real sensor, the docking control on the real platform and robustness to real noise. It is not evidence for the estimator or the LQR.
+
+### 11.3 Calibration on the real robot
+
+- **Camera intrinsics.** Chessboard with 25 mm squares, same procedure as section 5.2. Final RMS reprojection error 0.220 px (simulation: 0.967 px).
+- **Camera extrinsics.** Same procedure as section 5.3 with a tape measure: forward offset 0.234 m, lateral offset +0.054 m, yaw −5.1°.
+- **Odometry** (`hardware.py --check --calib-odom`). A 1 m straight run at 0.10 m/s measured with a tape, and two turns in place at 0.3 rad/s read against a tape mark on the floor. Result: wheel radius 0.0326 m (−1.2 % against the nominal 0.033 m), wheel base 0.2891 m (+0.7 % against 0.287 m). Values outside a plausible range are rejected and not saved.
+- **Markers** (`check_markers.py`). Checks that the printed markers are in the expected dictionary with the expected IDs, and compares the marker size implied by PnP with a tape-measured distance, so that a wrong marker size cannot be mistaken for a calibration error.
+
+### 11.4 Procedure
+
+1. `wheel_check.py`: short rotation to confirm that the robot responds.
+2. `python hardware.py <ip> --check`: pre-flight check, the robot does not move. It verifies the calibration files, the encoder topic, the LiDAR (example: 274 of 360 beams valid, nearest return 0.47 m) and the camera image, and sends a stop command.
+3. `python hardware.py <ip>`: full run, with an operator's hand near the robot and Ctrl+C as emergency stop.
+4. The final pose is measured by hand (no ground truth on the robot): distance from the robot centre to the marker, sideways offset from the marker axis, heading error.
+
+### 11.5 Result
+
+| Quantity | Value |
+|---|---|
+| Outcome | Docked, 101.9 s |
+| Camera frames / dock detections | 519 / 149 (28.7 %) |
+| Camera check at DOCKED | range 0.93 m, bearing −2.3°, axis +0.8° |
+| Final distance, robot centre to marker | 0.475 m (target 0.45 m, error +0.025 m) |
+| Final sideways offset from the marker axis | 0.02 m |
+| Final heading error | 16.4° |
+
+Sequence of the run (times from the start):
+
+| Time [s] | Event |
+|---|---|
+| 0 to 31 | SURVEY: 30° turns with stops, dock seen after about 270° |
+| 32 | Dock learned at 2.76 m, 0.05 m off the axis; drive towards the axis point 1.3 m in front of it |
+| 45 | LiDAR front stop after 1.20 m of driving; after 3 s blocked the drive is abandoned |
+| 53 to 59 | Dock not in view from the stop position: 360° search, dock seen again |
+| 60 | Dock re-learned at 1.59 m, now **0.37 m** off the axis |
+| 62 to 87 | Two AIM iterations: offset 0.41 → 0.19 → 0.01 m |
+| 88 to 94 | DOCK: visual servoing from 1.28 m to 0.93 m |
+| 95 to 102 | FINAL: 0.36 m straight, stopped by the LiDAR at 0.45 m from the wall |
+
+What the run shows:
+- **The far-range dock estimate was wrong by about 0.3 m sideways.** Seen from 2.76 m the dock looked almost on the axis (0.05 m); from 1.59 m the offset was 0.37 m. An error of 0.3 m at 2.8 m corresponds to an angle error of about 6°, which matches a poorly resolved view angle: a 0.10 m marker covers few pixels at that range. This agrees with the simulation finding that the marker error is a range-dependent bias (section 5.6). Re-learning the dock at every closer look absorbed the error, and the offset converged to 0.01 m in two iterations.
+- **The blocked drive did not deadlock.** When the safety stop blocked the drive, the runner gave up the goal after 3 s, looked, searched and re-learned the dock. This is the remedy proposed for the planner–safety deadlock found in simulation (section 9.4), and on the hardware it worked.
+- **Distance and sideways offset are accurate** (2.5 cm and 2 cm), although the last 0.36 m were driven without the camera.
+- **The heading error is not explained.** At the docking check the camera reported an axis angle of 0.8°, and the odometry turned only about 2° during the final approach, yet 16.4° was measured by hand. Two explanations are possible. First, a camera yaw calibration error: the docking law centres the marker in the image, so a yaw error shifts the robot heading by the same amount, while the axis angle (bearing minus view angle) does not depend on the camera yaw and would not show it. Second, an error in the manual heading measurement. The data cannot tell them apart; a head-on check with `check_markers.py` and repeated runs would.
+
+### 11.6 Simulation versus hardware
+
+`hardware_sim.py` runs the same `hardware.py` state machine in MuJoCo under the real robot's conditions: real intrinsics and lens distortion, camera mounting with a calibration error (1 cm, 1°, 1 % focal length, 1σ), 0.2 s image delay with jitter, 10 % frame drops, JPEG compression, motion blur, motor dead band and acceleration limits, 0.1 s command latency, a 5 Hz LiDAR mounted behind the robot centre, encoder noise and up to 3 % rotation slip. The odometry is calibrated in the simulation with the same 1 m + two-turn procedure as on the robot. The arena (3.0 × 1.8 m) has one 20 cm box beside the docking lane, 1.05 m in front of the marker and 0.35 m from its axis. Ground truth is used only to score the final pose.
+
+| Quantity | `hardware_sim.py` (10 seeds) | Real robot (1 run) |
+|---|---|---|
+| Docked | 10/10 (95 % interval 72 to 100 %) | 1/1 |
+| Time [s] | 61.2 (56.6 to 73.9) | 101.9 |
+| Final distance error [m] | +0.016 (+0.01 to +0.02) | +0.025 |
+| Final sideways offset [m] | 0.021 mean, 0.041 max | 0.02 |
+| Final heading error [°] | +4.1 (+1.1 to +7.2) | 16.4 |
+| Odometry drift at the end [m] | 0.038 (0.014 to 0.062) | not measurable |
+
+Command: `python hardware_sim.py --trials 10 --calib-odom --calib-error`.
+
+- **Distance and sideways offset of the real run lie inside the simulated distribution.** The final approach (camera check at 0.85 m, then LiDAR stop at 0.45 m) behaves on the robot as predicted.
+- **The heading error does not.** In all simulated docked runs it stayed within ±7.2°, and in the 10-seed set it was always positive (mean +4.1°), a systematic bias of the docking procedure: the docking check accepts a bearing up to 6.9° and an axis angle up to 14°. The real 16.4° is more than twice the largest simulated value, so the robot has an error source the simulation does not model. The most likely candidates are a camera yaw calibration error larger than the simulated 1° (section 11.5), or the manual measurement.
+- **The real run took 40 s longer** because of the front stop and the 360° search that followed it (section 11.5). The simulated runs never needed a search.
+
+**A collision found in simulation.** With the robot's own odometry calibration (`odometry_hw.json`) instead of the in-simulation one, seed 0 hit the box during DOCK. The dock was estimated at 2.49 m with a 0.24 m sideways error. At 1.36 m the measured sideways offset was 0.13 m, just inside the 0.15 m tolerance for starting the docking, so DOCK began; the true offset was 0.17 m. The docking lane had been designed with the tolerance plus half the robot width plus only 5 cm. A 4 cm measurement error and a 10° turn back towards the axis used up this margin, and the side of the chassis touched the box. The safety layer could not see it: the box was beside the robot (about −68°), outside the ±25° front stop, and closer than the 0.30 m below which LiDAR returns are ignored as robot parts.
+
+This collision occurred in 1 of 3 seeds run with the robot's odometry calibration (`python hardware_sim.py --trials 3 --calib-error`), and in none of the 10 seeds with the in-simulation calibration, so its rate is not known. Proposed fixes, not yet tested: start the docking only below 0.08 m sideways offset (about three times the observed 4 cm measurement error), and add a side sector to the hardware safety check. In the 10 seeds with the in-simulation calibration, the tighter tolerance did not change the success rate (10/10) and reduced the mean sideways offset from 0.021 to 0.018 m at the cost of 2 s; it was not tested in the condition where the collision occurred. The real robot ran with the original tolerance of 0.15 m.
+
+**Sim-to-real gap.** The main differences found on the hardware were the narrow field of view, which forced the stop-and-look strategy and the blind final approach; the long-range bias of the marker pose; the motor dead band, which required a minimum turn rate of 0.08 rad/s; and LiDAR returns from the robot's own body, which are ignored below 0.30 m.
+
+### 11.7 Limitations of the hardware test
+
+- One run, so no success rate can be given.
+- No ground truth during the run; the final pose is measured by hand.
+- The EKF and the LQR were not run on the robot (section 11.2).
+- The final 0.36 m are driven without the camera, on odometry heading and a LiDAR stop.
 
 ---
 
@@ -529,12 +650,43 @@ python evaluation.py --all --seed0 100 --workers 10 \
 
 This runs 460 simulations in parallel and takes about 17 minutes on a 10-core laptop. Single experiments can be run with `--model`, `--sensing`, `--estimation`, `--control`, `--robust`, `--ablation` or `--layouts`, and `python evaluation.py --plot-only` rebuilds the summary and figures from the saved runs.
 
+Real robot (section 11):
+
+```bash
+python hardware.py <robot-ip> --check                  # pre-flight check, robot does not move
+python hardware.py <robot-ip> --check --calib-odom     # odometry calibration (robot moves)
+python hardware.py <robot-ip> --video                  # full run, saves what the camera saw
+python check_markers.py <robot-ip> --distance 1.00     # marker dictionary, IDs and size
+python hardware_sim.py --trials 10 --calib-odom --calib-error   # hardware.py in simulation
+```
+
+Every hardware run is saved to `results/hardware_backup/<date_time>/` (log, events, route plot, manual measurement); `hardware_sim.py` results go to `results/hardware_sim/`.
+
 The test suite covers the models, estimator, controllers, pipeline and safety rules. One test replaces the simulator's ground truth with garbage and checks that the run does not change, which shows that control does not depend on ground truth.
 
 Main libraries: NumPy 1.26.4, SciPy 1.17.1, MuJoCo (3.x), OpenCV contrib 4.11.0.86, Machine Vision Toolbox 2.4.0, Matplotlib 3.10.9, pytest 8.4.2 (Python 3.12).
 
 ---
 
-### 13. Acknowledgements
+## 13. Acknowledgements
 
 The pipeline adapts material from the weekly tutorials of the course. Third-party libraries: MuJoCo, OpenCV, the Robotics and Machine Vision Toolboxes, NumPy, SciPy and Matplotlib. The real-robot interface uses the rosbridge client provided by UTS-RI.
+The real-robot interface (`rosbridge_api.py`) is the rosbridge client provided by UTS-RI (https://github.com/UTS-RI/turtlebot_rosbridge, `robot.py`).
+
+---
+
+## 14. Individual contributions
+
+| Member | Contribution |
+|---|---|
+| Thien Phu Le | [ ] |
+| Tran Minh Thi Nguyen | [ ] |
+| Nguyen Hoang Tung Dao | [ ] |
+
+---
+
+## 15. Generative AI declaration
+
+| Tool | Purpose |
+|---|---|
+| [ ] | [ ] |

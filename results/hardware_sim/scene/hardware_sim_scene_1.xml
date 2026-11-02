@@ -1,0 +1,58 @@
+<mujoco model="track_a_scene">
+    <compiler angle="radian" texturedir="." meshdir="/Users/lethienphu/Documents/Studying/UTS/Year 2/Semester 2/Sensors and Controls for Mechatronics System/Integrated Project/assets/turtlebot3"/>
+    <option timestep="0.002" gravity="0 0 -9.81"/>
+    <visual>
+    <global offwidth="800" offheight="600"/>
+    <headlight ambient="0.6 0.6 0.6" diffuse="0.5 0.5 0.5" specular="0 0 0"/>
+    </visual>
+    <asset>
+    <texture name="marker_tex" type="2d" file="aruco_marker.png"/>
+    <material name="marker_mat" texture="marker_tex" specular="0" shininess="0"/>
+    <texture name="floor_tex" type="2d" builtin="checker" rgb1="0.35 0.35 0.35" rgb2="0.8 0.8 0.8"
+        width="512" height="512"/>
+    <material name="floor_mat" texture="floor_tex" texuniform="true"
+        texrepeat="2.0 2.0" specular="0" shininess="0" reflectance="0"/>
+    <texture name="tag_tex_1" type="2d" file="aruco_marker_1.png"/>
+    <material name="tag_mat_1" texture="tag_tex_1" specular="0" shininess="0"/>
+    <texture name="tag_tex_2" type="2d" file="aruco_marker_2.png"/>
+    <material name="tag_mat_2" texture="tag_tex_2" specular="0" shininess="0"/>
+          
+    <mesh name="tb3_base" file="waffle_base.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="tb3_left_tire" file="left_tire.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="tb3_right_tire" file="right_tire.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="tb3_lds" file="lds.stl" scale="0.001 0.001 0.001"/>
+    </asset>
+    <worldbody>
+    <geom name="floor" type="plane" size="2.5 1.9 0.1" material="floor_mat"/>
+    <geom name="wall_east" type="box" size="0.05 1.0 0.25" pos="1.55 0 0.25" rgba="0.5 0.5 0.6 1"/>
+    <geom name="wall_west" type="box" size="0.05 1.0 0.25" pos="-1.55 0 0.25" rgba="0.5 0.5 0.6 1"/>
+    <geom name="wall_north" type="box" size="1.5 0.05 0.25" pos="0 0.9500000000000001 0.25" rgba="0.5 0.5 0.6 1"/>
+    <geom name="wall_south" type="box" size="1.5 0.05 0.25" pos="0 -0.9500000000000001 0.25" rgba="0.5 0.5 0.6 1"/>
+
+    <geom name="box_obstacle" type="box" size="0.05 0.1 0.1" pos="0.4299999999999999 -0.44999999999999984 0.1" euler="0 0 3.141592653589793" rgba="0.8 0.3 0.2 1"/>
+    <geom name="dock_marker" type="box" size="0.005 0.06666666666666668 0.06666666666666668"
+        pos="1.48 0.0 0.15" euler="0 0 3.141592653589793" material="marker_mat"/>
+    <geom name="tag_marker_1" type="box" size="0.005 0.06666666666666668 0.06666666666666668"
+        pos="0.0 0.88 0.15" euler="0 0 -1.5707963267948966" material="tag_mat_1"/>
+    <geom name="tag_marker_2" type="box" size="0.005 0.06666666666666668 0.06666666666666668"
+        pos="0.0 -0.88 0.15" euler="0 0 1.5707963267948966" material="tag_mat_2"/>
+           
+    <body name="base" pos="0 0 0">
+        <inertial pos="0 0 0.1" mass="1" diaginertia="0.0142 0.0142 0.0242"/>
+        <joint name="x" type="slide" axis="1 0 0"/>
+        <joint name="y" type="slide" axis="0 1 0"/>
+        <joint name="yaw" type="hinge" axis="0 0 1"/>
+        <geom name="chassis" type="cylinder" size="0.22 0.08" pos="0 0 0.1"
+            mass="1" rgba="0.2 0.4 0.8 0"/>
+      <geom name="tb3_base_vis" type="mesh" mesh="tb3_base" pos="-0.064 0 0.010" rgba="0.45 0.45 0.45 1" contype="0" conaffinity="0" density="1"/>
+      <geom name="tb3_wheel_left" type="mesh" mesh="tb3_left_tire" pos="0 0.14454593710154118 0.03262755539348274" rgba="0.15 0.15 0.15 1" contype="0" conaffinity="0" density="1"/>
+      <geom name="tb3_wheel_right" type="mesh" mesh="tb3_right_tire" pos="0 -0.14454593710154118 0.03262755539348274" rgba="0.15 0.15 0.15 1" contype="0" conaffinity="0" density="1"/>
+      <geom name="tb3_lds_vis" type="mesh" mesh="tb3_lds" pos="-0.064 0 0.132" rgba="0.9 0.1 0.1 1" contype="0" conaffinity="0" density="1"/>
+      <geom name="cam_body_vis" type="box" size="0.01 0.03 0.015" pos="0.2145 0.0522 0.1" rgba="0.05 0.05 0.05 1" contype="0" conaffinity="0" density="1"/>
+      <geom name="cam_lens_vis" type="cylinder" size="0.008 0.004" pos="0.2205 0.0522 0.1" euler="0 1.5708 0" rgba="0.1 0.3 1.0 1" contype="0" conaffinity="0" density="1"/>
+      <geom name="cam_arm_vis" type="box" size="0.0643 0.008 0.006" pos="0.1443 0.0522 0.1" rgba="0.3 0.3 0.3 1" contype="0" conaffinity="0" density="1"/>
+      <geom name="cam_post_vis" type="box" size="0.008 0.012 0.05" pos="0.10 0.0522 0.05" rgba="0.3 0.3 0.3 1" contype="0" conaffinity="0" density="1"/>
+        <camera name="front_cam" pos="0.24354 0.05216 0.1" xyaxes="-0.107668 -0.994187 0 0 0 1" fovy="25.6122"/>
+    </body>
+    </worldbody>
+</mujoco>

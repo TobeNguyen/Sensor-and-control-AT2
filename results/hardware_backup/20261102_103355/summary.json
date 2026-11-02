@@ -1,0 +1,28 @@
+{
+  "success": true,
+  "reason": "docked",
+  "events": [
+    "[t=  46.6s] SURVEY: no dock in 360 deg -> EXPLORE #1 (-105 deg, 1.00 m)",
+    "[t=  61.7s] EXPLORE step done -> SURVEY 360 deg",
+    "[t=  96.9s] SURVEY: dock seen -> stop and look",
+    "[t=  98.1s] dock learned: 1.94 m, +5 deg, -0.22 m off the axis -> AIM",
+    "[t=  98.7s] AIM: dock 1.94 m, -0.10 m off the axis -> DOCK",
+    "[t= 114.5s] DOCKED: 0.92 m, bearing -3.9 deg, axis +0.0 deg",
+    "[t= 114.5s] FINAL: driving 0.47 m closer (stop at 0.45 m)",
+    "[t= 121.4s] FINAL done (LiDAR): drove 0.32 m, LiDAR wall 0.44 m from the robot centre"
+  ],
+  "manual_dock_measurement": {
+    "dock_range_m": 0.49,
+    "dock_lateral_m": 0.02,
+    "dock_heading_deg": 12.0
+  },
+  "settings": {
+    "dock_target_m": 0.85,
+    "final_range_m": 0.45,
+    "aim_dist_m": 1.3,
+    "lat_tol_m": 0.15,
+    "axis_tol_rad": 0.25,
+    "speed_scale": 0.5,
+    "odometry": "r 0.0326 b 0.2891 (calibrated)"
+  }
+}

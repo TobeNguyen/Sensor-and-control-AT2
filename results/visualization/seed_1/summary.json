@@ -1,13 +1,14 @@
 {
   "success": true,
   "reason": "docked",
-  "sim_time_s": 133.49999999990933,
+  "sim_time_s": 50.960000000016315,
   "target_confirmed": true,
   "camera_target_label": "Docked at charging station",
-  "estimated_path_samples": 668,
-  "lidar_map_points": 14944,
+  "estimated_path_samples": 255,
+  "lidar_map_points": 5823,
   "learned_tag_ids": [
     0,
+    1,
     2,
     3
   ],
@@ -16,7 +17,7 @@
   "ground_truth_drawn_for_evaluation": true,
   "video_recorded": false,
   "seed": 1,
-  "calibration_source": "nominal_mujoco",
+  "calibration_source": "calibrated",
   "validation": {
     "simulation": true,
     "hardware_ready": false,
@@ -24,13 +25,13 @@
   },
   "events": [
     "[t=0.0s] odometry calibrated: wheel_radius 0.0330 m, wheel_base 0.2888 m",
+    "[t=0.0s] camera extrinsics: fwd 0.277 m, lat +0.003 m, yaw +0.01 deg (27 placements, RMS 10.2 mm)",
     "[t=0.0s] SURVEY: scanning 180 deg at the start pose to learn the tag map",
-    "[t=15.7s] SURVEY: dock not seen -> EXPLORE (move, stop, scan)",
-    "[t=105.1s] EXPLORE done: dock learned, ids [0, 2, 3]",
-    "[t=106.3s] AIM: dock 1.26 m -> approach point 1.34 m away",
-    "[t=118.2s] AIM: dock 0.81 m -> approach point 0.70 m away",
-    "[t=128.7s] dock seen at 0.91 m -> docking",
-    "[t=128.9s] dock re-learned from a close view",
-    "[t=133.5s] DOCKED"
+    "[t=12.9s] SURVEY: dock not seen -> EXPLORE (move, stop, scan)",
+    "[t=23.5s] EXPLORE done: dock learned, ids [0, 1, 2, 3]",
+    "[t=24.7s] AIM: dock 1.49 m -> approach point 1.54 m away",
+    "[t=35.4s] AIM: dock 0.99 m -> approach point 0.96 m away",
+    "[t=47.4s] dock seen at 0.91 m -> docking",
+    "[t=51.0s] DOCKED"
   ]
 }

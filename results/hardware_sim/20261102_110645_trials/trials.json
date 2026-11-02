@@ -1,0 +1,152 @@
+[
+  {
+    "seed": 0,
+    "success": false,
+    "reason": "collision",
+    "time": 0.0,
+    "dock_range": 2.498,
+    "dock_lateral": 0.3,
+    "dock_heading_deg": 90.0,
+    "odom_drift": 0.0,
+    "detections": "0/1",
+    "odometry": "r 0.0323 b 0.2857 (true r 0.0327 b 0.2878)",
+    "events": [
+      "[t=  54.0s] COLLISION"
+    ]
+  },
+  {
+    "seed": 1,
+    "success": false,
+    "reason": "collision",
+    "time": 0.0,
+    "dock_range": 2.498,
+    "dock_lateral": 0.3,
+    "dock_heading_deg": 90.0,
+    "odom_drift": 0.0,
+    "detections": "0/1",
+    "odometry": "r 0.0320 b 0.2877 (true r 0.0326 b 0.2917)",
+    "events": [
+      "[t=  53.9s] COLLISION"
+    ]
+  },
+  {
+    "seed": 2,
+    "success": false,
+    "reason": "collision",
+    "time": 0.0,
+    "dock_range": 2.498,
+    "dock_lateral": 0.3,
+    "dock_heading_deg": 90.0,
+    "odom_drift": 0.0,
+    "detections": "0/1",
+    "odometry": "r 0.0320 b 0.2899 (true r 0.0325 b 0.2879)",
+    "events": [
+      "[t=  53.9s] COLLISION"
+    ]
+  },
+  {
+    "seed": 3,
+    "success": false,
+    "reason": "collision",
+    "time": 0.0,
+    "dock_range": 2.498,
+    "dock_lateral": 0.3,
+    "dock_heading_deg": 90.0,
+    "odom_drift": 0.0,
+    "detections": "0/1",
+    "odometry": "r 0.0322 b 0.2919 (true r 0.0324 b 0.2876)",
+    "events": [
+      "[t=  54.0s] COLLISION"
+    ]
+  },
+  {
+    "seed": 4,
+    "success": false,
+    "reason": "collision",
+    "time": 0.0,
+    "dock_range": 2.498,
+    "dock_lateral": 0.3,
+    "dock_heading_deg": 90.0,
+    "odom_drift": 0.0,
+    "detections": "0/1",
+    "odometry": "r 0.0325 b 0.2929 (true r 0.0329 b 0.2892)",
+    "events": [
+      "[t=  53.9s] COLLISION"
+    ]
+  },
+  {
+    "seed": 5,
+    "success": false,
+    "reason": "collision",
+    "time": 0.0,
+    "dock_range": 2.498,
+    "dock_lateral": 0.3,
+    "dock_heading_deg": 90.0,
+    "odom_drift": 0.0,
+    "detections": "0/1",
+    "odometry": "r 0.0325 b 0.2926 (true r 0.0328 b 0.2909)",
+    "events": [
+      "[t=  53.9s] COLLISION"
+    ]
+  },
+  {
+    "seed": 6,
+    "success": false,
+    "reason": "collision",
+    "time": 0.0,
+    "dock_range": 2.498,
+    "dock_lateral": 0.3,
+    "dock_heading_deg": 90.0,
+    "odom_drift": 0.0,
+    "detections": "0/1",
+    "odometry": "r 0.0324 b 0.2881 (true r 0.0327 b 0.2882)",
+    "events": [
+      "[t=  53.9s] COLLISION"
+    ]
+  },
+  {
+    "seed": 7,
+    "success": false,
+    "reason": "collision",
+    "time": 0.0,
+    "dock_range": 2.498,
+    "dock_lateral": 0.3,
+    "dock_heading_deg": 90.0,
+    "odom_drift": 0.0,
+    "detections": "0/1",
+    "odometry": "r 0.0324 b 0.2962 (true r 0.0327 b 0.2914)",
+    "events": [
+      "[t=  54.0s] COLLISION"
+    ]
+  },
+  {
+    "seed": 8,
+    "success": false,
+    "reason": "collision",
+    "time": 0.0,
+    "dock_range": 2.498,
+    "dock_lateral": 0.3,
+    "dock_heading_deg": 90.0,
+    "odom_drift": 0.0,
+    "detections": "0/1",
+    "odometry": "r 0.0319 b 0.2878 (true r 0.0325 b 0.2919)",
+    "events": [
+      "[t=  53.9s] COLLISION"
+    ]
+  },
+  {
+    "seed": 9,
+    "success": false,
+    "reason": "collision",
+    "time": 0.0,
+    "dock_range": 2.498,
+    "dock_lateral": 0.3,
+    "dock_heading_deg": 90.0,
+    "odom_drift": 0.0,
+    "detections": "0/1",
+    "odometry": "r 0.0325 b 0.2883 (true r 0.0329 b 0.2879)",
+    "events": [
+      "[t=  54.0s] COLLISION"
+    ]
+  }
+]

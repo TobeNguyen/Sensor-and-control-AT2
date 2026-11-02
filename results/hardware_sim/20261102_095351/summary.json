@@ -1,0 +1,15 @@
+{
+  "seed": 0,
+  "success": false,
+  "reason": "collision",
+  "time": 0.1,
+  "dock_range": 2.196,
+  "dock_lateral": 0.3,
+  "dock_heading_deg": 90.0,
+  "odom_drift": 0.005,
+  "detections": "0/1",
+  "odometry": "r 0.0328 b 0.2882 (true r 0.0329 b 0.2869)",
+  "events": [
+    "[t=   0.1s] COLLISION"
+  ]
+}

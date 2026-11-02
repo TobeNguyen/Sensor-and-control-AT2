@@ -1,0 +1,18 @@
+{
+  "seed": 0,
+  "success": false,
+  "reason": "collision",
+  "time": 39.3,
+  "dock_range": 1.228,
+  "dock_lateral": 0.164,
+  "dock_heading_deg": 11.3,
+  "odom_drift": 0.025,
+  "detections": "90/328",
+  "odometry": "r 0.0328 b 0.2882 (true r 0.0329 b 0.2869)",
+  "events": [
+    "[t=  28.5s] SURVEY: dock seen -> stop and look",
+    "[t=  29.3s] dock learned: 1.90 m, -2 deg, +0.07 m off the axis -> AIM",
+    "[t=  29.7s] AIM: dock 1.90 m, +0.07 m off the axis -> DOCK",
+    "[t=  39.3s] COLLISION"
+  ]
+}
