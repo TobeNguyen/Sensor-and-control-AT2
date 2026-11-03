@@ -104,6 +104,7 @@ Hand-over rules worth noting:
 - **Estimator frame:** origin at the robot start pose. Learned marker poses and all control quantities live in this frame.
 - **World frame:** used only to draw results and to compare against ground truth.
 - Bearing is positive to the left. The marker view angle is zero when the marker faces the robot head-on. The camera frame is X right, Y down, Z forward. A set of automatic checks (`check_frame_conventions`) verifies that points ahead, to the left and above the camera project to the expected pixels, that the camera-robot transform round-trips, and that a head-on marker gives zero bearing and view angle.
+
 ```mermaid
 flowchart LR
   W["World frame<br/>simulator only, ground truth"] -->|"start pose<br/>unknown to the robot"| E["Estimator frame<br/>origin = start pose"]
@@ -672,7 +673,7 @@ Main libraries: NumPy 1.26.4, SciPy 1.17.1, MuJoCo (3.x), OpenCV contrib 4.11.0.
 
 ## 13. Acknowledgements
 
-The pipeline adapts material from the weekly tutorials of the course. Third-party libraries: MuJoCo, OpenCV, the Robotics and Machine Vision Toolboxes, NumPy, SciPy and Matplotlib. The real-robot interface uses the rosbridge client provided by UTS-RI.
+The pipeline adapts material from the weekly tutorials of the course. Third-party libraries: MuJoCo, OpenCV, the Robotics and Machine Vision Toolboxes, NumPy, SciPy and Matplotlib.
 The real-robot interface (`rosbridge_api.py`) is the rosbridge client provided by UTS-RI (https://github.com/UTS-RI/turtlebot_rosbridge, `robot.py`).
 
 ---
@@ -681,9 +682,9 @@ The real-robot interface (`rosbridge_api.py`) is the rosbridge client provided b
 
 | Member | Contribution |
 |---|---|
-| Thien Phu Le | [Modelling and Control ] |
-| Tran Minh Thi Nguyen | [Estimation and Robustness ] |
-| Nguyen Hoang Tung Dao | [Sensing and Hardward Test ] |
+| Thien Phu Le | Modelling and control: kinematic and tracking-error models, controllability and observability analysis (section 4), LQR design and tuning, baseline comparison (section 7); `robot_model.py`, `controller.py`, `navigation.py`, `docking.py` |
+| Tran Minh Thi Nguyen | Estimation and robustness: EKF and UKF, noise tuning and consistency analysis (section 6), disturbance sweeps, ablation and failure analysis (section 9); `estimator.py`, `evaluation.py` |
+| Nguyen Hoang Tung Dao | Sensing and hardware: camera and odometry calibration (section 5), real-robot runner and tests, `hardware_sim.py` comparison (section 11); `sensing.py`, `calibration.py`, `hardware.py`, `hardware_sim.py`, `check_markers.py` |
 
 ---
 
