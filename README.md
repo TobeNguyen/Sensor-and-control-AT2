@@ -11,7 +11,7 @@
 ---
 
 **Group:** 6\
-**Video (5 min):** <>\
+**Video (5 min):** <https://youtu.be/GFhhgJOjSjE>\
 **Repository:** <https://github.com/TobeNguyen/Sensor-and-control-AT2>
 
 ## Quick start
